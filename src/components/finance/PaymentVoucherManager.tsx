@@ -456,7 +456,7 @@ export function PaymentVoucherManager({
 
     const pType: PartyType = prefillFromBankReconciliation.partyType || 'supplier';
     const pPurpose = prefillFromBankReconciliation.paymentPurpose || (pType === 'customer' ? 'customer_refund' : pType === 'employee' ? 'salary_payroll' : pType === 'director' ? 'director_loan_repayment' : 'supplier_invoice_payment');
-    const pSettlement = (prefillFromBankReconciliation.settlementAgainst as 'outstanding_balance' | 'specific_document' | 'advance' | 'unallocated_credit') || (pType === 'supplier' ? 'specific_document' : 'outstanding_balance');
+    const pSettlement = (prefillFromBankReconciliation.settlementAgainst as 'outstanding_balance' | 'specific_document' | 'advance' | 'unallocated_credit') || (pType === 'supplier' ? (pPurpose === 'supplier_advance' ? 'advance' : 'specific_document') : 'outstanding_balance');
 
     setPartyType(pType);
     setFormData(prev => ({

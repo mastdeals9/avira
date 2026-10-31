@@ -40,6 +40,7 @@ import {
   savePaymentVoucher,
   saveReceiptVoucher,
   unlinkBankStatementLine,
+  unlinkBankStatementAllocation,
 } from '../../services/financeCommands';
 import {
   getEffectiveExpensePostingState,
@@ -3795,6 +3796,23 @@ export function BankReconciliationEnhanced({
     }
   };
 
+  const handleUnlinkSingleAllocation = async (allocationId: string, label?: string) => {
+    const ok = window.confirm(
+      `Are you sure you want to unlink allocation "${label || allocationId}"?\n\n` +
+      'This will remove this specific allocation and return its amount to the unallocated bank balance.'
+    );
+    if (!ok) return;
+    try {
+      await unlinkBankStatementAllocation(allocationId);
+      await loadStatementLines();
+      notifyFinanceReconciliationRefresh();
+      alert('✅ Allocation unlinked successfully');
+    } catch (err: any) {
+      console.error('Error unlinking allocation:', err);
+      alert('❌ ' + err.message);
+    }
+  };
+
   return (
     <div className="space-y-2">
       {/* Persistent Action Feedback Notification */}
@@ -4376,6 +4394,7 @@ export function BankReconciliationEnhanced({
                               <th className="py-1 pr-2 text-right">Document total</th>
                               <th className="py-1 pr-2 text-right">Document remaining</th>
                               <th className="py-1 pr-2">Journal</th>
+                              <th className="py-1 pr-2 text-right">Action</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -4396,6 +4415,18 @@ export function BankReconciliationEnhanced({
                                 <td className="py-1 pr-2 text-right">{allocation.document_total == null ? '—' : formatCurrency(allocation.document_total, line.currency)}</td>
                                 <td className="py-1 pr-2 text-right">{allocation.document_remaining == null ? '—' : formatCurrency(allocation.document_remaining, line.currency)}</td>
                                 <td className="py-1 pr-2">{allocation.journal_entry_id ? `${allocation.journal_entry_id.slice(0, 8)} · ${allocation.journal_status || 'Unknown'}` : '—'}</td>
+                                <td className="py-1 pr-2 text-right">
+                                  {canManage && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUnlinkSingleAllocation(allocation.id, allocation.label)}
+                                      className="text-xs text-red-600 hover:text-red-800 underline font-medium"
+                                      title="Unlink this individual allocation"
+                                    >
+                                      Unlink
+                                    </button>
+                                  )}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -4538,6 +4569,23 @@ export function BankReconciliationEnhanced({
                 </div>
               )}
             </div>
+
+            {recordingLine.allocatedAmount > 0 && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs space-y-1">
+                <div className="font-semibold text-amber-900 flex items-center justify-between">
+                  <span>Partially Reconciled Bank Transaction</span>
+                  <span className="text-amber-800 font-bold">Remaining: {formatCurrency(recordingLine.remainingAmount, recordingLine.currency)}</span>
+                </div>
+                <div className="flex justify-between text-gray-600">
+                  <span>Total Bank Amount:</span>
+                  <span>{formatCurrency(recordingLine.debit || recordingLine.credit, recordingLine.currency)}</span>
+                </div>
+                <div className="flex justify-between text-gray-600">
+                  <span>Already Allocated:</span>
+                  <span className="text-green-700 font-medium">{formatCurrency(recordingLine.allocatedAmount, recordingLine.currency)}</span>
+                </div>
+              </div>
+            )}
 
             {recordingLine.currency === 'USD' && (
               <div className="p-3 border border-blue-200 bg-blue-50 rounded-lg">
@@ -4701,7 +4749,7 @@ export function BankReconciliationEnhanced({
                         bankAccountId: selectedBank,
                         statementLineId: recordingLine.id,
                         date: recordingLine.date,
-                        amount: recordingLine.debit,
+                        amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
                         description: recordingLine.description,
                         direction: 'from',
                       })}
@@ -4716,7 +4764,31 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.debit,
+                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
+                          currency: recordingLine.currency as 'IDR' | 'USD',
+                          reference: recordingLine.reference || '',
+                          description: recordingLine.description,
+                          partyType: 'supplier' as const,
+                          paymentPurpose: 'supplier_advance',
+                          settlementAgainst: 'advance' as const,
+                        };
+                        setRecordModal(false);
+                        if (onRecordPayment) onRecordPayment(prefill);
+                        else setEmbeddedPaymentPrefill(prefill);
+                      }}
+                      className="py-1.5 px-2.5 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200 shadow-sm"
+                      title="Record an advance or deposit paid to a supplier"
+                    >
+                      Supplier Advance
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const prefill = {
+                          bankAccountId: selectedBank,
+                          statementLineId: recordingLine.id,
+                          date: recordingLine.date,
+                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -4738,7 +4810,7 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.debit,
+                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -4760,7 +4832,7 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.debit,
+                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -4782,7 +4854,7 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.debit,
+                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -4804,7 +4876,7 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.debit,
+                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,

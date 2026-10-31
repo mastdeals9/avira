@@ -62,7 +62,7 @@ export default function PartyLedger() {
   const { dateRange: globalDateRange } = useFinance();
   const printRef = useRef<HTMLDivElement>(null);
   const [partyType, setPartyType] = useState<'customer' | 'supplier' | 'staff' | 'director'>('customer');
-  const [supplierSubView, setSupplierSubView] = useState<'payable' | 'import_customs'>('payable');
+  const [supplierSubView, setSupplierSubView] = useState<'payable' | 'advances' | 'import_customs'>('payable');
   const [supplierCurrency, setSupplierCurrency] = useState<'USD' | 'IDR'>('IDR');
   const [parties, setParties] = useState<Party[]>([]);
   const [selectedParty, setSelectedParty] = useState<string>('');
@@ -92,7 +92,7 @@ export default function PartyLedger() {
   useEffect(() => {
     if (selectedParty) {
       loadLedgerEntries();
-      if (partyType === 'supplier') {
+      if (partyType === 'supplier' && supplierSubView === 'import_customs') {
         loadImportCosts();
       }
     } else {
@@ -100,7 +100,7 @@ export default function PartyLedger() {
       setOpeningBalance(0);
       setImportCostEntries([]);
     }
-  }, [selectedParty, globalDateRange.startDate, globalDateRange.endDate, partyType]);
+  }, [selectedParty, globalDateRange.startDate, globalDateRange.endDate, partyType, supplierSubView]);
 
   useEffect(() => {
     const refresh = () => {
@@ -334,6 +334,38 @@ export default function PartyLedger() {
           });
         });
       }
+    } else if (partyType === 'supplier' && supplierSubView === 'advances') {
+      const advQuery = supabase
+        .from('journal_entry_lines')
+        .select('id, debit, credit, description, journal_entry_id, transaction_currency, exchange_rate, journal_entries!inner(id, reference_id, reference_number, entry_number, entry_date, source_module, is_posted, is_reversed), chart_of_accounts!inner(code)')
+        .eq('supplier_id', selectedParty)
+        .eq('chart_of_accounts.code', '1170')
+        .eq('journal_entries.is_posted', true)
+        .eq('journal_entries.is_reversed', false);
+      const advLines = await dateRange(advQuery, 'journal_entries.entry_date');
+      if (advLines.data) {
+        advLines.data.forEach((line: any) => {
+          const debit = Number(line.debit || 0);
+          const credit = Number(line.credit || 0);
+          const fxRate = Number(line.exchange_rate || 1);
+          entries.push({
+            id: line.id,
+            entry_date: line.journal_entries?.entry_date || '',
+            particulars: line.description || (debit > 0 ? 'Supplier Advance Paid' : 'Supplier Advance Refund / Offset'),
+            reference: line.journal_entries?.reference_number || line.journal_entries?.entry_number || '',
+            currency: line.transaction_currency || 'IDR',
+            debit,
+            credit,
+            exchange_rate: fxRate > 0 ? fxRate : null,
+            functional_amount: debit > 0 ? debit : credit,
+            functional_debit: debit,
+            functional_credit: credit,
+            running_balance: 0,
+            type: debit > 0 ? 'payment' : 'receipt',
+          });
+        });
+      }
+      return entries;
     } else if (partyType === 'supplier') {
       // 1. Detect if this supplier is foreign currency (USD)
       const { data: usdCheck } = await supabase
@@ -430,7 +462,7 @@ export default function PartyLedger() {
       const { data: payments } = await dateRange(
         supabase
           .from('payment_vouchers')
-          .select('id, voucher_date, voucher_number, amount, description, transaction_currency, payment_currency, currency_code, exchange_rate, journal_entry_id')
+          .select('id, voucher_date, voucher_number, amount, description, transaction_currency, payment_currency, currency_code, exchange_rate, journal_entry_id, payment_purpose, settlement_against')
           .eq('supplier_id', selectedParty)
           .eq('is_posted', true),
         'voucher_date',
@@ -441,6 +473,7 @@ export default function PartyLedger() {
 
       if (payments) {
         payments.forEach(pay => {
+          if (pay.payment_purpose === 'supplier_advance' || pay.settlement_against === 'advance') return;
           if (pay.journal_entry_id) pvJeIds.add(pay.journal_entry_id);
           if (pay.voucher_number) pvVoucherNos.add(pay.voucher_number);
 
@@ -490,6 +523,7 @@ export default function PartyLedger() {
 
       if (supplierRefunds) {
         supplierRefunds.forEach(ref => {
+          if (ref.payment_purpose === 'supplier_refund') return;
           if (ref.journal_entry_id) rvJeIds.add(ref.journal_entry_id);
           if (ref.voucher_number) rvVoucherNos.add(ref.voucher_number);
 
@@ -1144,7 +1178,18 @@ export default function PartyLedger() {
                           : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                       }`}
                     >
-                      Supplier Payable Ledger
+                      Trade Payables (2110)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSupplierSubView('advances')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors ${
+                        supplierSubView === 'advances'
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      Advances & Deposits (1170)
                     </button>
                     <button
                       type="button"
