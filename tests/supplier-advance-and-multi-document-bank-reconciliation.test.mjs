@@ -17,6 +17,26 @@ const PG_CONFIG = {
   user: process.env.USER || 'Kunal',
 };
 
+// CRITICAL TEST ISOLATION SAFETY ASSERTION
+const FORBIDDEN_PATTERNS = ['dkrtsqienlhpouohmfki', 'supabase.co', 'pooler.supabase.com', 'aws-1-ap-southeast-1'];
+function assertSafeTestEnvironment(config) {
+  const host = String(config.host || '');
+  const db = String(config.database || '');
+  const envUrl = String(process.env.DATABASE_URL || '');
+  for (const forbidden of FORBIDDEN_PATTERNS) {
+    if (host.includes(forbidden) || db.includes(forbidden) || envUrl.includes(forbidden)) {
+      throw new Error(`CRITICAL: Test suite blocked from running against remote/production database (${forbidden})!`);
+    }
+  }
+  if (!['localhost', '127.0.0.1', '/tmp'].includes(host) && !host.startsWith('/')) {
+    throw new Error(`CRITICAL: Test suite can only run against local unix socket or localhost, got: ${host}`);
+  }
+  if (db !== 'test_supplier_advance_bank_recon') {
+    throw new Error(`CRITICAL: Test suite must target disposable db test_supplier_advance_bank_recon, got: ${db}`);
+  }
+}
+assertSafeTestEnvironment(PG_CONFIG);
+
 function runPsqlCommand(sql, db = 'postgres') {
   return execFileSync('/usr/local/bin/psql', [
     '-h', PG_CONFIG.host,
@@ -208,6 +228,14 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
         $1, 'PT. TRANS EXIS JAYA', 'finance@transexls.co.id', '021-5551234', true
       ) ON CONFLICT (id) DO NOTHING;
     `, [testSupplierId]);
+
+    const pRes = await pool.query(`
+      SELECT id FROM public.accounting_periods
+      WHERE start_date <= '2026-10-15' AND end_date >= '2026-10-15' LIMIT 1;
+    `);
+    if (pRes.rows.length > 0) {
+      periodId = pRes.rows[0].id;
+    }
   });
 
   test.after(async () => {
@@ -243,6 +271,26 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
     `, [expId, testSupplierId]);
 
     const expJeId = '1a2c4c29-f93a-464c-9a9e-04b101f5b12e';
+    const expBillJeId = '1a2c4c29-0000-0000-0000-000000000317';
+    await pool.query(`
+      INSERT INTO public.journal_entries (
+        id, entry_number, entry_date, source_module, reference_id, reference_number,
+        description, total_debit, total_credit, is_posted
+      ) VALUES (
+        $1, 'JE2610-0150', '2026-10-15', 'expense_bill', $2, 'EXP/26/317',
+        'Expense accrual: EXP/26/317', 16002854, 16002854, true
+      ) ON CONFLICT (id) DO NOTHING;
+    `, [expBillJeId, expId]);
+
+    await pool.query(`
+      INSERT INTO public.journal_entry_lines (
+        journal_entry_id, line_number, account_id, description, debit, credit, supplier_id
+      ) VALUES 
+        ($1, 1, $2, 'Operational Expense', 16002854, 0, $3),
+        ($1, 2, $4, 'Accounts Payable - EXP/26/317', 0, 16002854, $3)
+      ON CONFLICT DO NOTHING;
+    `, [expBillJeId, coa6910Id, testSupplierId, coa2110Id]);
+
     await pool.query(`
       INSERT INTO public.journal_entries (
         id, entry_number, entry_date, source_module, reference_id, reference_number,
@@ -257,10 +305,10 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
       INSERT INTO public.journal_entry_lines (
         journal_entry_id, line_number, account_id, description, debit, credit, supplier_id
       ) VALUES 
-        ($1, 1, $2, 'Operational Expense', 16002854, 0, $3),
-        ($1, 2, $4, 'Accounts Payable', 0, 16002854, $3)
+        ($1, 1, $2, 'Accounts Payable - EXP/26/317', 16002854, 0, $3),
+        ($1, 2, $4, 'Bank BCA - IDR (0930201014)', 0, 16002854, $3)
       ON CONFLICT DO NOTHING;
-    `, [expJeId, coa6910Id, testSupplierId, coa2110Id]);
+    `, [expJeId, coa2110Id, testSupplierId, coaBcaId]);
 
     // 3. Link Expense (1st Allocation: Rp 16,002,854)
     const client = await pool.connect();
@@ -558,11 +606,12 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
   test('8. Posted voucher correction through reversal and replacement', async () => {
     // Reset statement line to production initial state: exactly 1 expense allocation, partially_reconciled
     await pool.query(`DELETE FROM public.bank_statement_allocations WHERE bank_statement_line_id = '26fb3731-977e-41d1-a21b-661a29bd7c82' AND document_type = 'payment';`);
+    await pool.query(`UPDATE public.bank_statement_allocations SET journal_entry_id = '1a2c4c29-f93a-464c-9a9e-04b101f5b12e' WHERE bank_statement_line_id = '26fb3731-977e-41d1-a21b-661a29bd7c82' AND document_type = 'expense';`);
     await pool.query(`UPDATE public.bank_statement_lines SET reconciliation_status = 'partially_reconciled' WHERE id = '26fb3731-977e-41d1-a21b-661a29bd7c82';`);
     await pool.query(`UPDATE public.payment_vouchers SET journal_entry_id = NULL WHERE voucher_number = 'PV/26-26/030';`);
     await pool.query(`DELETE FROM public.payment_vouchers WHERE voucher_number = 'PV/26-26/030';`);
-    await pool.query(`DELETE FROM public.journal_entry_lines WHERE journal_entry_id IN (SELECT id FROM public.journal_entries WHERE reference_number = 'PV/26-26/030');`);
-    await pool.query(`DELETE FROM public.journal_entries WHERE reference_number = 'PV/26-26/030';`);
+    await pool.query(`DELETE FROM public.journal_entry_lines WHERE journal_entry_id IN (SELECT id FROM public.journal_entries WHERE reference_number = 'PV/26-26/030' OR source_module = 'expense_payment');`);
+    await pool.query(`DELETE FROM public.journal_entries WHERE reference_number = 'PV/26-26/030' OR source_module = 'expense_payment';`);
 
     // Seed RV2610-0018 with old erroneous journal JE2610-0239 (Cr 2110)
     const rvId = '80b23e4e-ad5b-4d6d-bb60-2e8d25575e76';
@@ -624,13 +673,50 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
     `, [adminUserId])).rows[0].repair_trans_exis_jaya_supplier_advance;
 
     assert.equal(repairRes.success, true);
+    assert.equal(repairRes.status, 'COMPLETED');
     assert.ok(repairRes.reversal_journal.id);
     assert.ok(repairRes.replacement_journal.id);
 
+    // Verify journal numbering: check next_journal_entry_number overload
+    const jeNumOct = (await pool.query(`SELECT public.next_journal_entry_number('2026-10-31'::date) as num;`)).rows[0].num;
+    assert.match(jeNumOct, /^JE2610-\d{4}$/, 'October date must generate JE2610-XXXX');
+    const jeNumCurr = (await pool.query(`SELECT public.next_journal_entry_number() as num;`)).rows[0].num;
+    assert.match(jeNumCurr, /^JE\d{4}-\d{4}$/, 'No-arg overload must generate valid JE prefix');
+
     // Verify old journal is marked reversed
-    const oldJeCheck = (await pool.query(`SELECT is_reversed, reversed_by_id FROM public.journal_entries WHERE id = $1;`, [oldJeId])).rows[0];
+    const oldJeCheck = (await pool.query(`SELECT is_reversed, reversed_by_id, notes FROM public.journal_entries WHERE id = $1;`, [oldJeId])).rows[0];
     assert.equal(oldJeCheck.is_reversed, true);
     assert.equal(oldJeCheck.reversed_by_id, repairRes.reversal_journal.id);
+    assert.match(oldJeCheck.notes, /authoritative advance refund/i);
+
+    // Verify reversal journal metadata
+    const revJe = (await pool.query(`
+      SELECT entry_number, entry_date, period_id, posted_by, created_by,
+             transaction_currency, functional_currency, exchange_rate, amounts_are_functional
+      FROM public.journal_entries
+      WHERE id = $1;
+    `, [repairRes.reversal_journal.id])).rows[0];
+    if (periodId) assert.equal(revJe.period_id, periodId);
+    assert.equal(revJe.posted_by, adminUserId);
+    assert.equal(revJe.transaction_currency, 'IDR');
+    assert.equal(revJe.functional_currency, 'IDR');
+    assert.equal(Number(revJe.exchange_rate), 1);
+    assert.equal(revJe.amounts_are_functional, true);
+
+    // Verify replacement journal metadata
+    const repJe = (await pool.query(`
+      SELECT entry_number, entry_date, period_id, posted_by, created_by,
+             transaction_currency, functional_currency, exchange_rate, amounts_are_functional
+      FROM public.journal_entries
+      WHERE id = $1;
+    `, [repairRes.replacement_journal.id])).rows[0];
+    assert.match(repJe.entry_number, /^JE2610-\d{4}$/);
+    if (periodId) assert.equal(repJe.period_id, periodId);
+    assert.equal(repJe.posted_by, adminUserId);
+    assert.equal(repJe.transaction_currency, 'IDR');
+    assert.equal(repJe.functional_currency, 'IDR');
+    assert.equal(Number(repJe.exchange_rate), 1);
+    assert.equal(repJe.amounts_are_functional, true);
 
     // Verify receipt voucher now links to replacement journal
     const rvCheck = (await pool.query(`SELECT journal_entry_id, adjustment_account_id, adjustment_notes FROM public.receipt_vouchers WHERE id = $1;`, [rvId])).rows[0];
@@ -641,7 +727,7 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
 
     // Verify replacement journal lines credit 1170, not 2110
     const repLines = (await pool.query(`
-      SELECT jel.debit, jel.credit, coa.code
+      SELECT jel.debit, jel.credit, coa.code, jel.transaction_debit, jel.transaction_credit, jel.transaction_currency
       FROM public.journal_entry_lines jel
       JOIN public.chart_of_accounts coa ON coa.id = jel.account_id
       WHERE jel.journal_entry_id = $1
@@ -651,10 +737,13 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
     assert.equal(repLines.length, 3);
     assert.equal(repLines[0].code, '111101');
     assert.equal(Number(repLines[0].debit), 1666000);
+    assert.equal(Number(repLines[0].transaction_debit), 1666000);
     assert.equal(repLines[1].code, '6910');
     assert.equal(Number(repLines[1].debit), 3000);
+    assert.equal(Number(repLines[1].transaction_debit), 3000);
     assert.equal(repLines[2].code, '1170');
     assert.equal(Number(repLines[2].credit), 1669000);
+    assert.equal(Number(repLines[2].transaction_credit), 1669000);
   });
 
   // ----------------------------------------------------------------------------
@@ -788,5 +877,13 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
 
     assert.equal(pvCountAfter, pvCountBefore, 'No duplicate payment voucher must be created on repeated execution');
     assert.equal(jeCountAfter, jeCountBefore, 'No duplicate receipt journal must be created on repeated execution');
+
+    // Concurrent execution simulation: run two concurrent calls under advisory lock
+    const [conc1, conc2] = await Promise.all([
+      pool.query(`SELECT public.repair_trans_exis_jaya_supplier_advance(false, $1::uuid);`, [adminUserId]),
+      pool.query(`SELECT public.repair_trans_exis_jaya_supplier_advance(false, $1::uuid);`, [adminUserId])
+    ]);
+    assert.equal(conc1.rows[0].repair_trans_exis_jaya_supplier_advance.status, 'ALREADY_COMPLETED');
+    assert.equal(conc2.rows[0].repair_trans_exis_jaya_supplier_advance.status, 'ALREADY_COMPLETED');
   });
 });
