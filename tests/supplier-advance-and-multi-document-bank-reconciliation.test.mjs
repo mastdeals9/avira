@@ -556,6 +556,14 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
   // TEST 8: Posted voucher correction through reversal and replacement
   // ----------------------------------------------------------------------------
   test('8. Posted voucher correction through reversal and replacement', async () => {
+    // Reset statement line to production initial state: exactly 1 expense allocation, partially_reconciled
+    await pool.query(`DELETE FROM public.bank_statement_allocations WHERE bank_statement_line_id = '26fb3731-977e-41d1-a21b-661a29bd7c82' AND document_type = 'payment';`);
+    await pool.query(`UPDATE public.bank_statement_lines SET reconciliation_status = 'partially_reconciled' WHERE id = '26fb3731-977e-41d1-a21b-661a29bd7c82';`);
+    await pool.query(`UPDATE public.payment_vouchers SET journal_entry_id = NULL WHERE voucher_number = 'PV/26-26/030';`);
+    await pool.query(`DELETE FROM public.payment_vouchers WHERE voucher_number = 'PV/26-26/030';`);
+    await pool.query(`DELETE FROM public.journal_entry_lines WHERE journal_entry_id IN (SELECT id FROM public.journal_entries WHERE reference_number = 'PV/26-26/030');`);
+    await pool.query(`DELETE FROM public.journal_entries WHERE reference_number = 'PV/26-26/030';`);
+
     // Seed RV2610-0018 with old erroneous journal JE2610-0239 (Cr 2110)
     const rvId = '80b23e4e-ad5b-4d6d-bb60-2e8d25575e76';
     const oldJeId = 'e998a539-9138-43f2-92e2-4311ae1c4b2d';
@@ -762,10 +770,23 @@ test.describe('SAPJ ERP: Complete Supplier Advance, Multi-Document Bank Recon & 
       /already posted/
     );
 
-    // Calling repair dry run multiple times returns consistent ready status without changes
+    // Calling repair dry run on already-completed repair returns ALREADY_COMPLETED idempotently
     const dry1 = (await pool.query(`SELECT public.repair_trans_exis_jaya_supplier_advance(true, $1::uuid);`, [adminUserId])).rows[0].repair_trans_exis_jaya_supplier_advance;
-    const dry2 = (await pool.query(`SELECT public.repair_trans_exis_jaya_supplier_advance(true, $1::uuid);`, [adminUserId])).rows[0].repair_trans_exis_jaya_supplier_advance;
-    assert.equal(dry1.status, 'READY_FOR_AUTHORIZATION');
-    assert.equal(dry2.status, 'READY_FOR_AUTHORIZATION');
+    assert.equal(dry1.status, 'ALREADY_COMPLETED');
+    assert.equal(dry1.already_repaired, true);
+
+    // Calling live repair again ALSO returns ALREADY_COMPLETED without creating duplicate vouchers or journals
+    const pvCountBefore = (await pool.query(`SELECT count(*) FROM public.payment_vouchers WHERE reference_number = '1510/FTSCY/WS95051';`)).rows[0].count;
+    const jeCountBefore = (await pool.query(`SELECT count(*) FROM public.journal_entries WHERE source_module = 'receipt' AND reference_id = $1;`, [rvId])).rows[0].count;
+
+    const live2 = (await pool.query(`SELECT public.repair_trans_exis_jaya_supplier_advance(false, $1::uuid);`, [adminUserId])).rows[0].repair_trans_exis_jaya_supplier_advance;
+    assert.equal(live2.status, 'ALREADY_COMPLETED');
+    assert.equal(live2.already_repaired, true);
+
+    const pvCountAfter = (await pool.query(`SELECT count(*) FROM public.payment_vouchers WHERE reference_number = '1510/FTSCY/WS95051';`)).rows[0].count;
+    const jeCountAfter = (await pool.query(`SELECT count(*) FROM public.journal_entries WHERE source_module = 'receipt' AND reference_id = $1;`, [rvId])).rows[0].count;
+
+    assert.equal(pvCountAfter, pvCountBefore, 'No duplicate payment voucher must be created on repeated execution');
+    assert.equal(jeCountAfter, jeCountBefore, 'No duplicate receipt journal must be created on repeated execution');
   });
 });

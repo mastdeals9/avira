@@ -1268,11 +1268,42 @@ DECLARE
   v_rv_id               uuid := '80b23e4e-ad5b-4d6d-bb60-2e8d25575e76'::uuid; -- RV2610-0018
   v_old_rv_je_id        uuid := 'e998a539-9138-43f2-92e2-4311ae1c4b2d'::uuid; -- JE2610-0239
   v_expense_id          uuid := '25974efd-37fe-400c-b635-514387acbb45'::uuid; -- EXP/26/317
+  v_exp_je_id           uuid := '1a2c4c29-f93a-464c-9a9e-04b101f5b12e'::uuid; -- JE2610-0196
   v_bank_account_id     uuid := 'bfe79829-07d1-48ed-8965-ff9d367d758e'::uuid; -- BCA IDR
+  
+  -- Accounts
   v_bank_coa            uuid;
+  v_bank_coa_code       text;
   v_coa_1170            uuid;
   v_coa_2110            uuid;
   v_coa_6910            uuid;
+  
+  -- State variables
+  v_bank_before         numeric;
+  v_bank_after          numeric;
+  
+  -- Existing records check
+  v_bsl_15              public.bank_statement_lines%ROWTYPE;
+  v_bsl_30              public.bank_statement_lines%ROWTYPE;
+  v_rv                  public.receipt_vouchers%ROWTYPE;
+  v_old_je              public.journal_entries%ROWTYPE;
+  v_exp                 public.finance_expenses%ROWTYPE;
+  v_exp_je              public.journal_entries%ROWTYPE;
+  v_period_15_open      boolean;
+  v_period_31_open      boolean;
+  
+  -- Allocations check
+  v_bsl_15_alloc_sum    numeric;
+  v_bsl_15_alloc_count  int;
+  v_exp_alloc           public.bank_statement_allocations%ROWTYPE;
+  
+  -- Idempotency check: existing payment voucher & replacement
+  v_existing_pv         public.payment_vouchers%ROWTYPE;
+  v_is_already_repaired boolean := false;
+  v_existing_rep_je     public.journal_entries%ROWTYPE;
+  v_existing_rev_je     public.journal_entries%ROWTYPE;
+  
+  -- Generated IDs
   v_pv_id               uuid;
   v_pv_number           text;
   v_pv_je_id            uuid;
@@ -1282,9 +1313,11 @@ DECLARE
   v_rep_je_id           uuid;
   v_rep_je_number       text;
   v_pv_alloc_id         uuid;
-  v_bank_before         numeric;
-  v_bank_after          numeric;
+  
+  -- Dynamic validation errors
+  v_errors              text[] := ARRAY[]::text[];
 BEGIN
+  -- 1. Security Authorization Check
   IF auth.role() = 'authenticated' AND auth.uid() IS NOT NULL THEN
     PERFORM public._sec_check_finance_role();
   ELSIF auth.role() = 'anon' THEN
@@ -1293,24 +1326,231 @@ BEGIN
 
   v_actor := COALESCE(auth.uid(), p_actor, '1075a773-bb55-4296-bc71-af2eab9a0780'::uuid);
 
-  -- Resolve Accounts
+  -- 2. Validate Chart of Accounts (COA 1170, 111101, 2110, 6910)
   SELECT id INTO v_coa_1170 FROM public.chart_of_accounts WHERE code = '1170' AND is_active = true AND is_header = false LIMIT 1;
-  IF v_coa_1170 IS NULL THEN RAISE EXCEPTION 'Account 1170 (Supplier Advances & Deposits) does not exist'; END IF;
+  IF v_coa_1170 IS NULL THEN v_errors := array_append(v_errors, 'COA 1170 (Supplier Advances & Deposits) does not exist, is inactive, or is marked as header'); END IF;
 
   SELECT id INTO v_coa_6910 FROM public.chart_of_accounts WHERE code = '6910' AND is_active = true AND is_header = false LIMIT 1;
-  IF v_coa_6910 IS NULL THEN RAISE EXCEPTION 'Account 6910 does not exist'; END IF;
+  IF v_coa_6910 IS NULL THEN v_errors := array_append(v_errors, 'COA 6910 (Settlement Discount & Rounding Difference) does not exist, is inactive, or is marked as header'); END IF;
 
   SELECT id INTO v_coa_2110 FROM public.chart_of_accounts WHERE code = '2110' AND is_active = true AND is_header = false LIMIT 1;
-  IF v_coa_2110 IS NULL THEN RAISE EXCEPTION 'Account 2110 does not exist'; END IF;
+  IF v_coa_2110 IS NULL THEN v_errors := array_append(v_errors, 'COA 2110 (Accounts Payable) does not exist, is inactive, or is marked as header'); END IF;
 
-  SELECT coa_id, current_balance INTO v_bank_coa, v_bank_before FROM public.bank_accounts WHERE id = v_bank_account_id;
+  SELECT ba.coa_id, coa.code, ba.current_balance 
+  INTO v_bank_coa, v_bank_coa_code, v_bank_before
+  FROM public.bank_accounts ba
+  JOIN public.chart_of_accounts coa ON coa.id = ba.coa_id
+  WHERE ba.id = v_bank_account_id AND ba.is_active = true AND coa.is_active = true AND coa.is_header = false;
+  
+  IF v_bank_coa IS NULL THEN
+    v_errors := array_append(v_errors, 'Bank account BCA IDR (' || v_bank_account_id::text || ') is inactive or has invalid COA mapping');
+  ELSIF v_bank_coa_code <> '111101' THEN
+    v_errors := array_append(v_errors, 'Bank account BCA IDR is mapped to COA ' || v_bank_coa_code || ', expected 111101');
+  END IF;
 
-  -- Dry Run Return Plan
+  -- 3. Validate Bank Statement Line 15 Oct 2026 (26fb3731-977e-41d1-a21b-661a29bd7c82)
+  SELECT * INTO v_bsl_15 FROM public.bank_statement_lines WHERE id = v_bank_line_id;
+  IF v_bsl_15.id IS NULL THEN
+    v_errors := array_append(v_errors, 'Bank statement line 15 Oct 2026 (' || v_bank_line_id::text || ') not found');
+  ELSE
+    IF v_bsl_15.debit_amount <> 17671854.00 THEN
+      v_errors := array_append(v_errors, 'Bank statement line 15 Oct debit amount is ' || v_bsl_15.debit_amount::text || ', expected 17671854.00');
+    END IF;
+    IF upper(COALESCE(v_bsl_15.currency, 'IDR')) <> 'IDR' THEN
+      v_errors := array_append(v_errors, 'Bank statement line 15 Oct currency is ' || v_bsl_15.currency || ', expected IDR');
+    END IF;
+    
+    SELECT count(*), COALESCE(sum(allocation_amount), 0)
+    INTO v_bsl_15_alloc_count, v_bsl_15_alloc_sum
+    FROM public.bank_statement_allocations
+    WHERE bank_statement_line_id = v_bank_line_id;
+
+    SELECT * INTO v_exp_alloc
+    FROM public.bank_statement_allocations
+    WHERE bank_statement_line_id = v_bank_line_id AND document_type = 'expense' AND document_id = v_expense_id;
+
+    IF v_exp_alloc.id IS NULL THEN
+      v_errors := array_append(v_errors, 'Bank statement line 15 Oct lacks expected expense allocation for ' || v_expense_id::text);
+    ELSIF v_exp_alloc.allocation_amount <> 16002854.00 THEN
+      v_errors := array_append(v_errors, 'Expense allocation amount is ' || v_exp_alloc.allocation_amount::text || ', expected 16002854.00');
+    END IF;
+  END IF;
+
+  -- 4. Validate Original Expense Journal JE2610-0196 (1a2c4c29-f93a-464c-9a9e-04b101f5b12e)
+  SELECT * INTO v_exp_je FROM public.journal_entries WHERE id = v_exp_je_id;
+  IF v_exp_je.id IS NULL THEN
+    v_errors := array_append(v_errors, 'Expense journal JE2610-0196 (' || v_exp_je_id::text || ') not found');
+  ELSE
+    IF NOT v_exp_je.is_posted THEN v_errors := array_append(v_errors, 'Expense journal JE2610-0196 is not posted'); END IF;
+    IF COALESCE(v_exp_je.is_reversed, false) THEN v_errors := array_append(v_errors, 'Expense journal JE2610-0196 is unexpectedly marked as reversed'); END IF;
+    IF v_exp_je.total_debit <> 16002854.00 OR v_exp_je.total_credit <> 16002854.00 THEN
+      v_errors := array_append(v_errors, 'Expense journal JE2610-0196 total is ' || v_exp_je.total_debit::text || ', expected 16002854.00');
+    END IF;
+  END IF;
+
+  -- 5. Validate Bank Statement Line 30 Oct 2026 (b0757040-9080-455f-9ff8-6aa00e0331f7)
+  SELECT * INTO v_bsl_30 FROM public.bank_statement_lines WHERE id = v_refund_line_id;
+  IF v_bsl_30.id IS NULL THEN
+    v_errors := array_append(v_errors, 'Refund bank statement line 30 Oct (' || v_refund_line_id::text || ') not found');
+  ELSE
+    IF v_bsl_30.credit_amount <> 1666000.00 THEN
+      v_errors := array_append(v_errors, 'Refund bank statement credit amount is ' || v_bsl_30.credit_amount::text || ', expected 1666000.00');
+    END IF;
+    IF upper(COALESCE(v_bsl_30.currency, 'IDR')) <> 'IDR' THEN
+      v_errors := array_append(v_errors, 'Refund bank statement line currency is ' || v_bsl_30.currency || ', expected IDR');
+    END IF;
+  END IF;
+
+  -- 6. Validate Receipt Voucher RV2610-0018 (80b23e4e-ad5b-4d6d-bb60-2e8d25575e76)
+  SELECT * INTO v_rv FROM public.receipt_vouchers WHERE id = v_rv_id;
+  IF v_rv.id IS NULL THEN
+    v_errors := array_append(v_errors, 'Receipt voucher RV2610-0018 (' || v_rv_id::text || ') not found');
+  ELSE
+    IF v_rv.supplier_id IS DISTINCT FROM v_supplier_id THEN
+      v_errors := array_append(v_errors, 'Receipt voucher RV2610-0018 supplier_id is ' || COALESCE(v_rv.supplier_id::text, 'null') || ', expected ' || v_supplier_id::text);
+    END IF;
+    IF v_rv.amount <> 1666000.00 THEN
+      v_errors := array_append(v_errors, 'Receipt voucher RV2610-0018 amount is ' || v_rv.amount::text || ', expected 1666000.00');
+    END IF;
+    IF v_rv.settlement_discount <> 3000.00 THEN
+      v_errors := array_append(v_errors, 'Receipt voucher RV2610-0018 settlement_discount is ' || v_rv.settlement_discount::text || ', expected 3000.00');
+    END IF;
+    IF NOT v_rv.is_posted THEN
+      v_errors := array_append(v_errors, 'Receipt voucher RV2610-0018 is not posted');
+    END IF;
+  END IF;
+
+  -- 7. Validate Accounting Periods (open for 2026-10-15 and 2026-10-31)
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'accounting_periods' AND column_name = 'status') THEN
+    EXECUTE 'SELECT COALESCE(bool_or(status = ''open''), false) FROM public.accounting_periods WHERE ''2026-10-15''::date BETWEEN start_date AND end_date' INTO v_period_15_open;
+    EXECUTE 'SELECT COALESCE(bool_or(status = ''open''), false) FROM public.accounting_periods WHERE ''2026-10-31''::date BETWEEN start_date AND end_date' INTO v_period_31_open;
+  ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'accounting_periods' AND column_name = 'is_closed') THEN
+    EXECUTE 'SELECT COALESCE(bool_or(is_closed = false), false) FROM public.accounting_periods WHERE ''2026-10-15''::date BETWEEN start_date AND end_date' INTO v_period_15_open;
+    EXECUTE 'SELECT COALESCE(bool_or(is_closed = false), false) FROM public.accounting_periods WHERE ''2026-10-31''::date BETWEEN start_date AND end_date' INTO v_period_31_open;
+  ELSE
+    v_period_15_open := true;
+    v_period_31_open := true;
+  END IF;
+
+  IF NOT v_period_15_open THEN
+    v_errors := array_append(v_errors, 'Accounting period covering 2026-10-15 is closed or not found');
+  END IF;
+  IF NOT v_period_31_open THEN
+    v_errors := array_append(v_errors, 'Accounting period covering 2026-10-31 is closed or not found');
+  END IF;
+
+  -- 8. Check Genuine Idempotency: Has the repair already been executed?
+  -- Identify exact supplier advance PV using: supplier_id, amount, payment_purpose, settlement_against, and reference_number
+  SELECT * INTO v_existing_pv
+  FROM public.payment_vouchers
+  WHERE supplier_id = v_supplier_id
+    AND amount = 1669000.00
+    AND payment_purpose = 'supplier_advance'
+    AND settlement_against = 'advance'
+    AND reference_number = '1510/FTSCY/WS95051'
+    AND is_posted = true
+  ORDER BY created_at DESC LIMIT 1;
+
+  -- Check if receipt voucher is already relinked to replacement journal
+  IF v_rv.id IS NOT NULL AND v_rv.journal_entry_id IS NOT NULL AND v_rv.journal_entry_id <> v_old_rv_je_id THEN
+    SELECT * INTO v_existing_rep_je FROM public.journal_entries WHERE id = v_rv.journal_entry_id AND source_module = 'receipt' AND reference_id = v_rv_id;
+  END IF;
+
+  -- Check if original journal JE2610-0239 is already reversed
+  SELECT * INTO v_old_je FROM public.journal_entries WHERE id = v_old_rv_je_id;
+  IF v_old_je.id IS NOT NULL AND COALESCE(v_old_je.is_reversed, false) = true AND v_old_je.reversed_by_id IS NOT NULL THEN
+    SELECT * INTO v_existing_rev_je FROM public.journal_entries WHERE id = v_old_je.reversed_by_id;
+  END IF;
+
+  IF v_existing_pv.id IS NOT NULL 
+     AND v_existing_rep_je.id IS NOT NULL 
+     AND v_existing_rev_je.id IS NOT NULL 
+     AND v_old_je.is_reversed = true 
+  THEN
+    v_is_already_repaired := true;
+  END IF;
+
+  -- If not already repaired, original journal JE2610-0239 MUST be in active unreversed state
+  IF NOT v_is_already_repaired THEN
+    IF v_old_je.id IS NULL THEN
+      v_errors := array_append(v_errors, 'Original receipt journal JE2610-0239 (' || v_old_rv_je_id::text || ') not found');
+    ELSE
+      IF NOT v_old_je.is_posted THEN v_errors := array_append(v_errors, 'Original receipt journal JE2610-0239 is not posted'); END IF;
+      IF COALESCE(v_old_je.is_reversed, false) THEN v_errors := array_append(v_errors, 'Original receipt journal JE2610-0239 is already reversed but replacement is incomplete'); END IF;
+      IF v_old_je.total_debit <> 1669000.00 OR v_old_je.total_credit <> 1669000.00 THEN
+        v_errors := array_append(v_errors, 'Original receipt journal JE2610-0239 total is ' || v_old_je.total_debit::text || ', expected 1669000.00');
+      END IF;
+    END IF;
+  END IF;
+
+  -- 9. If any validation errors exist, halt and return failure
+  IF array_length(v_errors, 1) > 0 THEN
+    RETURN jsonb_build_object(
+      'dry_run', p_dry_run,
+      'status', 'VALIDATION_FAILED',
+      'summary', 'Dynamic pre-condition validation failed for PT TRANS EXIS JAYA repair',
+      'error_count', array_length(v_errors, 1),
+      'validation_errors', to_jsonb(v_errors)
+    );
+  END IF;
+
+  -- 10. Genuine Idempotency Short-Circuit: If already repaired, return current state without touching records
+  IF v_is_already_repaired THEN
+    RETURN jsonb_build_object(
+      'dry_run', p_dry_run,
+      'status', 'ALREADY_COMPLETED',
+      'already_repaired', true,
+      'summary', 'PT TRANS EXIS JAYA supplier advance and refund repair is already fully executed and balanced',
+      'payment_voucher', jsonb_build_object('id', v_existing_pv.id, 'number', v_existing_pv.voucher_number, 'journal_id', v_existing_pv.journal_entry_id),
+      'reversal_journal', jsonb_build_object('id', v_existing_rev_je.id, 'number', v_existing_rev_je.entry_number),
+      'replacement_journal', jsonb_build_object('id', v_existing_rep_je.id, 'number', v_existing_rep_je.entry_number),
+      'receipt_voucher', jsonb_build_object('id', v_rv.id, 'number', v_rv.voucher_number, 'adjustment_account_id', v_rv.adjustment_account_id),
+      'bank_balance_current', v_bank_before
+    );
+  END IF;
+
+  -- 11. Dry-Run Planning Output (Dynamic validation passed, returns execution plan)
   IF p_dry_run THEN
     RETURN jsonb_build_object(
       'dry_run', true,
       'status', 'READY_FOR_AUTHORIZATION',
-      'summary', 'Proposed atomic accounting correction for PT TRANS EXIS JAYA supplier advance and refund',
+      'validation_passed', true,
+      'summary', 'Dynamic pre-condition validation passed. Ready for authorized atomic execution.',
+      'validated_records', jsonb_build_object(
+        'supplier', jsonb_build_object('id', v_supplier_id, 'name', 'PT. TRANS EXIS JAYA'),
+        'bank_statement_15oct', jsonb_build_object(
+          'id', v_bank_line_id,
+          'total_debit', v_bsl_15.debit_amount,
+          'existing_expense_allocation', v_exp_alloc.allocation_amount,
+          'unallocated_remainder', (v_bsl_15.debit_amount - v_exp_alloc.allocation_amount),
+          'reconciliation_status', v_bsl_15.reconciliation_status
+        ),
+        'bank_statement_30oct', jsonb_build_object(
+          'id', v_refund_line_id,
+          'credit_amount', v_bsl_30.credit_amount,
+          'reconciliation_status', v_bsl_30.reconciliation_status
+        ),
+        'expense_journal', jsonb_build_object('id', v_exp_je.id, 'entry_number', v_exp_je.entry_number, 'total', v_exp_je.total_debit),
+        'erroneous_receipt_journal', jsonb_build_object(
+          'id', v_old_je.id,
+          'entry_number', v_old_je.entry_number,
+          'total', v_old_je.total_debit,
+          'erroneous_ap_credit', 1669000.00
+        ),
+        'receipt_voucher', jsonb_build_object(
+          'id', v_rv.id,
+          'voucher_number', v_rv.voucher_number,
+          'refund_amount', v_rv.amount,
+          'settlement_discount', v_rv.settlement_discount
+        ),
+        'coa_mapping', jsonb_build_object(
+          '1170_supplier_advances', v_coa_1170,
+          '111101_bank_bca_idr', v_bank_coa,
+          '2110_accounts_payable', v_coa_2110,
+          '6910_settlement_diff', v_coa_6910
+        ),
+        'accounting_periods', jsonb_build_object('period_15oct_open', v_period_15_open, 'period_31oct_open', v_period_31_open)
+      ),
       'actions', jsonb_build_array(
         jsonb_build_object(
           'step', 1,
@@ -1319,7 +1559,9 @@ BEGIN
           'amount', 1669000.00,
           'voucher_date', '2026-10-15',
           'payment_purpose', 'supplier_advance',
-          'journal', jsonb_build_object(
+          'settlement_against', 'advance',
+          'reference_number', '1510/FTSCY/WS95051',
+          'proposed_journal', jsonb_build_object(
             'Dr 1170 Supplier Advances & Deposits', 1669000.00,
             'Cr 111101 Bank BCA - IDR', 1669000.00
           )
@@ -1340,9 +1582,9 @@ BEGIN
           'original_journal_id', v_old_rv_je_id,
           'original_journal_entry', 'JE2610-0239',
           'reversal_lines', jsonb_build_object(
+            'Dr 2110 Accounts Payable (reverses erroneous AP credit)', 1669000.00,
             'Cr 111101 Bank BCA - IDR', 1666000.00,
-            'Cr 6910 Settlement Discount', 3000.00,
-            'Dr 2110 Accounts Payable (reverses erroneous AP credit)', 1669000.00
+            'Cr 6910 Settlement Discount', 3000.00
           )
         ),
         jsonb_build_object(
@@ -1364,8 +1606,8 @@ BEGIN
         )
       ),
       'net_balance_impact', jsonb_build_object(
-        '1170_supplier_advances', 'Rp 1,669,000 Dr - Rp 1,669,000 Cr = Rp 0 Net Balance',
-        '2110_accounts_payable', 'Erroneous Rp 1,669,000 credit reversed -> Net 0 AP change',
+        '1170_supplier_advances', 'Rp 1,669,000 Dr (PV) - Rp 1,669,000 Cr (RV) = Rp 0 Net Balance',
+        '2110_accounts_payable', 'Erroneous Rp 1,669,000 credit reversed by Dr Rp 1,669,000 -> Net 0 AP change',
         '6910_settlement_difference', 'Rp 3,000 Dr preserved',
         '111101_bank_bca_idr', 'Credits full Rp 17,671,854 actual bank debit instead of Rp 16,002,854'
       )
@@ -1374,16 +1616,19 @@ BEGIN
 
   -- ==============================================================================
   -- EXECUTION MODE (Only runs when p_dry_run = false and authorized)
+  -- Uses strict row-level locking in hierarchical order to ensure transactional safety
   -- ==============================================================================
 
-  -- Step 1: Create and Post Payment Voucher for Rp 1,669,000 (if not already existing / linked)
-  SELECT document_id INTO v_pv_id
-  FROM public.bank_statement_allocations
-  WHERE bank_statement_line_id = v_bank_line_id
-    AND document_type = 'payment'
-  LIMIT 1;
+  -- Row-level locking
+  PERFORM id FROM public.bank_accounts WHERE id = v_bank_account_id FOR UPDATE;
+  PERFORM id FROM public.bank_statement_lines WHERE id = v_bank_line_id FOR UPDATE;
+  PERFORM id FROM public.bank_statement_lines WHERE id = v_refund_line_id FOR UPDATE;
+  PERFORM id FROM public.suppliers WHERE id = v_supplier_id FOR UPDATE;
+  PERFORM id FROM public.receipt_vouchers WHERE id = v_rv_id FOR UPDATE;
+  PERFORM id FROM public.journal_entries WHERE id = v_old_rv_je_id FOR UPDATE;
 
-  IF v_pv_id IS NULL THEN
+  -- Step 1: Create and Post Payment Voucher for Rp 1,669,000 (if not already existing)
+  IF v_existing_pv.id IS NULL THEN
     v_pv_number := public.next_payment_voucher_number('2026-10-15'::date);
     INSERT INTO public.payment_vouchers (
       voucher_number,
@@ -1421,7 +1666,8 @@ BEGIN
 
     PERFORM public.post_payment_voucher(v_pv_id, v_actor);
   ELSE
-    SELECT voucher_number INTO v_pv_number FROM public.payment_vouchers WHERE id = v_pv_id;
+    v_pv_id := v_existing_pv.id;
+    v_pv_number := v_existing_pv.voucher_number;
   END IF;
 
   SELECT journal_entry_id INTO v_pv_je_id FROM public.payment_vouchers WHERE id = v_pv_id;
@@ -1516,3 +1762,6 @@ BEGIN
   );
 END;
 $function$;
+
+REVOKE EXECUTE ON FUNCTION public.repair_trans_exis_jaya_supplier_advance(boolean, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.repair_trans_exis_jaya_supplier_advance(boolean, uuid) TO authenticated, service_role;
