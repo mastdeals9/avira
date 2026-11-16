@@ -7,7 +7,8 @@
 -- Author: Antigravity AI — SAPJ ERP
 -- Date: 16 November 2026
 --
--- STATUS: PROPOSED ONLY — DO NOT EXECUTE WITHOUT EXPLICIT MANAGEMENT APPROVAL
+-- STATUS: EXECUTED AND VERIFIED ON PRODUCTION (2026-11-16T13:16:31.936Z)
+-- HISTORICAL RECORD OF EXECUTION — DO NOT EXECUTE AGAIN
 -- ============================================================================
 
 -- ============================================================================
@@ -83,7 +84,12 @@ DECLARE
   v_rows_updated INT;
 BEGIN
   -- ── 1. CONCURRENT LOCKING (ROW-LEVEL EXCLUSIVE LOCK) ──────────────────────
-  -- Acquire row lock immediately to block concurrent receive_purchase_invoice_item calls
+  -- Lock purchase invoice items first to prevent incoming receiving allocations
+  PERFORM 1 FROM public.purchase_invoice_items 
+   WHERE batch_id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d' 
+     FOR UPDATE;
+
+  -- Then acquire exclusive row lock on the batch record
   SELECT id, batch_number, import_quantity, current_stock, cost_per_unit, 
          landed_cost_per_unit, import_price_per_unit, final_landed_cost, expiry_date
     INTO v_batch
@@ -94,11 +100,6 @@ BEGIN
   IF NOT FOUND THEN
     RAISE EXCEPTION 'PRECONDITION FAILED: Batch 34d352ef does not exist';
   END IF;
-
-  -- Lock purchase invoice items for this batch
-  PERFORM 1 FROM public.purchase_invoice_items 
-   WHERE batch_id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d' 
-     FOR UPDATE;
 
   -- ── 2. PRECONDITION ASSERTIONS (FAIL FAST) ────────────────────────────────
   -- Assertion A: Batch identity and unreceived starting state

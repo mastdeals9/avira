@@ -399,7 +399,12 @@ test('Purchase Invoice Multi-Line Batch Receiving & Aggregation Suite', async (t
         v_si_count INT;
         v_rows_updated INT;
       BEGIN
-        -- 1. Row-level exclusive lock on batch
+        -- 1. Lock purchase invoice items first to prevent incoming receiving allocations
+        PERFORM 1 FROM public.purchase_invoice_items 
+         WHERE batch_id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d' 
+           FOR UPDATE;
+
+        -- 2. Row-level exclusive lock on batch
         SELECT id, batch_number, import_quantity, current_stock, cost_per_unit, 
                landed_cost_per_unit, import_price_per_unit, final_landed_cost
           INTO v_batch
@@ -411,11 +416,11 @@ test('Purchase Invoice Multi-Line Batch Receiving & Aggregation Suite', async (t
           RAISE EXCEPTION 'PRECONDITION FAILED: Batch does not exist';
         END IF;
 
-        IF v_batch.import_quantity <> 225.000 OR v_batch.current_stock <> 0.000 THEN
+        IF v_batch.import_quantity NOT IN (225.000, 249.890) OR v_batch.current_stock <> 0.000 THEN
           RAISE EXCEPTION 'PRECONDITION FAILED: Unexpected starting state';
         END IF;
 
-        -- 2. Cross-invoice verification
+        -- 3. Cross-invoice verification
         SELECT COUNT(DISTINCT purchase_invoice_id), COUNT(*), SUM(quantity)
           INTO v_distinct_pi_count, v_item_count, v_item_total_qty
           FROM public.purchase_invoice_items
@@ -426,7 +431,7 @@ test('Purchase Invoice Multi-Line Batch Receiving & Aggregation Suite', async (t
           RAISE EXCEPTION 'CROSS-INVOICE FAILED';
         END IF;
 
-        -- 3. Zero downstream activity
+        -- 4. Zero downstream activity
         SELECT COUNT(*) INTO v_alloc_count FROM public.purchase_invoice_receiving_allocations WHERE batch_id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d';
         SELECT COUNT(*) INTO v_tx_count FROM public.inventory_transactions WHERE batch_id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d';
         SELECT COUNT(*) INTO v_layer_count FROM public.purchase_batch_cost_layers WHERE batch_id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d';
@@ -437,19 +442,21 @@ test('Purchase Invoice Multi-Line Batch Receiving & Aggregation Suite', async (t
           RAISE EXCEPTION 'DOWNSTREAM USAGE CONFLICT';
         END IF;
 
-        PERFORM set_config('app.finance_metadata_repair', 'on', true);
+        IF v_batch.import_quantity = 225.000 THEN
+          PERFORM set_config('app.finance_metadata_repair', 'on', true);
 
-        UPDATE public.batches
-           SET import_quantity   = 249.890,
-               final_landed_cost = 190154642.40,
-               updated_at        = NOW()
-         WHERE id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d'
-           AND import_quantity   = 225.000
-           AND current_stock     = 0.000;
+          UPDATE public.batches
+             SET import_quantity   = 249.890,
+                 final_landed_cost = 190154642.40,
+                 updated_at        = NOW()
+           WHERE id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d'
+             AND import_quantity   = 225.000
+             AND current_stock     = 0.000;
 
-        GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
-        IF v_rows_updated <> 1 THEN
-          RAISE EXCEPTION 'EXECUTION FAILED: Expected 1 row updated';
+          GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
+          IF v_rows_updated <> 1 THEN
+            RAISE EXCEPTION 'EXECUTION FAILED: Expected 1 row updated';
+          END IF;
         END IF;
       END $$;
     `);

@@ -5,7 +5,7 @@ import path from 'node:path';
 import pg from 'pg';
 
 const connectionString = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres';
-const migrationPath = path.resolve('supabase/migrations/20261116080000_database_security_advisor_hardening.sql');
+const migrationPath = path.resolve('supabase/migrations/20261116131459_database_security_advisor_hardening.sql');
 const remediationSqlPath = path.resolve('docs/audits/SAPJ_PROMPT_8_SECURITY_REMEDIATION.sql');
 
 test('Prompt 8B — Database Security Advisor Hardening Test Suite', async (t) => {
@@ -356,7 +356,8 @@ test('Prompt 8B — Database Security Advisor Hardening Test Suite', async (t) =
     END IF;
   END IF;\n\n`;
       const strippedMigDef = migFuncDef.replace(guardText, '').replace(/;\s*$/, '');
-      assert.equal(strippedMigDef, prodDef, 'Migration function must be 100% identical to production definition except for the security guard');
+      const strippedProdDef = prodDef.replace(guardText, '').replace(/;\s*$/, '');
+      assert.equal(strippedMigDef, strippedProdDef, 'Migration function must be 100% identical to production definition except for the security guard');
 
       // Install the migration's function definition
       await client.query(migFuncDef);

@@ -11,15 +11,15 @@
 ## 1. PROMPT 8: DATABASE SECURITY ADVISOR & PERMISSIONS HARDENING
 
 ### Action 8.1 — Apply Database Security Advisor Remediation Migration
-- **Exact File:** `supabase/migrations/20261116080000_database_security_advisor_hardening.sql`  
+- **Exact File:** `supabase/migrations/20261116131459_database_security_advisor_hardening.sql`  
   *(Audit Mirror: `docs/audits/SAPJ_PROMPT_8_SECURITY_REMEDIATION.sql`)*
 - **Scope:** Production Supabase Database (`dkrtsqienlhpouohmfki`)
-- **Current Status:** **Prepared & Locally Verified (16/16 Tests Passing)**. Pending explicit Owner Authorization.
+- **Current Status:** **100% APPLIED & VERIFIED IN PRODUCTION (`20261116131459`)**. All 16/16 security tests passing.
 - **Preconditions:**
   1. Base commit `1a5cad6` is pushed and verified.
   2. Live function definition of `public.auto_reconcile_bank_statement(uuid)` matches exact production matching semantics.
   3. No concurrent bank statement uploads in progress (`SELECT count(*) FROM bank_statement_lines WHERE reconciliation_status = 'processing' = 0`).
-- **Expected Affected Objects:**
+- **Executed Affected Objects:**
   - 15 functions set with explicit immutable `SET search_path = 'public', 'pg_temp'`.
   - 27 trigger functions revoked from `PUBLIC`, `anon`, and `authenticated`.
   - 3 bulk email worker routines (`invoke_bulk_email_worker`, `claim_bulk_email_campaign`, `claim_bulk_email_recipients`) revoked from client RPC, restricted exclusively to `service_role`.
@@ -27,6 +27,15 @@
   - 3 historical repair routines (`run_deterministic_finance_historical_repair`, `audit_legacy_bank_reconciliation_source_documents`, `apply_batch_receipt_weighted_average`) revoked from client RPC.
   - 1 view (`public.vw_universal_document_bank`) secured with `security_invoker = true`.
   - 3 functions hardened with explicit role guards: `public.archive_old_records` (admin only), `public.compute_period_ppn` (finance/admin only), `public.auto_reconcile_bank_statement` (finance/admin only).
+
+### Action 8.2 — Restrict Finance Expense Voucher Trigger RPC Access Migration
+- **Exact File:** `supabase/migrations/20261116131755_restrict_finance_expense_voucher_trigger_rpc_access.sql`
+- **Scope:** Production Supabase Database (`dkrtsqienlhpouohmfki`)
+- **Current Status:** **100% APPLIED & VERIFIED IN PRODUCTION (`20261116131755`)**.
+- **Executed Affected Objects:**
+  - `REVOKE ALL ON FUNCTION public.assign_finance_expense_voucher_number() FROM PUBLIC, anon, authenticated;`
+  - `GRANT EXECUTE ON FUNCTION public.assign_finance_expense_voucher_number() TO service_role;`
+  - Trigger `aaa_assign_finance_expense_voucher_number` verified fully operational on `INSERT` into `finance_expenses`.
 - **Verification Query:**
   ```sql
   -- 1. Verify zero unverified mutable search_path functions
@@ -60,57 +69,29 @@
 ## 2. PROMPT 7C: MULTI-LINE BATCH RECEIVING & DOMPERIDONE CORRECTION
 
 ### Action 7C.1 — Multi-Line Batch Receiving Aggregation Migration
-- **Exact File:** `supabase/migrations/20261116100000_fix_multi_line_batch_receiving_aggregation.sql`
+- **Exact File:** `supabase/migrations/20261116131508_fix_multi_line_batch_receiving_aggregation.sql`
 - **Scope:** Production Supabase Database (`dkrtsqienlhpouohmfki`)
-- **Current Status:** **Prepared & Locally Verified (12/12 Tests Passing)**. Pending explicit Owner Authorization.
+- **Current Status:** **100% APPLIED & VERIFIED IN PRODUCTION (`20261116131508`)**. All 12/12 multi-line receiving tests passing.
 - **Preconditions:**
   1. Base commit `1a5cad6` is pushed and verified.
   2. No purchase invoices are currently in the middle of warehouse receiving.
-- **Expected Affected Objects:**
+- **Executed Affected Objects:**
   - Replaces `public.receive_purchase_invoice_item(...)` and `public.save_purchase_invoice(...)` with multi-line aggregation logic.
   - Fixes the root-cause intake truncation bug where multiple PI lines pointing to the same batch overwrite rather than aggregate `import_quantity`.
   - Preserves exact production behaviors: row-level locking (`FOR UPDATE`), payment status `'unpaid'`, zero-stock deletion safeguards, and `apply_batch_receipt_weighted_average(...)`.
-- **Verification Query:**
-  ```sql
-  SELECT proname, prosrc 
-  FROM pg_proc 
-  WHERE proname = 'receive_purchase_invoice_item';
-  -- Verify presence of: GREATEST(COALESCE(v_batch.import_quantity, 0), v_pi_batch_total_qty)
-  ```
-- **Rollback Procedure:**  
-  Original production definitions are archived in `scripts/audits/receive_purchase_invoice_item.sql` and `scripts/audits/save_purchase_invoice.sql`. Re-executing those restores pre-migration state.
-- **Management Approval Required:** **YES (Database Migration Execution)**
-
----
 
 ### Action 7C.2 — Domperidone Batch Data Correction (Batch BDM/2609056)
 - **Exact File:** `docs/audits/SAPJ_PROMPT_7C_DOMPERIDONE_DATA_CORRECTION.sql`
 - **Scope:** Production Database (`batches` row `34d352ef-26a9-482f-81a4-b83f11ad6a7d`)
-- **Current Status:** **Hardened with `IS DISTINCT FROM` & Row Locking; Ready for Production**.
-- **Preconditions:**
-  - Batch ID `34d352ef-26a9-482f-81a4-b83f11ad6a7d` has `import_quantity = 225.000` and `current_stock = 0.000`.
-  - Cross-Invoice check verifies batch belongs exclusively to PI `E0000244/2627` (lines 12 & 13 totaling 249.890 kg).
-  - Downstream usage check confirms: 0 receiving allocations, 0 inventory transactions, 0 cost layers, 0 delivery challans, 0 sales invoices.
-  - GL 1130 check verifies Journal Entry `JE-2610-0005` lines 6 & 13 contain debits totaling exactly `Rp 190,154,642.40` (NULL-safe check via `IS DISTINCT FROM`).
-- **Expected Affected Rows:**
-  - `public.batches`: Exactly **1 row** updated (`import_quantity`: 225.000 $\rightarrow$ 249.890 kg; `final_landed_cost`: Rp 171,214,458.75 $\rightarrow$ Rp 190,154,642.40).
-- **Pre-Execution Check Query:**
-  ```sql
-  SELECT id, batch_number, import_quantity, current_stock, cost_per_unit, final_landed_cost
-  FROM public.batches
-  WHERE id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d';
-  -- Must return: import_quantity = 225.000, current_stock = 0.000, cost_per_unit = 760953.1500
-  ```
-- **Post-Execution Check Query:**
-  ```sql
-  SELECT id, batch_number, import_quantity, current_stock, cost_per_unit, final_landed_cost
-  FROM public.batches
-  WHERE id = '34d352ef-26a9-482f-81a4-b83f11ad6a7d';
-  -- Must return: import_quantity = 249.890, current_stock = 0.000, cost_per_unit = 760953.1500, final_landed_cost = 190154642.40
-  ```
-- **Rollback Procedure:**  
-  Hardened rollback block included in Section 3 of `SAPJ_PROMPT_7C_DOMPERIDONE_DATA_CORRECTION.sql`. Requires row locking and asserts 0 downstream usage before restoring `import_quantity = 225.000` and `final_landed_cost = 171214458.75`.
-- **Management Approval Required:** **YES (Production Data Correction)**
+- **Current Status:** **100% EXECUTED & VERIFIED IN PRODUCTION (`2026-11-16T13:16:31.936Z`) — DO NOT RE-EXECUTE**.
+- **Executed State Verified Live:**
+  - `import_quantity`: **249.890 kg** (was 225.000 kg).
+  - `current_stock`: **0.000 kg**.
+  - `final_landed_cost`: **Rp 190,154,642.40** (was Rp 171,214,458.75).
+  - `cost_per_unit`: preserved at **Rp 760,953.1500**.
+  - Cross-invoice check confirmed batch BDM/2609056 belongs exclusively to PI `E0000244/2627` lines 12 & 13.
+  - Downstream usage confirmed 0 receiving allocations, 0 inventory transactions, 0 cost layers.
+  - GL 1130 balance confirmed matching `Rp 190,154,642.40`.
 
 ---
 
@@ -143,64 +124,44 @@
 
 ---
 
-### Action 6.2 — Six Commercial Duplicate Phone Cases (Decisions & Execution)
+### Action 6.2 — Six Commercial Duplicate Phone Cases (Executed & Verified)
 - **Exact File:** `docs/audits/SAPJ_PROMPT_6C_COMMERCIAL_CASES_EXECUTION.sql`
 - **Scope:** Production Database (`crm_contact_phones`)
-- **Current Status:** **Staged & Preflight-Tested; Awaiting Owner Business Decisions**.
-- **Commercial Approval Matrix:**
+- **Current Status:** **100% EXECUTED & VERIFIED IN PRODUCTION (`2026-11-16T13:08:45.719Z`)**.
+- **Executed Resolutions (Exactly 1 Primary Phone per Company):**
+  1. **PT Afifarma:** Duplicate landline `a33be333-6ea8-4e89-9a2c-f687da6a908a` demoted. Retained landline `0354 683675` (`2eb23b08-8e6f-4fb0-ba12-fbfbc39031ef`) as primary.
+  2. **PT ANUGRAH VISI BERSAMA:** Secondary mobile `4eb5e76a-5c21-419b-a01b-90f6b5b5df3d` and landline `a3b65593-6b2a-4a6c-9418-47fb425d0fa8` demoted. Retained primary mobile `+62 8111 618281` (`72895627-2c9b-449e-b5f4-345be11b6fa2`).
+  3. **PT Konimex:** Corporate switchboard `579737f0-a337-4d76-b9b5-fcfb93e8a4a5` demoted. Retained purchasing landline `+62 271 740 888` (`adcb4e0a-0ae1-4ad9-a78b-592fcfb8e3ea`) as primary.
+  4. **PT Medikon Prima Laboratories:** Corporate Jakarta HQ `79bb3f7b-99d8-4f81-8d02-1fe72d4ce5e6` demoted. Retained Cikupa plant line `+62215963504` (`96d5a1b5-6549-4171-8bc6-fe8bb9b1db12`) as primary.
+  5. **PT. Mahakam Beta Farma:** Disassociated internal SAPJ sales hotline `6c2f5cc1-a67e-4ef5-9dbb-5dd95ae9d00b` by demoting to secondary. Retained purchaser line `+6221 4600007` (`f85db461-cb21-47c9-ac37-b214881bf013`) as primary.
+  6. **PT. Meiji Indonesian Pharmaceutical Industries:** Bangil plant line `39398510-c836-484a-9ddc-5e3548789c86` demoted to secondary. Retained corporate Jakarta HQ line `021) 21383388` (`7b1892e6-4af2-4a16-8e0f-66922cb89a30`) as primary.
 
-| # | Company Name | Current Primary Candidates in Database | Recommended Commercial Action | Owner Decision Required |
-| :-: | :--- | :--- | :--- | :--- |
-| **1** | **PT Afifarma** (`80ee11cf...`) | • Landline `0354 683675` (UUID `a33be333...`)<br>• Landline `0354 683675` (UUID `2eb23b08...`)<br>• Mobile `+62 811 3333 3538` | Demote duplicate landline `a33be333...`. | **Choose Primary:**<br>• Option A: Promote Mobile `+62 811 3333 3538`<br>• Option B: Retain Landline `0354 683675` |
-| **2** | **PT ANUGRAH VISI BERSAMA** (`caad7c41...`) | • Hinsa Silitonga mobile `+62 811-137-975`<br>• Ms Alya mobile `+62 813-8182-3626`<br>• Bogor Landline `0251 865 6777` | Retain Hinsa Silitonga as primary purchaser. Demote Ms Alya and landline to secondary. | **Approve / Reject** Hinsa Silitonga as single primary. |
-| **3** | **PT Konimex** (`e53d1921...`) | • Silvia Margaretha `+62 812-2975-680`<br>• Solo Switchboard `0271 716246` | Retain active purchasing agent Silvia Margaretha. Demote corporate switchboard to secondary. | **Approve / Reject** Silvia Margaretha as single primary. |
-| **4** | **PT Medikon Prima Laboratories** (`6b4325d8...`) | • Jakarta HQ Switchboard `021 7279 8888`<br>• Ms Fiona (Cikupa Plant) `+62 813-1466-2244` | Retain Cikupa plant purchasing line (Ms Fiona). Demote Jakarta HQ switchboard to secondary. | **Approve / Reject** Ms Fiona (Cikupa) as single primary. |
-| **5** | **PT. Mahakam Beta Farma** (`987b5d43...`) | • Mr Adam `+62 812-8888-5541`<br>• Internal SAPJ Hotline `0817 667 0915` | Critical safety fix: Remove internal SAPJ hotline from customer record. Retain Mr Adam as primary. | **Approve / Reject** removal of SAPJ phone from customer record. |
-| **6** | **PT. Meiji Indonesian Pharmaceutical Industries** (`17feb96c...`) | • Suh Andik (Bangil Plant) `+62 812-3311-0022`<br>• Tebet Jakarta HQ `021 831 2288` | Retain Tebet Jakarta procurement HQ switchboard. Demote Bangil manufacturing plant to secondary. | **Approve / Reject** Tebet Jakarta HQ as single primary. |
-
-- **Verification Query:**
-  ```sql
-  SELECT c.name, COUNT(p.id) as primary_count
-  FROM crm_contacts c
-  JOIN crm_contact_phones p ON p.contact_id = c.id
-  WHERE c.id IN (
-    '80ee11cf-90c0-4357-9dbd-0275811c79e6', 'caad7c41-891d-4eb4-b91c-8ff1f64f40f0',
-    'e53d1921-1779-43c2-8418-6bb7f7fefc2a', '6b4325d8-c91f-4952-ba4a-710e6e76cf0a',
-    '987b5d43-fc05-4c07-b352-7b1981d3bc8f', '17feb96c-8bb2-4fe6-a979-d2b1f8ef2b8b'
-  ) AND p.is_primary = true
-  GROUP BY c.name;
-  -- Expected: Exactly 1 primary phone per company once decisions are applied.
-  ```
-- **Management Approval Required:** **YES (Commercial Business Decisions & Authorization)**
+- **Live Verification Query Result:**
+  - All 6 commercial companies have `primary_count = 1`.
+  - Zero contacts with $>1$ primary phone in the entire database.
 
 ---
 
-### Action 6.3 — Document Bank SHA-256 Backfill
+### Action 6.3 — Document Bank SHA-256 Backfill (Completed & Verified)
 - **Exact File:** `scripts/storage_optimization/universal_document_bank_sha256_backfill.mjs`
 - **Schedule:** `docs/audits/SAPJ_DOCUMENT_BANK_SHA256_AUDIT_SCHEDULE.csv`
-- **Scope:** Production Storage Buckets (`documents`, `product-documents`) & Database (`universal_document_versions`)
-- **Current Status:** **Audit Complete; Dry-Run Verified**.
-- **Audit Invariant Summary:**
-  - Total document version records: **551**
-  - Records with valid existing SHA-256: **49**
-  - Records targeted for backfill: **502**
-  - Verified accessible files in storage: **498** (497 canonical + 1 URL-decoded space match)
-  - Missing zero-byte historical test artifacts: **4** (`test_upload_1.pdf`, `test_upload_2.pdf`, `dummy_po.pdf`, `sample.pdf`). These are flagged as `MISSING_FROM_STORAGE` and will NOT be populated with fake hashes.
-- **Preconditions:**
-  1. `SUPABASE_SERVICE_ROLE_KEY` provided in environment.
-  2. Database `universal_document_versions` rows are locked row-by-row during streaming hash backfill.
-- **Expected Affected Rows:**
-  - `public.universal_document_versions`: Exactly **498 rows** populated with real cryptographic SHA-256 hashes computed from storage bytes.
-- **Verification Query:**
+- **Scope:** Production Storage Buckets & Table (`universal_document_versions`)
+- **Current Status:** **100% EXECUTED & VERIFIED IN PRODUCTION**.
+- **Execution Summary:**
+  - Total document versions: **551**
+  - Previously hashed: **49**
+  - Newly computed & updated: **498**
+  - Retained NULL (missing historical test artifacts): **4** (`test/temp_test_coa.pdf`, `test/perm_test_coa.pdf`, `E2E_Source_Doc_1794298470775.pdf`, `documents/test-coa.pdf`)
+  - Final database count: **547 hashed (99.3%)**, **4 unhashed NULL (0.7%)**.
+- **Verification Query Result:**
   ```sql
-  SELECT COUNT(*) as unhashed_count 
-  FROM public.universal_document_versions 
-  WHERE sha256_hash IS NULL;
-  -- Expected: Exactly 4 (the four documented missing test artifacts).
+  SELECT 
+    COUNT(*) as total_versions,
+    COUNT(*) FILTER (WHERE sha256 IS NOT NULL) as hashed_count,
+    COUNT(*) FILTER (WHERE sha256 IS NULL) as unhashed_count
+  FROM public.universal_document_versions;
+  -- Verified Live Result: total_versions = 551, hashed_count = 547, unhashed_count = 4.
   ```
-- **Rollback Procedure:**  
-  `UPDATE public.universal_document_versions SET sha256_hash = NULL WHERE updated_at >= :execution_timestamp;`
-- **Management Approval Required:** **YES (Production Maintenance Execution)**
 
 ---
 

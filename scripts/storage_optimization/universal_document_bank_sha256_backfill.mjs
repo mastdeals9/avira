@@ -81,9 +81,23 @@ async function main() {
 
         try {
           // Download file binary from private bucket using authenticated storage client
-          const { data: fileBlob, error: downloadError } = await supabase.storage
+          let { data: fileBlob, error: downloadError } = await supabase.storage
             .from(storage_bucket)
             .download(storage_path);
+
+          // If not found and path has URL encodings (e.g. %20), attempt with decoded path
+          if ((downloadError || !fileBlob) && storage_path.includes('%')) {
+            try {
+              const decodedPath = decodeURIComponent(storage_path);
+              const retry = await supabase.storage
+                .from(storage_bucket)
+                .download(decodedPath);
+              if (retry.data && !retry.error) {
+                fileBlob = retry.data;
+                downloadError = null;
+              }
+            } catch (_) {}
+          }
 
           if (downloadError || !fileBlob) {
             missingObjectCount++;

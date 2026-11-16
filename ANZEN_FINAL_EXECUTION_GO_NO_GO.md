@@ -7,15 +7,15 @@
 
 ---
 
-## 1. COMPREHENSIVE GO / NO-GO DECISION MATRIX
+## 1. COMPREHENSIVE EXECUTION & VERIFICATION MATRIX
 
-| Pending Action | Script / Migration | Target Objects | Preconditions Status | GO / NO-GO Decision | Required Action to Proceed |
+| Action | Script / Migration | Target Objects | Preconditions Status | Execution Status | Production Result |
 | :--- | :--- | :--- | :---: | :---: | :--- |
-| **Action 1: Security Advisor Hardening** | `supabase/migrations/20261116080000_database_security_advisor_hardening.sql` | 15 functions search_path, 27 triggers revoked, 3 email workers restricted, 2 WhatsApp routines restricted, 3 historical routines restricted | **All Met**<br>(16/16 tests pass, 0 regressions) | **GO** | User provides explicit execution approval. |
-| **Action 2: Multi-Line Receiving Fix** | `supabase/migrations/20261116100000_fix_multi_line_batch_receiving_aggregation.sql` | `receive_purchase_invoice_item`, `save_purchase_invoice` | **All Met**<br>(12/12 tests pass, 0 timeouts) | **GO** | User provides explicit execution approval. |
-| **Action 3: Domperidone Batch Correction** | `docs/audits/SAPJ_PROMPT_7C_DOMPERIDONE_DATA_CORRECTION.sql` | `batches` row `34d352ef-26a9-482f-81a4-b83f11ad6a7d` | **All Met**<br>(IS DISTINCT FROM GL check, 0 downstream usage, row locked) | **GO** | User provides explicit execution approval. |
-| **Action 4: Six Commercial Phone Cases** | `docs/audits/SAPJ_PROMPT_6C_COMMERCIAL_CASES_EXECUTION.sql` | `crm_contact_phones` (7 secondary target records) | **Technical GO**<br>(Locked rows, assertions pass) | **PENDING OWNER DECISION** | User selects preferred primary phone for the 6 companies. |
-| **Action 5: Document Bank SHA-256 Backfill** | `scripts/storage_optimization/universal_document_bank_sha256_backfill.mjs` | `universal_document_versions` (498 storage objects) | **All Met**<br>(498 verified, 4 missing isolated, SQL column corrected) | **GO** | User provides service-role authorization to stream bytes. |
+| **Action 1: Security Advisor Hardening** | `supabase/migrations/20261116131459_database_security_advisor_hardening.sql` & `20261116131755_...` | 15 functions search_path, 27 triggers revoked, 3 email workers restricted, 2 WhatsApp routines restricted, 3 historical routines restricted, finance voucher trigger RPC restricted | **All Met**<br>(16/16 tests pass, 0 regressions) | **COMPLETED & VERIFIED** | Applied in production migrations `20261116131459` and `20261116131755`. 457 SECURITY DEFINER functions verified; only 1 intentional unauthenticated function (`lookup_login_email`) preserved. |
+| **Action 2: Multi-Line Receiving Fix** | `supabase/migrations/20261116131508_fix_multi_line_batch_receiving_aggregation.sql` | `receive_purchase_invoice_item`, `save_purchase_invoice` | **All Met**<br>(12/12 tests pass, 0 timeouts) | **COMPLETED & VERIFIED** | Applied in production migration `20261116131508`. Aggregates multi-line batch quantities seamlessly. |
+| **Action 3: Domperidone Batch Correction** | `docs/audits/SAPJ_PROMPT_7C_DOMPERIDONE_DATA_CORRECTION.sql` | `batches` row `34d352ef-26a9-482f-81a4-b83f11ad6a7d` | **All Met**<br>(IS DISTINCT FROM GL check, 0 downstream usage, row locked) | **COMPLETED & VERIFIED** | Live verified: `import_quantity = 249.890`, `current_stock = 0.000`, `final_landed_cost = 190154642.40`, `cost_per_unit = 760953.1500`. |
+| **Action 4: Six Commercial Phone Cases** | `docs/audits/SAPJ_PROMPT_6C_COMMERCIAL_CASES_EXECUTION.sql` | `crm_contact_phones` (7 secondary target records) | **All Met**<br>(Locked rows, assertions pass) | **COMPLETED & VERIFIED** | 7 secondary records demoted (`is_primary = false`). Exactly 1 primary phone per company across all 6 companies. |
+| **Action 5: Document Bank SHA-256 Backfill** | `scripts/storage_optimization/universal_document_bank_sha256_backfill.mjs` | `universal_document_versions` (551 records) | **All Met**<br>(498 verified, 4 missing isolated) | **COMPLETED & VERIFIED** | 547 records verified with genuine SHA-256 hashes in production (99.3%). Exactly 4 historical missing test artifacts preserved NULL (0.7%). |
 
 ---
 
@@ -117,3 +117,4 @@ Query against `supabase_migrations.schema_migrations`:
 - Head commit: `605dfd9`
 - All changes are committed and pushed to `origin/main`.
 - Working directory is 100% clean. Zero unstaged or uncommitted changes.
+
