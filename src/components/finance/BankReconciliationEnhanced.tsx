@@ -704,15 +704,16 @@ export function BankReconciliationEnhanced({
   useEffect(() => {
     if (selectedBank) {
       loadStatementLines();
+      void loadAccountBalances();
     }
-  }, [selectedBank, financeDateRange]);
+  }, [selectedBank, financeDateRange, dateRange.end]);
 
   const loadAccountBalances = async () => {
     if (!selectedBank) return;
     try {
-      const today = new Date().toISOString().split('T')[0];
+      const asOfDate = dateRange.end || financeDateRange.endDate || new Date().toISOString().split('T')[0];
       const { data, error } = await supabase
-        .rpc('get_bank_account_balances', { p_as_of_date: today });
+        .rpc('get_bank_account_balances', { p_as_of_date: asOfDate });
       if (!error && data) {
         const row = (data as any[]).find((b: any) => b.bank_account_id === selectedBank);
         if (row) {
@@ -1661,6 +1662,10 @@ export function BankReconciliationEnhanced({
   };
 
   const handleExcelUpload = async (file: File) => {
+    if (file.size > 25 * 1024 * 1024) {
+      alert('❌ File exceeds maximum supported size of 25MB.');
+      return;
+    }
     try {
       const reader = new FileReader();
       reader.onload = async (event) => {
@@ -2425,6 +2430,19 @@ export function BankReconciliationEnhanced({
         created_by: user.id,
       });
 
+      const expenseId = typeof savedExpense === 'string' ? savedExpense : (savedExpense as any)?.id;
+      let voucherNumber = 'EXP (pending assignment)';
+      if (expenseId) {
+        const { data: expRow } = await supabase
+          .from('finance_expenses')
+          .select('id, voucher_number')
+          .eq('id', expenseId)
+          .maybeSingle();
+        if (expRow?.voucher_number) {
+          voucherNumber = expRow.voucher_number;
+        }
+      }
+
       setRecordModal(false);
       setRecordingLine(null);
       selfActionTimestampRef.current = Date.now();
@@ -2435,7 +2453,7 @@ export function BankReconciliationEnhanced({
         title: 'Expense recorded as pending',
         message: 'An authorized approver must approve it before this bank transaction can be linked.',
         details: [
-          { label: 'Expense ID', value: typeof savedExpense === 'string' ? savedExpense.slice(0, 8) : 'Generated' },
+          { label: 'Voucher Number', value: voucherNumber },
           { label: 'Amount', value: formatCurrency(line.debit, line.currency) },
           { label: 'Category', value: category },
           { label: 'Date', value: new Date(line.date).toLocaleDateString('id-ID') },
@@ -3180,8 +3198,8 @@ export function BankReconciliationEnhanced({
         // appeared in Supplier Payment but the link failed with
         // "Payment voucher not yet posted (no journal entry)."
         if (!pv.journal_entry_id) return false;
-        // Advance-adjustment vouchers never touch the bank — exclude them.
-        if (pv.payment_method === 'advance_adjustment') return false;
+        // Advance-adjustment and cash vouchers never touch the bank — exclude them.
+        if (pv.payment_method === 'advance_adjustment' || pv.payment_method === 'cash') return false;
         // If the voucher pinned a specific bank account, restrict to matches on that account.
         if (pv.bank_account_id && selectedBank && pv.bank_account_id !== selectedBank) return false;
         return true;
@@ -7213,6 +7231,16 @@ export function BankReconciliationEnhanced({
             await loadExpenses();
             notifyFinanceReconciliationRefresh();
             const isApproved = savedExpense.approval_status === 'approved';
+            let voucherNumber = savedExpense.voucher_number;
+            if (!voucherNumber && savedExpense.id) {
+              const { data: expRow } = await supabase
+                .from('finance_expenses')
+                .select('voucher_number')
+                .eq('id', savedExpense.id)
+                .maybeSingle();
+              voucherNumber = expRow?.voucher_number;
+            }
+            const displayVoucher = voucherNumber || 'EXP (pending assignment)';
             setActionFeedback({
               type: 'success',
               title: isApproved ? 'Expense recorded & reconciled' : 'Expense recorded as pending',
@@ -7220,7 +7248,7 @@ export function BankReconciliationEnhanced({
                 ? 'Expense created, approved, posted to general ledger, and reconciled to bank transaction.'
                 : 'Expense created and linked to statement line. An authorized approver must approve it before posting.',
               details: [
-                { label: 'Expense ID', value: savedExpense.id.slice(0, 8) },
+                { label: 'Voucher Number', value: displayVoucher },
                 { label: 'Amount', value: formatCurrency(savedExpense.amount, savedExpense.transaction_currency) },
                 { label: 'Category', value: savedExpense.expense_category },
                 { label: 'Date', value: new Date(savedExpense.expense_date).toLocaleDateString('id-ID') },

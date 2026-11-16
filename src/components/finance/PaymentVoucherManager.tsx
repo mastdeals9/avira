@@ -1069,11 +1069,20 @@ export function PaymentVoucherManager({
     selectedBank !== null &&
     formData.exchange_rate <= 0;
   const effectiveRate = isCrossCurrency ? formData.exchange_rate : 1;
-  const invoiceInBankCurrency = formData.amount * effectiveRate;
+  const rawInvoiceInBankCurrency = formData.amount * effectiveRate;
+  const invoiceInBankCurrency = bankCurrency === 'IDR'
+    ? Math.round(rawInvoiceInBankCurrency)
+    : Math.round(rawInvoiceInBankCurrency * 100) / 100;
   const bankCharge = formData.bank_charge || 0;
   const netInvoiceAmount = formData.amount - formData.pph_amount;
-  const convertedPaymentAmount = netInvoiceAmount * effectiveRate;
-  const totalBankDebit = convertedPaymentAmount + bankCharge;
+  const rawConvertedPaymentAmount = netInvoiceAmount * effectiveRate;
+  const convertedPaymentAmount = bankCurrency === 'IDR'
+    ? Math.round(rawConvertedPaymentAmount)
+    : Math.round(rawConvertedPaymentAmount * 100) / 100;
+  const rawTotalBankDebit = convertedPaymentAmount + bankCharge;
+  const totalBankDebit = bankCurrency === 'IDR'
+    ? Math.round(rawTotalBankDebit)
+    : Math.round(rawTotalBankDebit * 100) / 100;
   const netBankDebit = totalBankDebit;
   const totalAllocated = allocations.reduce((sum, a) => sum + a.amount, 0);
   const totalRoundOff = allocations.reduce((sum, a) => sum + (a.roundOffAmount || 0), 0);
@@ -1530,8 +1539,16 @@ export function PaymentVoucherManager({
         return;
       }
       if (bankReconExpectedAmount == null || Math.abs(totalBankDebit - bankReconExpectedAmount) > 0.01) {
+        const diff = Math.abs(totalBankDebit - (bankReconExpectedAmount || 0));
+        const formatDetailed = (val: number) => {
+          return `${val.toLocaleString(bankCurrency === 'IDR' ? 'id-ID' : 'en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 4,
+          })} ${bankCurrency}`;
+        };
         alert(
-          `Actual bank debit (${fmt(totalBankDebit, bankCurrency)}) must exactly equal the selected bank statement amount (${fmt(bankReconExpectedAmount || 0, bankCurrency)}). ` +
+          `Actual bank debit (${fmt(totalBankDebit, bankCurrency)}) must exactly equal the selected bank statement amount (${fmt(bankReconExpectedAmount || 0, bankCurrency)}).\n` +
+          `Difference: ${formatDetailed(diff)} (Actual: ${formatDetailed(totalBankDebit)}, Statement: ${formatDetailed(bankReconExpectedAmount || 0)}).\n` +
           'Adjust the gross amount, PPh, or bank charge so the existing payment voucher settles the statement exactly.',
         );
         return;
@@ -2617,7 +2634,7 @@ export function PaymentVoucherManager({
                     name="converted_bankcurrency"
                     aria-label="Converted ({bankCurrency})"
                     readOnly
-                    value={invoiceInBankCurrency.toLocaleString('id-ID', { minimumFractionDigits: 0 })}
+                    value={invoiceInBankCurrency.toLocaleString(bankCurrency === 'IDR' ? 'id-ID' : 'en-US', { minimumFractionDigits: bankCurrency === 'IDR' ? 0 : 2, maximumFractionDigits: bankCurrency === 'IDR' ? 0 : 2 })}
                     className="w-full h-9 px-2.5 text-xs border border-green-200 rounded-md bg-green-50 text-green-800 font-mono font-medium text-right"
                   />
                 </div>
@@ -2641,7 +2658,7 @@ export function PaymentVoucherManager({
                     name="total_bank_debit_bankcurrency"
                     aria-label="Total Bank Debit ({bankCurrency})"
                     readOnly
-                    value={totalBankDebit.toLocaleString('id-ID', { minimumFractionDigits: 0 })}
+                    value={totalBankDebit.toLocaleString(bankCurrency === 'IDR' ? 'id-ID' : 'en-US', { minimumFractionDigits: bankCurrency === 'IDR' ? 0 : 2, maximumFractionDigits: bankCurrency === 'IDR' ? 0 : 2 })}
                     className="w-full h-9 px-2.5 text-xs border border-gray-200 rounded-md bg-blue-50 text-blue-900 font-bold font-mono text-right"
                   />
                 </div>
