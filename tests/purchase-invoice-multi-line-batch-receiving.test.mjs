@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import crypto from 'node:crypto';
 
-const connectionString = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres';
+const connectionString = process.env.TEST_DATABASE_URL;
+if (!connectionString) {
+  throw new Error('TEST_DATABASE_URL environment variable is required to run multi-line batch receiving tests. Hardcoded credentials are strictly prohibited.');
+}
 
 test('Purchase Invoice Multi-Line Batch Receiving & Aggregation Suite', async (t) => {
   let client;

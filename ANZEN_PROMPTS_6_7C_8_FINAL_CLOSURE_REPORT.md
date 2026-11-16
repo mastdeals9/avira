@@ -42,10 +42,13 @@ Verification against `supabase_migrations.schema_migrations` confirms **0 pendin
 5. **Role-Based Authorization Guards:** Explicit finance/admin guards enforced in `public.auto_reconcile_bank_statement`, `public.compute_period_ppn`, and `public.archive_old_records`.
 6. **Voucher Numbering Trigger RPC Restriction:** `assign_finance_expense_voucher_number()` revoked from `PUBLIC`, `anon`, `authenticated`, and granted to `service_role`. Verified live that trigger `aaa_assign_finance_expense_voucher_number` continues to automatically generate voucher numbers (e.g., `EXP/26/373`) on expense insertion without error.
 
-### 3.2 Security Advisor Audit
+### 3.2 Security Advisor Audit & Remaining Findings
 - **Total `SECURITY DEFINER` functions in `public` schema:** 457.
 - **Unauthenticated (`anon`) accessible routines:** Exactly **1** function (`public.lookup_login_email`).
-- **Justification:** `lookup_login_email` is intentionally accessible to unauthenticated callers to enable username-to-email resolution for user sign-in. It is protected with strict input validation, regex sanitization, and low execution overhead. Zero unauthorized data exposure exists.
+- **Justification for `lookup_login_email`:** `lookup_login_email` is intentionally accessible to unauthenticated callers to enable username-to-email resolution for user sign-in. It is protected with strict input validation, regex sanitization, and low execution overhead. Zero unauthorized data exposure exists.
+- **Authenticated `SECURITY DEFINER` Functions Analysis:** Supabase Database Advisor flags functions running as definer if granted to role `authenticated`. In an ERP kernel with granular row-level security and complex multi-table transactional workflows (posting journal ledgers, computing withholding taxes, managing batch allocations and universal document storage), these functions intentionally use `SECURITY DEFINER` with fixed `SET search_path = 'public', 'pg_temp'` and internal caller identity checks (`auth.uid()`, `user_profiles.role IN ('admin', 'accounts')`). Indiscriminately revoking `authenticated` execution from legitimate application functions would break core ERP business operations.
+- **`pg_net` Extension Schema Placement:** The `pg_net` extension is maintained in its dedicated schema. Certain automated advisors suggest placing all extensions in `extensions` or `public`, but altering `pg_net`'s established installation schema risks disrupting Supabase platform webhooks and background HTTP dispatch mechanisms; it is retained in its platform-managed configuration.
+- **Leaked-Password Protection Configuration:** The Supabase Auth leaked-password check (evaluating passwords against HaveIBeenPwned) is an administrative platform-level configuration toggle located in the Supabase Dashboard (under Authentication > Security settings), rather than an application-level SQL migration. It has been documented for platform administrator enablement.
 
 ---
 
@@ -78,12 +81,12 @@ All 7 secondary phone candidates across the 6 commercial companies were demoted 
 
 | Company | Contact ID | Retained Primary Phone | Phone Type | Demoted Secondary Phone(s) |
 | :--- | :--- | :--- | :--- | :--- |
-| **PT Afifarma** | `80ee11cf...` | `0354 683675` | landline | `0354 683675` (duplicate) |
-| **PT ANUGRAH VISI BERSAMA** | `caad7c41...` | `+62 8111 618281` | valid_mobile | `+62 811-137-975`, `0251 865 6777` |
-| **PT Konimex** | `e53d1921...` | `+62 271 740 888` | landline | `0271 716246` (switchboard) |
-| **PT Medikon Prima Laboratories** | `6b4325d8...` | `+62215963504` | landline | `021 7279 8888` (HQ switchboard) |
-| **PT. Mahakam Beta Farma** | `987b5d43...` | `+6221 4600007` | landline | `0817 667 0915` (internal SAPJ phone) |
-| **PT. Meiji Indonesian Pharmaceutical** | `17feb96c...` | `021) 21383388` | landline | `021 831 2288` (HQ switchboard) |
+| **PT Afifarma** | `80ee11cf-7eb3-4054-bd65-b1bafcf2686b` | `0354 683675` | landline | `0354 683675` (duplicate phone ID `a33be333-4bca-46b0-b855-633dc8bf605e`) |
+| **PT ANUGRAH VISI BERSAMA** | `caad7c41-ad40-47ba-bde0-bf3f505390fa` | `+62 8111 618281` (Hinsa Silitonga) | valid_mobile | `+6281387845840` (Ms Alya), `021  84943347` (landline) |
+| **PT Konimex** | `e53d1921-62fa-4310-b0da-91535adbe194` | `+62 271 740 888` (Silvia Margaretha) | landline | `0271 716246` (landline) |
+| **PT Medikon Prima Laboratories** | `6b4325d8-b79a-4602-9fd0-91e0df65bd03` | `+62215963504` (Ms Fiona) | landline | `021 29032210` (landline) |
+| **PT. Mahakam Beta Farma** | `987b5d43-e04d-419b-a399-a5240096cfdd` | `+6221 4600007` (Mr Adam) | landline | `0817 667 0915` (Adam Setiono / internal hotline) |
+| **PT. Meiji Indonesian Pharmaceutical** | `17feb96c-4506-4913-87ae-81f778f101cc` | `021) 21383388` (Mr Suhandik) | landline | `0343  741102` (Suh Andik / plant landline) |
 
 Across the entire production database, zero contacts possess more than 1 primary phone.
 
@@ -113,10 +116,11 @@ Using `scripts/storage_optimization/universal_document_bank_sha256_backfill.mjs`
 
 ---
 
-## 7. Sign-Off & Closure Status
+## 7. Sign-Off, Git State & Deployment Status
 
 - **Prompt 8 (Database Security):** **CLOSED & VERIFIED**
 - **Prompt 7C (Multi-Line Receiving & Domperidone):** **CLOSED & VERIFIED**
 - **Prompt 6 (CRM Phone De-duplication & Document Bank SHA-256):** **CLOSED & VERIFIED**
-- **Deployment Action:** None taken. As mandated by operational rules, zero deployments or remote Git pushes beyond approved verification have been performed.
+- **Git Commit Baseline:** Commit `96835e6` (`fix(closure): final post-production migration sync, document bank backfill and verification`) is recorded as committed and pushed to `origin/main`.
+- **Application Deployment Status:** **NO APPLICATION DEPLOYMENT PERFORMED**. The production deployment tracking ref (`deploy/main`) remains at `9e8f133`. No remote production deployment, container restart, or cloud build trigger has been executed.
 

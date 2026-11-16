@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 
-const connectionString = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres';
+const connectionString = process.env.TEST_DATABASE_URL;
+if (!connectionString) {
+  throw new Error('TEST_DATABASE_URL environment variable is required to run database security hardening tests. Hardcoded credentials are strictly prohibited.');
+}
 const migrationPath = path.resolve('supabase/migrations/20261116131459_database_security_advisor_hardening.sql');
 const remediationSqlPath = path.resolve('docs/audits/SAPJ_PROMPT_8_SECURITY_REMEDIATION.sql');
 

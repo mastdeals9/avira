@@ -129,12 +129,12 @@
 - **Scope:** Production Database (`crm_contact_phones`)
 - **Current Status:** **100% EXECUTED & VERIFIED IN PRODUCTION (`2026-11-16T13:08:45.719Z`)**.
 - **Executed Resolutions (Exactly 1 Primary Phone per Company):**
-  1. **PT Afifarma:** Duplicate landline `a33be333-6ea8-4e89-9a2c-f687da6a908a` demoted. Retained landline `0354 683675` (`2eb23b08-8e6f-4fb0-ba12-fbfbc39031ef`) as primary.
-  2. **PT ANUGRAH VISI BERSAMA:** Secondary mobile `4eb5e76a-5c21-419b-a01b-90f6b5b5df3d` and landline `a3b65593-6b2a-4a6c-9418-47fb425d0fa8` demoted. Retained primary mobile `+62 8111 618281` (`72895627-2c9b-449e-b5f4-345be11b6fa2`).
-  3. **PT Konimex:** Corporate switchboard `579737f0-a337-4d76-b9b5-fcfb93e8a4a5` demoted. Retained purchasing landline `+62 271 740 888` (`adcb4e0a-0ae1-4ad9-a78b-592fcfb8e3ea`) as primary.
-  4. **PT Medikon Prima Laboratories:** Corporate Jakarta HQ `79bb3f7b-99d8-4f81-8d02-1fe72d4ce5e6` demoted. Retained Cikupa plant line `+62215963504` (`96d5a1b5-6549-4171-8bc6-fe8bb9b1db12`) as primary.
-  5. **PT. Mahakam Beta Farma:** Disassociated internal SAPJ sales hotline `6c2f5cc1-a67e-4ef5-9dbb-5dd95ae9d00b` by demoting to secondary. Retained purchaser line `+6221 4600007` (`f85db461-cb21-47c9-ac37-b214881bf013`) as primary.
-  6. **PT. Meiji Indonesian Pharmaceutical Industries:** Bangil plant line `39398510-c836-484a-9ddc-5e3548789c86` demoted to secondary. Retained corporate Jakarta HQ line `021) 21383388` (`7b1892e6-4af2-4a16-8e0f-66922cb89a30`) as primary.
+  1. **PT Afifarma (`80ee11cf-7eb3-4054-bd65-b1bafcf2686b`):** Duplicate landline `0354 683675` (`a33be333-4bca-46b0-b855-633dc8bf605e`) demoted. Retained landline `0354 683675` (`f333647e-3e3f-48a5-8238-54fcfda270f7`) as primary.
+  2. **PT ANUGRAH VISI BERSAMA (`caad7c41-ad40-47ba-bde0-bf3f505390fa`):** Secondary mobile `+6281387845840` (`7fcaf882-0db0-4350-8198-e2de5a57a9dc`) and landline `021  84943347` (`7c994365-edc6-4435-8257-3e1ed585818d`) demoted. Retained primary mobile `+62 8111 618281` (`af50aef6-dbc8-45d1-9c66-56c5e7f10d0a`).
+  3. **PT Konimex (`e53d1921-62fa-4310-b0da-91535adbe194`):** Secondary landline `0271 716246` (`bd62e743-23f3-4c6d-bb0d-544e7b11b9a3`) demoted. Retained purchasing landline `+62 271 740 888` (`ec4ef328-5a29-46b6-aaad-cb904753eb11`) as primary.
+  4. **PT Medikon Prima Laboratories (`6b4325d8-b79a-4602-9fd0-91e0df65bd03`):** Secondary landline `021 29032210` (`c7e0b7a6-4d7f-4af1-8f9c-e7505100e68b`) demoted. Retained Cikupa plant line `+62215963504` (`939dd1a6-9389-421e-9152-42ca13998548`) as primary.
+  5. **PT. Mahakam Beta Farma (`987b5d43-e04d-419b-a399-a5240096cfdd`):** Demoted internal sales hotline mobile `0817 667 0915` (`6c2f5cc1-a67e-4ef5-9dbb-5dd95ae9d00b`). Retained purchaser line `+6221 4600007` (`f85db461-cb21-47c9-ac37-b214881bf013`) as primary.
+  6. **PT. Meiji Indonesian Pharmaceutical Industries (`17feb96c-4506-4913-87ae-81f778f101cc`):** Secondary plant line `0343  741102` (`39398510-c836-484a-9ddc-5e3548789c86`) demoted. Retained corporate Jakarta HQ line `021) 21383388` (`7b1892e6-4af2-4a16-8e0f-66922cb89a30`) as primary.
 
 - **Live Verification Query Result:**
   - All 6 commercial companies have `primary_count = 1`.
