@@ -288,3 +288,4 @@ Before executing any production commands, please provide explicit approval for:
    - PT Meiji Indonesian Pharmaceutical Industries (Tebet Jakarta HQ).
 5. **Approval 5 (Document Bank SHA-256 Backfill 6C):**  
    Authorize running `scripts/storage_optimization/universal_document_bank_sha256_backfill.mjs` with service-role privileges against the 498 verified storage files.
+

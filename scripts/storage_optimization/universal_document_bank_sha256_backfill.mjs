@@ -102,7 +102,7 @@ async function main() {
           if (!isDryRun) {
             await pgClient.query(
               `UPDATE public.universal_document_versions 
-               SET sha256 = $1, updated_at = NOW() 
+               SET sha256 = $1 
                WHERE id = $2 AND sha256 IS NULL`,
               [computedSha256, id]
             );
