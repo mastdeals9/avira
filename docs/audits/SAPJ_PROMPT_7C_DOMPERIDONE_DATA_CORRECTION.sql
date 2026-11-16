@@ -155,7 +155,7 @@ BEGIN
      AND coa.code = '1130'
      AND jel.description ILIKE '%domperidone%';
 
-  IF v_je_domperidone_debit <> 190154642.40 THEN
+  IF v_je_domperidone_debit IS DISTINCT FROM 190154642.40 THEN
     RAISE EXCEPTION 'PRECONDITION FAILED: GL 1130 debits do not match Rp 190,154,642.40 (found %)', v_je_domperidone_debit;
   END IF;
 

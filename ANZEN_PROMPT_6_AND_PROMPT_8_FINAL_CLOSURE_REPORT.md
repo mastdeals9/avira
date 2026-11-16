@@ -208,3 +208,4 @@ The following items are completely staged, validated, and blocked ONLY by commer
 - `20261116080000_database_security_advisor_hardening.sql` (Security & Authorization Hardening)
 - `20261116100000_fix_multi_line_batch_receiving_aggregation.sql` (Domperidone Multi-Line Receiving Fix)
 - `docs/audits/SAPJ_PROMPT_7C_DOMPERIDONE_DATA_CORRECTION.sql` (Domperidone Stock & Layer Data Correction)
+
