@@ -1,0 +1,286 @@
+[
+  {
+    "name": "admin_edit_approved_delivery_challan",
+    "args": "p_challan_id uuid, p_new_items jsonb"
+  },
+  {
+    "name": "apply_batch_receipt_weighted_average",
+    "args": "p_batch_id uuid, p_received_quantity numeric, p_receipt_unit_cost numeric"
+  },
+  {
+    "name": "audit_fund_transfer_repair_eligibility",
+    "args": "p_fund_transfer_id uuid"
+  },
+  {
+    "name": "audit_legacy_bank_reconciliation_source_documents",
+    "args": "p_run_id uuid"
+  },
+  {
+    "name": "auto_match_smart",
+    "args": ""
+  },
+  {
+    "name": "auto_reconcile_bank_statement",
+    "args": "p_upload_id uuid"
+  },
+  {
+    "name": "calculate_container_landed_cost_pool",
+    "args": "p_container_id uuid"
+  },
+  {
+    "name": "calculate_staff_bpjs",
+    "args": "p_staff_id uuid, p_wage_override numeric, p_period_date date"
+  },
+  {
+    "name": "calculate_staff_salary",
+    "args": "p_staff_id uuid, p_salary_date date, p_gross_override numeric, p_pph21_override numeric"
+  },
+  {
+    "name": "check_user_can_delete",
+    "args": "p_user_id uuid"
+  },
+  {
+    "name": "claim_bulk_email_campaign",
+    "args": "p_campaign_id uuid, p_execution_id text, p_lock_seconds integer, p_owner_id uuid"
+  },
+  {
+    "name": "claim_bulk_email_recipients",
+    "args": "p_campaign_id uuid, p_limit integer, p_execution_id text"
+  },
+  {
+    "name": "clear_payment_allocation_rounding_adjustment",
+    "args": "p_invoice_id uuid, p_payment_voucher_id uuid"
+  },
+  {
+    "name": "clear_receipt_allocation_rounding_adjustment",
+    "args": "p_invoice_id uuid, p_receipt_voucher_id uuid"
+  },
+  {
+    "name": "compute_period_ppn",
+    "args": "p_period_id uuid"
+  },
+  {
+    "name": "create_purchase_invoice_from_po",
+    "args": "p_purchase_order_id uuid, p_invoice_data jsonb, p_items jsonb"
+  },
+  {
+    "name": "describe_undo_reverse_bank_conflict",
+    "args": "p_id uuid"
+  },
+  {
+    "name": "evaluate_enquiry_task_reminders",
+    "args": ""
+  },
+  {
+    "name": "fn_create_import_requirements",
+    "args": "p_so_id uuid, p_shortage_items jsonb"
+  },
+  {
+    "name": "fn_recompute_so_delivered",
+    "args": "p_so_id uuid"
+  },
+  {
+    "name": "fn_recompute_so_status",
+    "args": "p_so_id uuid"
+  },
+  {
+    "name": "generate_fund_transfer_number",
+    "args": ""
+  },
+  {
+    "name": "generate_nota_retur_number",
+    "args": "p_date date"
+  },
+  {
+    "name": "get_balance_sheet",
+    "args": "p_as_of_date date"
+  },
+  {
+    "name": "get_crm_document_bank_stats",
+    "args": ""
+  },
+  {
+    "name": "get_crm_unlinked_storage_objects",
+    "args": ""
+  },
+  {
+    "name": "get_customer_ar_open_items",
+    "args": "p_as_of_date date"
+  },
+  {
+    "name": "get_invoice_allocation_amount",
+    "args": "p_invoice_id uuid, p_exclude_voucher_id uuid"
+  },
+  {
+    "name": "get_invoice_rounding_adjustment_amount",
+    "args": "p_invoice_id uuid"
+  },
+  {
+    "name": "get_invoice_with_balance",
+    "args": "invoice_uuid uuid, exclude_voucher_uuid uuid"
+  },
+  {
+    "name": "get_invoices_with_balance",
+    "args": "customer_uuid uuid, exclude_voucher_uuid uuid"
+  },
+  {
+    "name": "get_party_balance_summary",
+    "args": "p_party_type text, p_party_id text, p_as_of_date date"
+  },
+  {
+    "name": "get_petty_cash_balance",
+    "args": ""
+  },
+  {
+    "name": "get_petty_cash_balance_by_date",
+    "args": "start_date date, end_date date"
+  },
+  {
+    "name": "get_petty_cash_balance_by_transaction_date",
+    "args": "start_date date, end_date date"
+  },
+  {
+    "name": "get_petty_cash_monthly_reconciliation",
+    "args": "start_date date, end_date date"
+  },
+  {
+    "name": "get_pnl_summary",
+    "args": "p_start_date date, p_end_date date, p_usd_rate numeric"
+  },
+  {
+    "name": "get_pnl_summary",
+    "args": "p_start_date date, p_end_date date"
+  },
+  {
+    "name": "get_pnl_summary_detailed",
+    "args": "p_start_date date, p_end_date date, p_usd_rate numeric"
+  },
+  {
+    "name": "get_purchase_invoice_rounding_adjustment_amount",
+    "args": "p_purchase_invoice_id uuid"
+  },
+  {
+    "name": "get_sales_order_rounding_adjustment_amount",
+    "args": "p_sales_order_id uuid"
+  },
+  {
+    "name": "get_trial_balance",
+    "args": "p_start_date date, p_end_date date, p_usd_rate numeric"
+  },
+  {
+    "name": "get_trial_balance",
+    "args": "p_start_date date, p_end_date date"
+  },
+  {
+    "name": "invoke_bulk_email_worker",
+    "args": ""
+  },
+  {
+    "name": "invoke_process_whatsapp_campaign",
+    "args": ""
+  },
+  {
+    "name": "next_capital_contribution_number",
+    "args": "p_date date"
+  },
+  {
+    "name": "next_credit_note_allocation_number",
+    "args": ""
+  },
+  {
+    "name": "next_expense_voucher_number",
+    "args": "p_expense_date date"
+  },
+  {
+    "name": "next_loan_number",
+    "args": "p_date date"
+  },
+  {
+    "name": "next_loan_transaction_number",
+    "args": "p_date date"
+  },
+  {
+    "name": "next_payment_voucher_number",
+    "args": "p_voucher_date date"
+  },
+  {
+    "name": "next_receipt_voucher_number",
+    "args": "p_voucher_date date"
+  },
+  {
+    "name": "propagate_bank_line_amount_edit",
+    "args": "p_line_id uuid, p_new_amount numeric"
+  },
+  {
+    "name": "realign_reservation_for_delivery_challan",
+    "args": "p_challan_id uuid, p_confirmed boolean"
+  },
+  {
+    "name": "reallocate_container_costs",
+    "args": "p_container_id uuid"
+  },
+  {
+    "name": "recalculate_batch_landed_cost",
+    "args": "p_batch_id uuid"
+  },
+  {
+    "name": "recalculate_expense_payment_state",
+    "args": "p_expense_id uuid"
+  },
+  {
+    "name": "recalculate_purchase_invoice_payment_state",
+    "args": "p_purchase_invoice_id uuid"
+  },
+  {
+    "name": "recalculate_sales_invoice_payment_state",
+    "args": "p_invoice_id uuid"
+  },
+  {
+    "name": "recompute_periods_for_date",
+    "args": "p_date date"
+  },
+  {
+    "name": "reconcile_all_sales_cogs",
+    "args": "p_start_date date, p_end_date date"
+  },
+  {
+    "name": "record_expense_cash_payment",
+    "args": "p_expense_id uuid, p_payment_date date, p_payment_amount numeric, p_notes text, p_payment_event_id uuid"
+  },
+  {
+    "name": "refresh_bulk_email_campaign_counts",
+    "args": "p_campaign_id uuid"
+  },
+  {
+    "name": "refresh_whatsapp_campaign_counts",
+    "args": "p_campaign_id uuid"
+  },
+  {
+    "name": "reopen_bpjs_monthly_register",
+    "args": "p_register_id uuid, p_reason text"
+  },
+  {
+    "name": "reverse_bpjs_monthly_register",
+    "args": "p_register_id uuid, p_reason text"
+  },
+  {
+    "name": "run_deterministic_finance_historical_repair",
+    "args": ""
+  },
+  {
+    "name": "save_invoice_settlement_adjustment",
+    "args": "p_document_type text, p_invoice_id uuid, p_voucher_id uuid, p_adjustment_amount numeric, p_adjustment_type text, p_reason text"
+  },
+  {
+    "name": "save_payment_voucher_with_purpose",
+    "args": "p_voucher_id uuid, p_payload jsonb, p_allocations jsonb, p_payment_purpose text"
+  },
+  {
+    "name": "unmatch_bank_line",
+    "args": "p_bank_line_id uuid"
+  },
+  {
+    "name": "update_so_delivered_quantity_atomic",
+    "args": "p_sales_order_id uuid, p_dc_items jsonb[]"
+  }
+]

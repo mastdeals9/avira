@@ -141,6 +141,7 @@ const UTILITY_CATEGORIES = new Set([
   'electricity',
   'water',
   'internet_phone',
+  'utilities',
 ]);
 
 /**

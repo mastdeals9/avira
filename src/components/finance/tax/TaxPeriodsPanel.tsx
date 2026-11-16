@@ -77,9 +77,11 @@ async function loadDetail(row: Row): Promise<{ input: InputLine[]; output: Outpu
       .eq('tax_period_id', periodId),
     supabase
       .from('sales_invoices')
-      .select('id, invoice_number, invoice_date, tax_amount, customers:customer_id(company_name), faktur_pajak_number')
+      .select('id, invoice_number, invoice_date, tax_amount, customers:customer_id(company_name), faktur_pajak_number, document_status, cancelled_at')
       .eq('tax_period_id', periodId)
-      .gt('tax_amount', 0),
+      .gt('tax_amount', 0)
+      .neq('document_status', 'cancelled')
+      .is('cancelled_at', null),
     supabase
       .from('credit_notes')
       .select('id, credit_note_number, credit_note_date, tax_amount, customers:customer_id(company_name), nota_retur_id')
@@ -165,7 +167,9 @@ async function loadDetail(row: Row): Promise<{ input: InputLine[]; output: Outpu
   const approvedNrCnIds = new Set(((nrRes.data ?? []) as any[]).map(nr => nr.credit_note_id).filter(Boolean));
 
   const output: OutputLine[] = [
-    ...((siRes.data ?? []) as any[]).map(r => ({
+    ...((siRes.data ?? []) as any[])
+      .filter(r => r.document_status !== 'cancelled' && !r.cancelled_at)
+      .map(r => ({
       source: 'sales_invoice' as const,
       id: r.id,
       doc_number: r.invoice_number ?? '—',

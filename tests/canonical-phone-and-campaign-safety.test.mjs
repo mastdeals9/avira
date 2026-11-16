@@ -42,6 +42,7 @@ const transportSrc = readFileSync('src/services/whatsapp/whatsappTransportServic
 const campaignsWorkspaceSrc = readFileSync('src/components/crm/campaigns/CrmCampaignsWorkspace.tsx', 'utf8');
 const phoneModalSrc = readFileSync('src/components/crm/campaigns/PhoneAuditCorrectionModal.tsx', 'utf8');
 const chatAreaSrc = readFileSync('src/components/crm/inbox/WhatsAppChatArea.tsx', 'utf8');
+const wasenderSrc = readFileSync('src/components/crm/campaigns/WASenderBulkWorkspace.tsx', 'utf8');
 
 describe('Part 1 & 6: Mandatory 29 Canonical Phone Number Cases (Executing Real Production Parser)', () => {
 
@@ -598,11 +599,11 @@ describe('Architecture & Implementation Invariants Verification', () => {
     assert.match(phoneModalSrc, /distinctCities/, 'Distinct city filter');
   });
 
-  test('Campaigns Workspace: Bulk WhatsApp Dispatch is Blocked at UI, Handler, and Banner', () => {
-    assert.match(campaignsWorkspaceSrc, /Bulk WhatsApp dispatch is disabled during CRM data and consent verification/);
-    assert.match(campaignsWorkspaceSrc, /Bulk Dispatch Disabled/);
-    assert.match(campaignsWorkspaceSrc, /handleStartWaCampaign\s*=\s*\(\)\s*=>\s*\{[^}]*showToast/);
-    assert.match(campaignsWorkspaceSrc, /executeWaDispatch\s*=\s*async\s*\(\)\s*=>\s*\{[^}]*throw new Error/);
+  test('Campaigns Workspace: Bulk WhatsApp Dispatch Workflow and Safety Gates', () => {
+    assert.match(campaignsWorkspaceSrc, /WASenderBulkWorkspace/);
+    assert.match(wasenderSrc, /handleStartCampaign/);
+    assert.match(wasenderSrc, /WHATSAPP_MEDIA_CAPTION_LIMIT/);
+    assert.match(wasenderSrc, /WhatsApp Caption Limit Exceeded/);
   });
 
   test('Campaign Preview: Truthful preview with zero fake ticks or fake incoming replies', () => {

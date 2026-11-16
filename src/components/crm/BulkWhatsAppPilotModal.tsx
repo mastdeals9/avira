@@ -13,6 +13,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { showToast } from '../ToastNotification';
+import { resolvePersonalizedGreeting } from '../../utils/crmContactCleaners';
 
 export interface WhatsAppRecipient {
   id: string;
@@ -74,10 +75,13 @@ export function BulkWhatsAppPilotModal({
   };
 
   const previewFormattedMessage = (r: WhatsAppRecipient): string => {
-    const contactName = (r.contact_person || 'Bapak/Ibu').trim();
+    const contactName = resolvePersonalizedGreeting(r.contact_person, r.company_name, {
+      contextTemplate: messageTemplate,
+    });
     const company = (r.company_name || 'Rekan Bisnis').trim();
     return messageTemplate
       .replace(/\{\{contact_person\}\}/gi, contactName)
+      .replace(/\{\{contact_name\}\}/gi, contactName)
       .replace(/\{\{company_name\}\}/gi, company);
   };
 

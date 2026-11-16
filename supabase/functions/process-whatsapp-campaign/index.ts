@@ -35,9 +35,9 @@ Deno.serve(async (req: Request) => {
     const authHeader = req.headers.get("Authorization") || "";
     const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
     const workerSecretHeader = req.headers.get("X-WhatsApp-Worker-Secret") || "";
-    const expectedWorkerSecret = Deno.env.get("WHATSAPP_WORKER_SECRET") || "sapj_wa_worker_internal_2026";
+    const expectedWorkerSecret = Deno.env.get("WHATSAPP_WORKER_SECRET");
 
-    const isInternal = workerSecretHeader === expectedWorkerSecret;
+    const isInternal = Boolean(expectedWorkerSecret && workerSecretHeader === expectedWorkerSecret);
 
     // Verify authentication if not internal self-schedule call
     if (!isInternal) {

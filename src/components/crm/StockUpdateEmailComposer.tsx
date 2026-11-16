@@ -35,7 +35,7 @@ export function StockUpdateEmailComposer({ onClose, onComplete }: Props) {
     const [b, sSummary, cc, cu] = await Promise.all([
       supabase.from('batches').select('id,product_id,batch_number,current_stock,reserved_stock,packaging_details,expiry_date,products(product_name,product_code)').eq('is_active', true).order('expiry_date', { ascending: true }),
       supabase.from('inventory_v1_stock_summary').select('product_id,available_quantity'),
-      supabase.from('crm_contacts').select('id,company_name,email,contact_person').not('email', 'is', null).neq('email', ''),
+      supabase.from('crm_contacts').select('id,company_name,email,contact_person').not('email', 'is', null).neq('email', '').eq('is_active', true),
       supabase.from('customers').select('id,company_name,email,contact_person').not('email', 'is', null).neq('email', '').eq('is_active', true),
     ]);
     const atpMap = new Map<string, number>();

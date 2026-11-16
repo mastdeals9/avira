@@ -266,10 +266,28 @@ export function FinancialReports({ initialReport = 'trial_balance', onDrillDown 
   const netIncome       = profitBeforeTax;
 
   // ── Balance Sheet calculations ───────────────────────────────────────────
-  const bsAssetRows    = useMemo(() => balanceSheetData.filter(r => r.account_type === 'asset'), [balanceSheetData]);
-  const bsContraAssets = useMemo(() => balanceSheetData.filter(r => r.account_type === 'contra' && r.account_group?.toLowerCase().includes('asset')), [balanceSheetData]);
-  const bsLiabRows     = useMemo(() => balanceSheetData.filter(r => r.account_type === 'liability'), [balanceSheetData]);
-  const bsEquityRows   = useMemo(() => balanceSheetData.filter(r => r.account_type === 'equity' || (r.account_type === 'contra' && r.account_group === 'Equity')), [balanceSheetData]);
+  const bsAssetRows     = useMemo(() => balanceSheetData.filter(r => r.account_type === 'asset'), [balanceSheetData]);
+  const bsContraAssets  = useMemo(() => balanceSheetData.filter(r => r.account_type === 'contra' && r.account_group?.toLowerCase().includes('asset')), [balanceSheetData]);
+  const bsLiabRows      = useMemo(() => balanceSheetData.filter(r => r.account_type === 'liability'), [balanceSheetData]);
+  const bsEquityRawRows = useMemo(() => balanceSheetData.filter(r => r.account_type === 'equity' || (r.account_type === 'contra' && r.account_group === 'Equity')), [balanceSheetData]);
+  const bsContraRevenue = useMemo(() => balanceSheetData.filter(r => r.account_type === 'contra' && r.account_group === 'Revenue'), [balanceSheetData]);
+  const totalContraRevDebit = useMemo(() => bsContraRevenue.reduce((s, r) => s + r.balance, 0), [bsContraRevenue]);
+
+  // If get_balance_sheet() returned contra-revenue rows (e.g. 4300 Sales Returns) separately
+  // without deducting them from Current Year Earnings (3300), true up Account 3300 so that
+  // Net Income flow to Equity balances with the General Ledger.
+  const bsEquityRows = useMemo(() => {
+    if (totalContraRevDebit === 0) return bsEquityRawRows;
+    return bsEquityRawRows.map(r => {
+      if (r.code === '3300') {
+        return {
+          ...r,
+          balance: r.balance + totalContraRevDebit,
+        };
+      }
+      return r;
+    });
+  }, [bsEquityRawRows, totalContraRevDebit]);
 
   // get_balance_sheet() returns the journal-native signed balance
   // (debit - credit). Present each section using its accounting normal side;

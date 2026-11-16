@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import DOMPurify from 'dompurify';
 import { supabase } from '../../../lib/supabase';
 import { showToast } from '../../ToastNotification';
 import { BulkEmailComposer } from '../BulkEmailComposer';
@@ -195,7 +196,7 @@ export function CrmBulkEmailWorkspace({ initialRecipients }: Props) {
       const { error } = await supabase.from('crm_email_templates').insert({
         template_name: newTemplateName.trim(),
         subject: newTemplateSubject.trim(),
-        body: newTemplateBody.trim(),
+        body: DOMPurify.sanitize(newTemplateBody.trim()),
         category: newTemplateCategory,
         is_active: true,
       });
@@ -451,7 +452,7 @@ export function CrmBulkEmailWorkspace({ initialRecipients }: Props) {
                   <div className="text-xs font-medium text-gray-700 mb-2">Subject: {tpl.subject}</div>
                   <div
                     className="text-xs text-gray-500 line-clamp-3 font-sans"
-                    dangerouslySetInnerHTML={{ __html: tpl.body.slice(0, 200) }}
+                    dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(tpl.body.slice(0, 200)) }}
                   />
                 </div>
 

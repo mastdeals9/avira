@@ -205,7 +205,7 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
 
   const loadData = useCallback(async () => {
     try {
-      const [txRes, transfersRes, containersRes, challansRes, bankRes, accountsRes] = await Promise.all([
+      const [txRes, transfersRes, containersRes, challansRes, bankRes, accountsRes, pvRes, glBalanceRes] = await Promise.all([
         supabase
           .from('petty_cash_transactions')
           .select(`
@@ -285,7 +285,31 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
           .eq('is_active', true)
           .eq('is_header', false)
           .neq('code', '1102')
-          .order('code')
+          .neq('code', '1101')
+          .order('code'),
+        supabase
+          .from('payment_vouchers')
+          .select(`
+            id,
+            voucher_number,
+            voucher_date,
+            amount,
+            description,
+            payment_method,
+            bank_account_id,
+            is_posted,
+            party_type,
+            supplier_id,
+            staff_id,
+            suppliers (company_name),
+            finance_staff_master (full_name)
+          `)
+          .eq('payment_method', 'cash')
+          .eq('is_posted', true)
+          .gte('voucher_date', startDate)
+          .lte('voucher_date', endDate)
+          .order('voucher_date', { ascending: false }),
+        supabase.rpc('get_petty_cash_balance'),
       ]);
 
       if (txRes.error) throw txRes.error;
@@ -294,6 +318,7 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
       if (challansRes.error) throw challansRes.error;
       if (bankRes.error) throw bankRes.error;
       if (accountsRes.error) throw accountsRes.error;
+      if (pvRes.error) console.warn('Could not load cash payment vouchers:', pvRes.error);
 
       const pettyCashTransactions = (txRes.data || []) as PettyCashTransaction[];
 
@@ -339,17 +364,57 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
         };
       });
 
-      // Cash movement reporting follows the petty-cash transaction/transfer
-      // date. The RPC resolves canonical, historical-expense, and legacy
-      // transfer-linked accounting paths without changing journal dates.
-      const balanceRes = await supabase.rpc('get_petty_cash_balance_by_transaction_date', {
-        start_date: startDate,
-        end_date: endDate,
+      const cashPvActivity: PettyCashTransaction[] = ((pvRes.data || []) as any[]).map((pv) => {
+        const party = pv.suppliers?.company_name || pv.finance_staff_master?.full_name || pv.party_type || 'Payee';
+        return {
+          id: pv.id,
+          transaction_number: pv.voucher_number,
+          transaction_date: pv.voucher_date ? String(pv.voucher_date).split('T')[0] : '',
+          transaction_type: 'expense' as const,
+          amount: Number(pv.amount),
+          description: pv.description ? pv.description.trim() : `Payment Voucher: ${pv.voucher_number}`,
+          expense_category: null,
+          bank_account_id: null,
+          paid_to: party,
+          paid_by_staff_id: pv.staff_id || null,
+          paid_by_staff_name: pv.finance_staff_master?.full_name || null,
+          source: `Payment Voucher (${pv.voucher_number})`,
+          received_by_staff_id: null,
+          received_by_staff_name: null,
+          import_container_id: null,
+          delivery_challan_id: null,
+          voucher_number: pv.voucher_number,
+          source_account_id: null,
+          bank_statement_line_id: null,
+          fund_transfer_id: null,
+          fund_transfer_status: null,
+          source_account_name: 'Petty Cash',
+          approval_status: 'approved' as const,
+          approved_by: null,
+          approved_at: null,
+          rejection_reason: null,
+          created_at: pv.voucher_date,
+          petty_cash_documents: [],
+          bank_statement_lines: null,
+        };
       });
-      if (balanceRes.error) throw balanceRes.error;
-      const balance = Number(balanceRes.data || 0);
 
-      setTransactions([...pettyCashTransactions, ...fundTransferActivity] as PettyCashTransaction[]);
+      // Cash movement reporting follows the petty-cash transaction/transfer
+      // date. Prefer live posted GL balance for Account 1102 to maintain complete
+      // consistency with Trial Balance and General Ledger.
+      let balance = 0;
+      if (!glBalanceRes.error && glBalanceRes.data !== null && glBalanceRes.data !== undefined) {
+        balance = Number(glBalanceRes.data);
+      } else {
+        const balanceRes = await supabase.rpc('get_petty_cash_balance_by_transaction_date', {
+          start_date: startDate,
+          end_date: endDate,
+        });
+        if (balanceRes.error) throw balanceRes.error;
+        balance = Number(balanceRes.data || 0);
+      }
+
+      setTransactions([...pettyCashTransactions, ...fundTransferActivity, ...cashPvActivity] as PettyCashTransaction[]);
       setCashBalance(balance);
       setContainers(containersRes.data || []);
       setChallans((challansRes.data || []).map((challan) => ({

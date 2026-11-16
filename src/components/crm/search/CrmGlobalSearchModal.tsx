@@ -93,6 +93,7 @@ export function CrmGlobalSearchModal({
           supabase
             .from('crm_contacts')
             .select('id, company_name, contact_person, email, city')
+            .eq('is_active', true)
             .or(`company_name.ilike.${pattern},contact_person.ilike.${pattern},email.ilike.${pattern}`)
             .limit(6),
 

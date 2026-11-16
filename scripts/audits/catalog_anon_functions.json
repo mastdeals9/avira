@@ -1,0 +1,342 @@
+[
+  {
+    "oid": 173528,
+    "schema_name": "public",
+    "function_name": "broker_reimbursement_expense_base",
+    "arguments": "p_item jsonb",
+    "result_type": "numeric",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 173527,
+    "schema_name": "public",
+    "function_name": "broker_reimbursement_line_total",
+    "arguments": "p_item jsonb",
+    "result_type": "numeric",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 175896,
+    "schema_name": "public",
+    "function_name": "calculate_expense_settlement_amount",
+    "arguments": "p_category text, p_amount numeric, p_ppn numeric, p_pph numeric, p_stamp numeric, p_bank_charges numeric, p_broker_items jsonb",
+    "result_type": "numeric",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 239187,
+    "schema_name": "public",
+    "function_name": "enforce_pph_allocation_period_lock",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 169380,
+    "schema_name": "public",
+    "function_name": "fn_period_payment_source",
+    "arguments": "p_liability numeric, p_txp numeric, p_imp numeric",
+    "result_type": "text",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 169379,
+    "schema_name": "public",
+    "function_name": "fn_period_payment_status",
+    "arguments": "p_status text, p_outstanding numeric, p_due date",
+    "result_type": "text",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 181413,
+    "schema_name": "public",
+    "function_name": "fn_pph_authoritative_source_total",
+    "arguments": "p_period_id uuid",
+    "result_type": "numeric",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 169377,
+    "schema_name": "public",
+    "function_name": "fn_settled_import_pph22",
+    "arguments": "p_year integer, p_month integer, p_tax_type text",
+    "result_type": "numeric",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 233187,
+    "schema_name": "public",
+    "function_name": "fn_sync_batch_doc_to_universal",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 233191,
+    "schema_name": "public",
+    "function_name": "fn_sync_crm_doc_to_universal",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 233189,
+    "schema_name": "public",
+    "function_name": "fn_sync_product_doc_to_universal",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 233200,
+    "schema_name": "public",
+    "function_name": "fn_sync_product_source_doc_to_universal",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 169378,
+    "schema_name": "public",
+    "function_name": "fn_tax_payments_paid",
+    "arguments": "p_period_id uuid",
+    "result_type": "numeric",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 181414,
+    "schema_name": "public",
+    "function_name": "fn_tax_period_payment_status",
+    "arguments": "p_status text, p_total numeric, p_paid numeric, p_due date",
+    "result_type": "text",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 186472,
+    "schema_name": "public",
+    "function_name": "get_batch_authoritative_unit_cost",
+    "arguments": "p_batch_id uuid",
+    "result_type": "numeric",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 191212,
+    "schema_name": "public",
+    "function_name": "inventory_v1_movement_report",
+    "arguments": "p_date_from date, p_date_to date",
+    "result_type": "TABLE(product_id uuid, product_code text, product_name text, unit text, opening numeric, in_qty numeric, out_qty numeric, reserved_qty numeric, closing numeric, current_stock numeric)",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 233604,
+    "schema_name": "public",
+    "function_name": "invoke_process_whatsapp_campaign",
+    "arguments": "",
+    "result_type": "void",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 184268,
+    "schema_name": "public",
+    "function_name": "is_capitalizable_landed_cost_category",
+    "arguments": "p_category text",
+    "result_type": "boolean",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 205408,
+    "schema_name": "public",
+    "function_name": "is_reportable_sales_invoice",
+    "arguments": "p_document_status text, p_is_draft boolean, p_notes text",
+    "result_type": "boolean",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 167830,
+    "schema_name": "public",
+    "function_name": "lookup_login_email",
+    "arguments": "p_username text",
+    "result_type": "TABLE(email text, is_active boolean)",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 180196,
+    "schema_name": "public",
+    "function_name": "normalize_customer_identity",
+    "arguments": "p_value text",
+    "result_type": "text",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 180197,
+    "schema_name": "public",
+    "function_name": "normalize_customer_tax_id",
+    "arguments": "p_value text",
+    "result_type": "text",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 233457,
+    "schema_name": "public",
+    "function_name": "refresh_whatsapp_campaign_counts",
+    "arguments": "p_campaign_id uuid",
+    "result_type": "TABLE(total_count bigint, pending_count bigint, sending_count bigint, sent_count bigint, delivered_count bigint, read_count bigint, failed_count bigint)",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 236997,
+    "schema_name": "public",
+    "function_name": "set_crm_contacts_updated_metadata",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 239193,
+    "schema_name": "public",
+    "function_name": "trg_fn_revert_bank_alloc_pph",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 239255,
+    "schema_name": "public",
+    "function_name": "trg_fn_revert_petty_cash_pph",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 239249,
+    "schema_name": "public",
+    "function_name": "trg_fn_revert_voucher_alloc_pph",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 239191,
+    "schema_name": "public",
+    "function_name": "trg_fn_sync_bank_alloc_pph",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 239252,
+    "schema_name": "public",
+    "function_name": "trg_fn_sync_payment_voucher_header_pph",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 239254,
+    "schema_name": "public",
+    "function_name": "trg_fn_sync_petty_cash_pph",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 239248,
+    "schema_name": "public",
+    "function_name": "trg_fn_sync_voucher_alloc_pph",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 205396,
+    "schema_name": "public",
+    "function_name": "trg_sync_sales_invoice_document_status",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 174699,
+    "schema_name": "public",
+    "function_name": "uuid_from_text",
+    "arguments": "p_key text",
+    "result_type": "uuid",
+    "security_definer": false,
+    "owner": "postgres",
+    "anon_execute": true
+  },
+  {
+    "oid": 239131,
+    "schema_name": "public",
+    "function_name": "validate_tax_expense_linkage",
+    "arguments": "",
+    "result_type": "trigger",
+    "security_definer": true,
+    "owner": "postgres",
+    "anon_execute": true
+  }
+]

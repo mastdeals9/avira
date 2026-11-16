@@ -12,6 +12,11 @@ import {
 } from '../../../utils/phoneValidation';
 import { PhoneAuditCorrectionModal, AuditCategory, CRM_DEPARTMENTS } from './PhoneAuditCorrectionModal';
 import {
+  cleanContactPerson,
+  deduplicateCampaignEmailRecipients,
+  deduplicateCampaignPhoneRecipients,
+} from '../../../utils/crmContactCleaners';
+import {
   Send,
   MessageSquare,
   Users,
@@ -756,9 +761,24 @@ export function CrmCampaignsWorkspace({ initialRecipients = [] }: Props) {
       showToast({ type: 'warning', title: 'No Email Addresses', message: 'Selected contacts must have valid email addresses.' });
       return;
     }
-    setStagedRecipients(chosen.map(c => ({ id: c.id, company_name: c.company_name, email: c.email!, contact_person: c.contact_person })));
+    const { unique, duplicateCount } = deduplicateCampaignEmailRecipients(chosen);
+    if (duplicateCount > 0) {
+      showToast({
+        type: 'info',
+        title: 'Duplicate Emails Excluded',
+        message: `Excluded ${duplicateCount} duplicate email address(es) from campaign staging.`,
+      });
+    }
+    setStagedRecipients(
+      unique.map(c => ({
+        id: c.id,
+        company_name: c.company_name,
+        email: c.email!,
+        contact_person: cleanContactPerson(c.contact_person, c.company_name),
+      }))
+    );
     handleSubTabChange('email');
-    showToast({ type: 'success', title: 'Staged for Email', message: `${chosen.length} recipients staged for email campaign.` });
+    showToast({ type: 'success', title: 'Staged for Email', message: `${unique.length} unique recipients staged for email campaign.` });
   };
 
   const handleStageForWhatsApp = () => {
@@ -767,28 +787,47 @@ export function CrmCampaignsWorkspace({ initialRecipients = [] }: Props) {
       showToast({ type: 'warning', title: 'No Phone Numbers', message: 'Selected contacts must have phone or mobile numbers.' });
       return;
     }
-    setWaSelectedRecipients(chosen);
+    const { unique, duplicates, ambiguousShared } = deduplicateCampaignPhoneRecipients(chosen);
+    if (ambiguousShared.length > 0) {
+      showToast({
+        type: 'warning',
+        title: 'Shared Switchboards Excluded',
+        message: `${ambiguousShared.length} shared telephone numbers across distinct entities were excluded from broadcast to prevent misdirected messaging.`,
+      });
+    }
+    if (duplicates.length > 0) {
+      showToast({
+        type: 'info',
+        title: 'Duplicate Phones Deduplicated',
+        message: `Deduplicated ${duplicates.length} duplicate telephone entries.`,
+      });
+    }
+
+    const cleanedRecipients = unique.map(c => ({
+      ...c,
+      contact_person: cleanContactPerson(c.contact_person, c.company_name),
+    }));
+
+    setWaSelectedRecipients(cleanedRecipients);
     setWaPreviewIndex(0);
     handleSubTabChange('whatsapp');
-    showToast({ type: 'success', title: 'Staged for WhatsApp', message: `${chosen.length} contacts staged for WhatsApp campaign.` });
+    showToast({ type: 'success', title: 'Staged for WhatsApp', message: `${cleanedRecipients.length} contacts staged for WhatsApp campaign.` });
   };
 
   // WhatsApp selection helpers: selects all valid mobile candidates
   const handleSelectAllValidMobiles = () => {
     const candidateItems = phoneAudit.items.filter(i => i.is_candidate);
-    const seen = new Set<string>();
-    const deduplicatedCandidates = candidateItems.filter(i => {
-      const key = i.validation.normalized || i.raw_phone;
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    const { unique, duplicates, ambiguousShared } = deduplicateCampaignPhoneRecipients(candidateItems);
 
-    const mappedRecipients = deduplicatedCandidates.map(i => ({
+    if (ambiguousShared.length > 0) {
+      console.info('[CrmCampaigns] Excluded ambiguous shared numbers:', ambiguousShared.length);
+    }
+
+    const mappedRecipients = unique.map(i => ({
       id: i.id,
       contact_id: i.contact_id || i.id,
       company_name: i.company_name,
-      contact_person: i.contact_person,
+      contact_person: cleanContactPerson(i.contact_person, i.company_name),
       department: i.department || 'Purchasing',
       email: i.email,
       mobile: i.validation.normalized || i.raw_phone || '',

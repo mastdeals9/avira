@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { supabase } from '../../lib/supabase';
 import { X, Send, Loader, Paperclip, Plus } from 'lucide-react';
 import { AttachFromDocumentBankModal } from '../documents/AttachFromDocumentBankModal';
@@ -434,7 +435,7 @@ export function KunalCustomerQuoteModal({ isOpen, onClose, inquiry, option, opti
           <div>
             <label className="text-xs font-medium text-gray-600 mb-1 block">Preview (customer-safe — no source cost shown):</label>
             <div className="border border-gray-200 rounded-lg p-4 bg-white max-h-[400px] overflow-auto"
-              dangerouslySetInnerHTML={{ __html: body }} />
+              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(body) }} />
           </div>
         </div>
 

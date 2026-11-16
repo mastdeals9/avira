@@ -37,8 +37,8 @@ export type DocumentType = typeof DOCUMENT_TYPES[number];
 // omitted — they belong exclusively inside the PIB workflow.
 
 export const DOCUMENT_TYPE_GROUPS: Record<DocumentType, string[]> = {
-  'Operating Expense':                ['warehouse_rent', 'bank_charges', 'office_admin', 'office_shifting_renovation', 'other'],
-  'Utility':                          ['utilities'],
+  'Operating Expense':                ['warehouse_rent', 'bank_charges', 'office_admin', 'office_shifting_renovation', 'facility_maintenance', 'other'],
+  'Utility':                          ['electricity', 'water', 'internet_phone', 'utilities'],
   'Staff Expense':                    ['salary', 'staff_overtime', 'staff_welfare', 'travel_conveyance', 'non_permanent_employee_fee'],
   'Sales & Distribution':             ['marketing_advertising', 'delivery_sales', 'loading_sales', 'other_sales'],
   'Professional Services':            ['professional_services'],
@@ -1260,6 +1260,10 @@ export const EXPENSE_CATEGORY_LABELS: Record<string, string> = {
   travel_conveyance:          'Travel & Conveyance',
   warehouse_rent:             'Warehouse Rent / Sewa Gudang',
   utilities:                  'Utilities (Listrik, Air, dll)',
+  electricity:                'Electricity / Listrik',
+  water:                      'Water / Air',
+  internet_phone:             'Telephone & Internet / Telepon & Internet',
+  facility_maintenance:       'Cleaning & Maintenance / Kebersihan & Pemeliharaan',
   bank_charges:               'Bank Charges',
   office_admin:               'Office Administration',
   office_shifting_renovation: 'Office Shifting / Renovation',

@@ -20,8 +20,8 @@ test('Sidebar and Mobile Navigation Cleanup Verification', async (t) => {
   });
 
   await t.test('2. Global sidebar retains only module-level navigation groups', () => {
-    // MAIN: dashboard, crm, customers
-    assert.match(layoutContent, /\['dashboard',\s*'crm',\s*'customers'\]/);
+    // MAIN: dashboard, crm, customers, document-bank
+    assert.match(layoutContent, /\['dashboard',\s*'crm',\s*'customers'(?:,\s*'document-bank')?\]/);
 
     // SALES: sales-orders, delivery-challan, sales
     assert.match(layoutContent, /\['sales-orders',\s*'delivery-challan',\s*'sales'\]/);

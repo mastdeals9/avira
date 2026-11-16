@@ -1043,6 +1043,10 @@ export function InquiryTableExcel({
   const handleImportFile = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (file.size > 25 * 1024 * 1024) {
+      showToast({ type: 'error', title: 'Error', message: 'File exceeds maximum supported size of 25MB' });
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = async (e) => {

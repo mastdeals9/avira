@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import DOMPurify from 'dompurify';
 import { supabase } from '../../../lib/supabase';
 import { EnquiryWhatsAppService } from '../../../services/enquiry/EnquiryWhatsAppService';
 import { showToast } from '../../ToastNotification';
@@ -663,6 +664,7 @@ export function CrmOmnichannelInbox({
           const { data } = await supabase
             .from('crm_contacts')
             .select('*')
+            .eq('is_active', true)
             .ilike('company_name', selectedConversation.customerName.trim())
             .maybeSingle();
           cust = data;
@@ -1807,7 +1809,7 @@ export function CrmOmnichannelInbox({
                           {msg.bodyHtml ? (
                             <div
                               className="text-xs leading-relaxed text-gray-800 font-sans selection:bg-blue-100 overflow-x-auto"
-                              dangerouslySetInnerHTML={{ __html: msg.bodyHtml }}
+                              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(msg.bodyHtml) }}
                             />
                           ) : (
                             <div className="text-xs leading-relaxed text-gray-800 whitespace-pre-wrap font-sans selection:bg-blue-100">

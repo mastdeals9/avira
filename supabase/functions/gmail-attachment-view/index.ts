@@ -127,13 +127,11 @@ Deno.serve(async (req: Request) => {
     let isAuthorized = false;
     let callingUserId: string | null = null;
 
-    if (
-      jwt === serviceKey ||
-      jwt === anonKey ||
-      apiKey === anonKey ||
-      apiKey === serviceKey ||
-      agentSecretHeader === "sapj-internal-cron-trigger"
-    ) {
+    const expectedAgentSecret = Deno.env.get("AGENT_SECRET") || Deno.env.get("CRON_SECRET");
+    const isServiceCall = (jwt && jwt === serviceKey) || (apiKey && apiKey === serviceKey);
+    const isCronCall = !!expectedAgentSecret && agentSecretHeader === expectedAgentSecret;
+
+    if (isServiceCall || isCronCall) {
       isAuthorized = true;
     } else if (jwt) {
       const userClient = createClient(supabaseUrl, anonKey, {
@@ -143,19 +141,6 @@ Deno.serve(async (req: Request) => {
       if (!userErr && userData?.user) {
         callingUserId = userData.user.id;
         isAuthorized = true;
-      } else {
-        try {
-          const parts = jwt.split(".");
-          if (parts.length === 3) {
-            const payload = JSON.parse(decodeBase64Url(parts[1]));
-            if (payload.iss === "supabase" && (payload.role === "authenticated" || payload.role === "anon")) {
-              isAuthorized = true;
-              callingUserId = payload.sub || null;
-            }
-          }
-        } catch {
-          // ignore parsing error
-        }
       }
     }
 
@@ -182,11 +167,29 @@ Deno.serve(async (req: Request) => {
     if (user?.id) {
       const userConn = await getConnection(supabase, user.id);
       if (userConn && userConn.is_connected) candidateConnections.push(userConn);
-    }
-    const allConns = await listGmailConnectionSecrets(supabase, {});
-    for (const c of allConns) {
-      if (c.is_connected && !candidateConnections.some(x => x.id === c.id)) {
-        candidateConnections.push(c);
+
+      // Only administrators or managers can inspect connections beyond their own
+      const { data: profile } = await supabase
+        .from("user_profiles")
+        .select("role, is_active")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      const canAccessAll = profile?.is_active && (profile?.role === "admin" || profile?.role === "manager");
+      if (canAccessAll) {
+        const allConns = await listGmailConnectionSecrets(supabase, {});
+        for (const c of allConns) {
+          if (c.is_connected && !candidateConnections.some(x => x.id === c.id)) {
+            candidateConnections.push(c);
+          }
+        }
+      }
+    } else if (isServiceCall || isCronCall) {
+      const allConns = await listGmailConnectionSecrets(supabase, {});
+      for (const c of allConns) {
+        if (c.is_connected && !candidateConnections.some(x => x.id === c.id)) {
+          candidateConnections.push(c);
+        }
       }
     }
 

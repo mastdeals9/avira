@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { supabase } from '../../lib/supabase';
 import { X, Send, Loader } from 'lucide-react';
 import { showToast } from '../ToastNotification';
@@ -322,7 +323,7 @@ export function KunalInternalReplyModal({ isOpen, onClose, inquiry, draft, sourc
             <label className="text-xs font-medium text-gray-600 mb-1 block">Preview:</label>
             <div
               className="border border-gray-200 rounded-lg p-4 bg-white max-h-[400px] overflow-auto"
-              dangerouslySetInnerHTML={{ __html: body }}
+              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(body) }}
             />
           </div>
         </div>

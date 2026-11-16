@@ -245,8 +245,10 @@ export function FakturPajakPanel() {
     // two-pass lookup fails due to schema cache issues.
     let q = supabase
       .from('sales_invoices')
-      .select('id, invoice_number, invoice_date, tax_amount, total_amount, faktur_pajak_number, customer_id, customer:customer_id(company_name, npwp)')
-      .gt('tax_amount', 0);
+      .select('id, invoice_number, invoice_date, tax_amount, total_amount, faktur_pajak_number, customer_id, customer:customer_id(company_name, npwp), document_status, cancelled_at')
+      .gt('tax_amount', 0)
+      .neq('document_status', 'cancelled')
+      .is('cancelled_at', null);
     if (dateRange?.startDate) q = q.gte('invoice_date', dateRange.startDate);
     if (dateRange?.endDate) q = q.lte('invoice_date', dateRange.endDate);
     const { data: inv, error: invErr } = await q.order('invoice_date', { ascending: false }).limit(500);
@@ -257,10 +259,14 @@ export function FakturPajakPanel() {
     }
     const loaded = ((inv ?? []) as unknown as Array<Omit<SalesInvoice, 'customer'> & {
       customer: Customer | Customer[] | null;
-    }>).map(invoice => ({
-      ...invoice,
-      customer: firstRelation(invoice.customer),
-    }));
+      document_status?: string | null;
+      cancelled_at?: string | null;
+    }>)
+      .filter(i => i.document_status !== 'cancelled' && !i.cancelled_at)
+      .map(invoice => ({
+        ...invoice,
+        customer: firstRelation(invoice.customer),
+      }));
     setInvoices(loaded);
 
     const invIds = loaded.map(i => i.id);

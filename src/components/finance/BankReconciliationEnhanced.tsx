@@ -7230,7 +7230,6 @@ export function BankReconciliationEnhanced({
             await loadStatementLines();
             await loadExpenses();
             notifyFinanceReconciliationRefresh();
-            const isApproved = savedExpense.approval_status === 'approved';
             let voucherNumber = savedExpense.voucher_number;
             if (!voucherNumber && savedExpense.id) {
               const { data: expRow } = await supabase
@@ -7241,6 +7240,7 @@ export function BankReconciliationEnhanced({
               voucherNumber = expRow?.voucher_number;
             }
             const displayVoucher = voucherNumber || 'EXP (pending assignment)';
+            const isApproved = savedExpense.approval_status === 'approved';
             setActionFeedback({
               type: 'success',
               title: isApproved ? 'Expense recorded & reconciled' : 'Expense recorded as pending',

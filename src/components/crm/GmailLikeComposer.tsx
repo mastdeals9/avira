@@ -556,7 +556,8 @@ export function GmailLikeComposer({ isOpen, onClose, inquiry, inquiries, mode = 
   };
 
   const sendEmail = async () => {
-    if (!toEmail.trim() || !subject.trim() || !body.trim()) {
+    const sanitizedBody = DOMPurify.sanitize(body, { ADD_ATTR: ['target'] });
+    if (!toEmail.trim() || !subject.trim() || !sanitizedBody.trim()) {
       alert('Please fill in To, Subject, and Body.');
       return;
     }
@@ -699,7 +700,7 @@ export function GmailLikeComposer({ isOpen, onClose, inquiry, inquiries, mode = 
             cc: ccList,
             bcc: bccList,
             subject,
-            body,
+            body: sanitizedBody,
             isHtml: true,
             inquiryId: inquiry.id,
             senderName: currentUserName,
@@ -1076,7 +1077,7 @@ export function GmailLikeComposer({ isOpen, onClose, inquiry, inquiries, mode = 
                     ref={htmlPreviewRef}
                     contentEditable
                     suppressContentEditableWarning
-                    onBlur={(event) => setBody(event.currentTarget.innerHTML)}
+                    onBlur={(event) => setBody(DOMPurify.sanitize(event.currentTarget.innerHTML, { ADD_ATTR: ['target'] }))}
                     dangerouslySetInnerHTML={{ __html: sanitizedPreviewBody }}
                     className="crm-html-editor"
                     style={{ minHeight: fullscreen ? 300 : 220 }}

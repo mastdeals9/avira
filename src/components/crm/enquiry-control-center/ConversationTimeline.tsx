@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import DOMPurify from 'dompurify';
 import {
   Mail,
   MessageSquare,
@@ -339,7 +340,7 @@ export const ConversationTimeline: React.FC<ConversationTimelineProps> = ({
                       className={`text-gray-700 font-sans prose prose-xs max-w-none overflow-hidden ${
                         isHtmlExpanded ? '' : 'max-h-36'
                       }`}
-                      dangerouslySetInnerHTML={{ __html: msg.body_html }}
+                      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(msg.body_html) }}
                     />
                     <button
                       type="button"

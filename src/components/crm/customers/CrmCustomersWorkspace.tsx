@@ -30,6 +30,12 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 
+import {
+  cleanContactPerson,
+  auditCompanyPrimaryPhones,
+  deduplicateCampaignEmailRecipients,
+} from '../../../utils/crmContactCleaners';
+
 interface CustomerRow extends CustomerDetail {
   openInquiriesCount: number;
   openOrdersCount: number;
@@ -37,6 +43,8 @@ interface CustomerRow extends CustomerDetail {
   lastActivityLabel: string;
   assignedSalespersonName?: string;
   assignedSalesMemberId?: string;
+  hasMultiplePrimary?: boolean;
+  phonesCount?: number;
 }
 
 interface Props {
@@ -53,7 +61,7 @@ export function CrmCustomersWorkspace({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState<'all' | 'active' | 'inquiries' | 'orders' | 'dormant'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'active' | 'inquiries' | 'orders' | 'dormant'>('active');
   const [classificationFilter, setClassificationFilter] = useState<string>('all');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [selectedCustomerForDrawer, setSelectedCustomerForDrawer] = useState<CustomerDetail | null>(null);
@@ -90,14 +98,29 @@ export function CrmCustomersWorkspace({
     setLoading(true);
     setError(null);
     try {
-      // 1. Fetch CRM contacts
-      const { data: contactRows, error: contactErr } = await supabase
-        .from('crm_contacts')
-        .select('*')
-        .order('company_name');
+      // 1. Fetch CRM contacts and phone records
+      const [{ data: contactRows, error: contactErr }, { data: phoneRows }] = await Promise.all([
+        supabase
+          .from('crm_contacts')
+          .select('*')
+          .order('company_name'),
+        supabase
+          .from('crm_contact_phones')
+          .select('id, contact_id, raw_phone, normalized_phone, is_primary, is_whatsapp_eligible, phone_type'),
+      ]);
 
       if (contactErr) throw contactErr;
       const contacts = contactRows || [];
+
+      // Group phones by contact_id to detect multi-primary records safely
+      const phonesByContact = new Map<string, any[]>();
+      (phoneRows || []).forEach((p: any) => {
+        if (p.contact_id) {
+          const list = phonesByContact.get(p.contact_id) || [];
+          list.push(p);
+          phonesByContact.set(p.contact_id, list);
+        }
+      });
 
       // 2. Fetch all ERP customers to match and check open orders
       const { data: erpCustomers } = await supabase
@@ -196,11 +219,13 @@ export function CrmCustomersWorkspace({
         }
 
         const assignment = assignmentMap.get(c.id) || (erpId ? assignmentMap.get(erpId) : undefined);
+        const contactPhones = phonesByContact.get(c.id) || [];
+        const phoneAudit = auditCompanyPrimaryPhones(contactPhones);
 
         return {
           id: c.id,
           company_name: c.company_name,
-          contact_person: c.contact_person,
+          contact_person: cleanContactPerson(c.contact_person, c.company_name),
           designation: c.designation,
           email: c.email,
           phone: c.phone,
@@ -221,6 +246,8 @@ export function CrmCustomersWorkspace({
           lastActivityLabel,
           assignedSalespersonName: assignment?.name || undefined,
           assignedSalesMemberId: assignment?.id || undefined,
+          hasMultiplePrimary: phoneAudit.hasMultiplePrimary,
+          phonesCount: contactPhones.length,
         };
       });
 
@@ -450,21 +477,30 @@ export function CrmCustomersWorkspace({
   };
 
   const handleStartBulkEmail = () => {
-    const recipients = customers
-      .filter(c => selectedIds.has(c.id) && c.email)
+    const activeSelected = customers
+      .filter(c => selectedIds.has(c.id) && c.email && c.is_active !== false)
       .map(c => ({
         id: c.id,
         company_name: c.company_name,
         email: c.email!,
-        contact_person: c.contact_person || null,
+        contact_person: cleanContactPerson(c.contact_person, c.company_name) || null,
       }));
 
-    if (recipients.length === 0) {
-      showToast({ type: 'warning', title: 'No Valid Emails', message: 'None of the selected customers have a valid email address.' });
+    if (activeSelected.length === 0) {
+      showToast({ type: 'warning', title: 'No Valid Emails', message: 'None of the selected active customers have a valid email address.' });
       return;
     }
 
-    onNavigateBulkEmail?.(recipients);
+    const { unique, duplicateCount } = deduplicateCampaignEmailRecipients(activeSelected);
+    if (duplicateCount > 0) {
+      showToast({
+        type: 'info',
+        title: 'Duplicate Emails Excluded',
+        message: `Excluded ${duplicateCount} duplicate email address(es) from bulk campaign staging.`,
+      });
+    }
+
+    onNavigateBulkEmail?.(unique);
   };
 
   return (
@@ -716,7 +752,7 @@ export function CrmCustomersWorkspace({
 
                       {/* Contact */}
                       <td className="py-2.5 px-3 text-gray-700">
-                        <div>{cust.contact_person || '—'}</div>
+                        <div>{cleanContactPerson(cust.contact_person, cust.company_name) || '—'}</div>
                         {cust.designation && <div className="text-[11px] text-gray-400">{cust.designation}</div>}
                       </td>
 
@@ -736,13 +772,28 @@ export function CrmCustomersWorkspace({
                       {/* Phone */}
                       <td className="py-2.5 px-3 text-gray-600">
                         {cust.phone || cust.mobile ? (
-                          <a
-                            href={`tel:${cust.phone || cust.mobile}`}
-                            onClick={(e) => e.stopPropagation()}
-                            className="hover:text-emerald-600"
-                          >
-                            {cust.phone || cust.mobile}
-                          </a>
+                          <div className="flex items-center gap-1.5">
+                            <a
+                              href={`tel:${cust.phone || cust.mobile}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="hover:text-emerald-600"
+                            >
+                              {cust.phone || cust.mobile}
+                            </a>
+                            {cust.phonesCount && cust.phonesCount > 1 ? (
+                              <span className="text-[10px] text-gray-400 font-mono" title={`${cust.phonesCount} phone numbers on record`}>
+                                (+{cust.phonesCount - 1})
+                              </span>
+                            ) : null}
+                            {cust.hasMultiplePrimary && (
+                              <span
+                                className="px-1.5 py-0.2 text-[9px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 rounded shrink-0"
+                                title="Company has multiple primary phone records configured (needs review)"
+                              >
+                                Multi-Primary
+                              </span>
+                            )}
+                          </div>
                         ) : '—'}
                       </td>
 

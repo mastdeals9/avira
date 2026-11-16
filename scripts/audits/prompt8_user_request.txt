@@ -1,0 +1,93 @@
+<USER_REQUEST>
+# PROMPT 8 — SUPABASE DATABASE SECURITY HARDENING
+
+## Objective
+Resolve the Supabase Security Advisor findings supplied in `Pasted text(20261116-022620).txt` for production project `dkrtsqienlhpouohmfki`.
+
+Repository: `/Users/Kunal/Documents/anzen-main`
+
+## Strict protections
+- Production database remains READ-ONLY.
+- Do not execute production SQL, revoke privileges, alter functions or views, or move extensions.
+- Do not deploy, commit, push, merge, reset, or create branches.
+- Preserve all existing Prompt 6 and Prompt 7A work.
+- Do not break existing ERP workflows.
+
+## Work required
+
+1. Audit all 286 distinct SECURITY DEFINER functions identified in the report.
+   - Record every exact function signature and current grants.
+   - Identify which functions genuinely need `anon`, `authenticated`, or service-role execution.
+   - Inspect authorization checks inside each function.
+   - Identify functions callable by users without adequate authorization.
+   - Pay special attention to financial, inventory, payroll, user administration, CRM and WhatsApp functions.
+   - Do not blindly revoke authenticated access from functions required by the application.
+
+2. Fix the 15 mutable search_path warnings.
+   - Inspect each function body and dependencies.
+   - Set a secure fixed search_path.
+   - Schema-qualify database objects where necessary.
+   - Preserve exact function signatures, ownership and behavior.
+
+3. Review `public.vw_universal_document_bank`.
+   - Inspect underlying tables, RLS policies and role permissions.
+   - Determine whether `security_invoker = true` is safe.
+   - Prevent unintended access to private document metadata.
+   - Do not break legitimate Document Bank access.
+
+4. Review all 16 anon execution warnings.
+   - Revoke public/anon access where genuinely unnecessary.
+   - Preserve only explicitly justified anonymous functionality.
+   - Specifically inspect `lookup_login_email` and `invoke_process_whatsapp_campaign`.
+   - Ensure trigger functions are not unnecessarily exposed as RPC endpoints.
+
+5. Review all 294 authenticated execution warnings.
+   - Separate legitimate application RPCs from internal-only functions.
+   - Verify ownership, role checks, `auth.uid()`, authorization and tenant/company boundaries.
+   - Protect administrator, accounting and inventory operations.
+   - Apply least-privilege grants without breaking legitimate workflows.
+
+6. Review `pg_net` in the public schema.
+   - Check extension dependencies and current Supabase guidance.
+   - Determine whether relocation is supported and safe.
+   - Do not move it unless compatibility is proven.
+
+## Testing
+- Add automated tests for the intended function privilege matrix.
+- Test anonymous and authenticated access.
+- Test unauthorized users cannot invoke privileged operations.
+- Test legitimate ERP operations continue working.
+- Run existing security, finance, inventory, CRM and authentication test suites.
+- Run TypeScript typecheck and production build.
+- Re-run Security Advisor or equivalent catalog checks where possible.
+
+## Deliverables
+Create:
+
+1. `docs/audits/SAPJ_PROMPT_8_DATABASE_SECURITY_AUDIT.md`
+2. `docs/audits/SAPJ_PROMPT_8_FUNCTION_PERMISSION_MATRIX.md`
+3. `docs/audits/SAPJ_PROMPT_8_SECURITY_REMEDIATION.sql`
+4. `supabase/migrations/<new_security_hardening_migration>.sql`
+5. `tests/database-security-hardening.test.mjs`
+
+The migration must be reviewed, tested and ready for owner deployment, but NOT applied to production.
+
+## Final report
+Tell me:
+- Which findings are genuine security exposures?
+- Which are harmless advisor warnings?
+- Which anonymous/public privileges were unnecessary?
+- Which functions must remain accessible to authenticated users?
+- Whether Document Bank view and pg_net can safely be hardened.
+- Exact remaining risks and deployment steps.
+
+**Do not make production changes. Do not trade ERP functionality for a lower warning count. Security and existing ERP operations must both remain correct.**
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-11-16T08:06:49+05:30.
+
+The user's current state is as follows:
+Other open documents:
+- /Users/Kunal/Documents/anzen-main/docs/audits/SAPJ_PROMPT_6_OWNER_CONFIRMATION_REGISTER.md (LANGUAGE_UNSPECIFIED)
+- /Users/Kunal/Documents/anzen-main/scripts/audits/preflight_crm_phone_demotions.mjs (LANGUAGE_UNSPECIFIED)
+</ADDITIONAL_METADATA>

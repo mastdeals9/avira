@@ -29,7 +29,7 @@ export function EmailBodyViewer({ htmlContent, className = '' }: EmailBodyViewer
       (match, content) => {
         const id = Math.random().toString(36).substr(2, 9);
         return `<div class="quoted-section" data-quote-id="${id}">
-          <div class="quoted-toggle" onclick="toggleQuote('${id}')">
+          <div class="quoted-toggle">
             <span class="toggle-icon">...</span>
           </div>
           <blockquote class="quoted-content" id="quote-${id}" style="display: none;">${content}</blockquote>
@@ -55,7 +55,7 @@ export function EmailBodyViewer({ htmlContent, className = '' }: EmailBodyViewer
         'align', 'valign',
         'border', 'cellpadding', 'cellspacing',
         'bgcolor', 'color', 'face', 'size',
-        'data-quote-id', 'onclick'
+        'data-quote-id'
       ],
       ALLOW_DATA_ATTR: true,
       ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp|data):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
@@ -250,18 +250,26 @@ export function EmailBodyViewer({ htmlContent, className = '' }: EmailBodyViewer
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           ${emailStyles}
           <script>
-            function toggleQuote(id) {
-              const content = document.getElementById('quote-' + id);
-              const toggle = content.previousElementSibling.querySelector('.toggle-icon');
-
-              if (content.style.display === 'none') {
-                content.style.display = 'block';
-                toggle.textContent = '▼';
-              } else {
-                content.style.display = 'none';
-                toggle.textContent = '...';
+            document.addEventListener('click', function(e) {
+              const toggle = e.target && e.target.closest ? e.target.closest('.quoted-toggle') : null;
+              if (toggle) {
+                const parent = toggle.closest('.quoted-section');
+                const quoteId = parent ? parent.getAttribute('data-quote-id') : null;
+                if (quoteId) {
+                  const content = document.getElementById('quote-' + quoteId);
+                  const icon = toggle.querySelector('.toggle-icon');
+                  if (content) {
+                    if (content.style.display === 'none') {
+                      content.style.display = 'block';
+                      if (icon) icon.textContent = '▼';
+                    } else {
+                      content.style.display = 'none';
+                      if (icon) icon.textContent = '...';
+                    }
+                  }
+                }
               }
-            }
+            });
           </script>
         </head>
         <body>

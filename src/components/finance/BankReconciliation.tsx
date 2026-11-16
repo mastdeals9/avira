@@ -113,6 +113,10 @@ export function BankReconciliation({ canManage }: BankReconciliationProps) {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedBank) return;
+    if (file.size > 25 * 1024 * 1024) {
+      alert('❌ File exceeds maximum supported size of 25MB.');
+      return;
+    }
 
     setUploading(true);
     try {

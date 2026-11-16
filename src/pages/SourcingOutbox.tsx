@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { Layout } from '../components/Layout';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
@@ -1996,7 +1997,7 @@ export function SourcingOutbox() {
                             {(previewBodies[route] || bodyOverride[route]) ? (
                               <div
                                 className="w-full p-3 overflow-x-auto min-h-[180px] text-[12px]"
-                                dangerouslySetInnerHTML={{ __html: bodyOverride[route] ?? previewBodies[route] ?? '' }}
+                                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(bodyOverride[route] ?? previewBodies[route] ?? '') }}
                               />
                             ) : (
                               <div className="w-full p-3 text-[11px] text-gray-400 min-h-[180px]">No sendable rows selected for this route.</div>
@@ -2047,7 +2048,7 @@ export function SourcingOutbox() {
                 <button onClick={() => setFullscreenRoute(null)} className="p-1 rounded hover:bg-gray-100"><X className="w-4 h-4" /></button>
               </div>
               <div className="overflow-auto p-6 flex-1">
-                <div dangerouslySetInnerHTML={{ __html: bodyOverride[fullscreenRoute] ?? previewBodies[fullscreenRoute] ?? '' }} />
+                <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(bodyOverride[fullscreenRoute] ?? previewBodies[fullscreenRoute] ?? '') }} />
               </div>
             </div>
           </div>

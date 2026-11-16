@@ -1,0 +1,30 @@
+[
+  {
+    "oid": 233604,
+    "schema_name": "public",
+    "function_name": "invoke_process_whatsapp_campaign",
+    "arguments": "",
+    "result_type": "void",
+    "prosecdef": true,
+    "proconfig": [
+      "search_path=public, extensions"
+    ],
+    "anon_execute": true,
+    "auth_execute": true,
+    "function_def": "CREATE OR REPLACE FUNCTION public.invoke_process_whatsapp_campaign()\n RETURNS void\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'public', 'extensions'\nAS $function$\nDECLARE\n  v_due_count integer;\n  v_worker_url text;\n  v_worker_secret text := 'sapj_wa_worker_internal_2026';\n  v_vault_secret text;\nBEGIN\n  -- 1. Check if there are any in_progress campaigns due for next recipient dispatch\n  SELECT count(*) INTO v_due_count\n  FROM public.whatsapp_campaigns\n  WHERE status = 'in_progress'\n    AND (next_run_at IS NULL OR next_run_at <= now())\n    AND (worker_lock_until IS NULL OR worker_lock_until < now());\n\n  IF v_due_count = 0 THEN\n    RETURN;\n  END IF;\n\n  -- 2. Worker URL\n  v_worker_url := 'https://dkrtsqienlhpouohmfki.supabase.co/functions/v1/process-whatsapp-campaign';\n\n  -- 3. Read optional secret override from Supabase Vault if present\n  BEGIN\n    SELECT decrypted_secret INTO v_vault_secret\n    FROM vault.decrypted_secrets\n    WHERE name = 'whatsapp_worker_secret'\n    LIMIT 1;\n    IF v_vault_secret IS NOT NULL AND v_vault_secret <> '' THEN\n      v_worker_secret := v_vault_secret;\n    END IF;\n  EXCEPTION WHEN OTHERS THEN\n  END;\n\n  -- 4. Dispatch HTTP POST to process-whatsapp-campaign edge function via pg_net\n  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_net') THEN\n    PERFORM net.http_post(\n      url := v_worker_url,\n      headers := jsonb_build_object(\n        'Content-Type', 'application/json',\n        'X-WhatsApp-Worker-Secret', v_worker_secret\n      ),\n      body := jsonb_build_object(\n        'source', 'pg_cron',\n        'scheduled', true\n      ),\n      timeout_milliseconds := 25000\n    );\n  END IF;\nEND;\n$function$\n"
+  },
+  {
+    "oid": 167830,
+    "schema_name": "public",
+    "function_name": "lookup_login_email",
+    "arguments": "p_username text",
+    "result_type": "TABLE(email text, is_active boolean)",
+    "prosecdef": true,
+    "proconfig": [
+      "search_path=pg_catalog, public, pg_temp"
+    ],
+    "anon_execute": true,
+    "auth_execute": true,
+    "function_def": "CREATE OR REPLACE FUNCTION public.lookup_login_email(p_username text)\n RETURNS TABLE(email text, is_active boolean)\n LANGUAGE plpgsql\n STABLE SECURITY DEFINER\n SET search_path TO 'pg_catalog', 'public', 'pg_temp'\nAS $function$\nDECLARE\n  v_clean_username text;\nBEGIN\n  v_clean_username := lower(trim(COALESCE(p_username, '')));\n  IF v_clean_username = '' OR length(v_clean_username) > 100 THEN\n    RETURN;\n  END IF;\n\n  IF v_clean_username !~ '^[a-z0-9._@+-]+$' THEN\n    RETURN;\n  END IF;\n\n  RETURN QUERY\n  SELECT up.email, up.is_active\n  FROM public.user_profiles AS up\n  WHERE lower(trim(up.username)) = v_clean_username\n    AND up.is_active = true\n  LIMIT 1;\nEND;\n$function$\n"
+  }
+]

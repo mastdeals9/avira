@@ -466,6 +466,10 @@ export function ImportInfo({ initialProduct, compactAnalysis = false, onClose }:
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > 25 * 1024 * 1024) {
+      setUploadMsg({ type: 'error', text: 'File exceeds maximum supported size of 25MB.' });
+      return;
+    }
     setUploading(true); setUploadMsg(null);
     try {
       const ab = await file.arrayBuffer();

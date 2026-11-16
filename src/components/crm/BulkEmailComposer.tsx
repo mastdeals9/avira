@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import { supabase } from '../../lib/supabase';
 import {
   Send, FileText, Clock, Users, CheckCircle,
@@ -8,6 +9,7 @@ import {
 import { showToast } from '../ToastNotification';
 import { getDisplayContactName } from '../../utils/crmEmailPersonalization';
 import { uploadOptimizedFile } from '../../services/storage/uploadOptimizationService';
+import { deduplicateCampaignEmailRecipients } from '../../utils/crmContactCleaners';
 
 interface EmailTemplate {
   id: string;
@@ -170,7 +172,7 @@ export function BulkEmailComposer({ selectedCustomers, onClose, onComplete }: Bu
     setSelectedTemplate(template);
     setShowTemplateMenu(false);
     if (editorRef.current) {
-      editorRef.current.innerHTML = template.body;
+      editorRef.current.innerHTML = DOMPurify.sanitize(template.body);
     }
   };
 
@@ -215,7 +217,8 @@ export function BulkEmailComposer({ selectedCustomers, onClose, onComplete }: Bu
   };
 
   const sendBulkEmails = async () => {
-    const currentHtml = editorRef.current?.innerHTML || '';
+    const rawHtml = editorRef.current?.innerHTML || '';
+    const currentHtml = DOMPurify.sanitize(rawHtml);
     if (!subject.trim() || !currentHtml.trim() || currentHtml === '<br>') {
       showToast({ type: 'error', title: 'Error', message: 'Please fill in subject and message' });
       return;
@@ -253,6 +256,12 @@ export function BulkEmailComposer({ selectedCustomers, onClose, onComplete }: Bu
         .limit(1)
         .maybeSingle();
 
+      // Deduplicate selected customers by email address to prevent duplicate dispatch
+      const { unique: uniqueRecipients, duplicateCount } = deduplicateCampaignEmailRecipients(selectedCustomers);
+      if (duplicateCount > 0) {
+        console.info(`[BulkEmailComposer] Excluded ${duplicateCount} duplicate email recipients from campaign.`);
+      }
+
       // email_body and sender_name go in the initial INSERT so they are always
       // persisted atomically — if only a separate UPDATE were used and it failed
       // silently, retry would have no body to send.
@@ -260,7 +269,7 @@ export function BulkEmailComposer({ selectedCustomers, onClose, onComplete }: Bu
         .from('bulk_email_campaigns')
         .insert({
           subject,
-          total_recipients: selectedCustomers.length,
+          total_recipients: uniqueRecipients.length,
           sent_count: 0,
           failed_count: 0,
           status: 'in_progress',
@@ -298,13 +307,13 @@ export function BulkEmailComposer({ selectedCustomers, onClose, onComplete }: Bu
       // log row exists; otherwise skip the recipients log table too.
       if (campaignId) {
         await supabase.from('bulk_email_recipients').insert(
-          selectedCustomers.map(c => ({
+          uniqueRecipients.map((c, idx) => ({
             campaign_id: campaignId,
             contact_id: c.id,
             company_name: c.company_name,
             email: c.email,
             status: 'pending',
-            send_order: selectedCustomers.findIndex(customer => customer.id === c.id) + 1,
+            send_order: idx + 1,
           }))
         ).then(({ error }) => {
           if (error) throw error;

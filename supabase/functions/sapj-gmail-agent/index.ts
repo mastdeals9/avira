@@ -920,7 +920,10 @@ Deno.serve(async (req: Request) => {
     let isAuthorized = false;
     let callingUserId: string | null = null;
 
-    if (jwt === serviceRoleKey || agentSecretHeader === "sapj-internal-cron-trigger") {
+    const expectedAgentSecret = Deno.env.get("AGENT_SECRET") || Deno.env.get("CRON_SECRET");
+    const isCronCall = Boolean(expectedAgentSecret && agentSecretHeader === expectedAgentSecret);
+
+    if (jwt === serviceRoleKey || isCronCall) {
       isAuthorized = true;
     } else if (jwt) {
       const userClient = createClient(supabaseUrl, anonKey, {

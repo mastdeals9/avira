@@ -80,3 +80,4 @@ BEGIN
   RETURN COALESCE(NEW, OLD);
 END;
 $function$;
+

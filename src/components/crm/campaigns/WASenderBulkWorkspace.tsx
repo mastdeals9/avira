@@ -36,6 +36,11 @@ import {
 } from '../../../utils/whatsappPersonalization';
 import { WhatsAppTransportService } from '../../../services/whatsapp/whatsappTransportService';
 import {
+  cleanContactPerson,
+  resolvePersonalizedGreeting,
+  deduplicateCampaignPhoneRecipients,
+} from '../../../utils/crmContactCleaners';
+import {
   classifyCanonicalPhone,
   getNormalizedDestinationPhone,
 } from '../../../services/crm/canonicalPhoneService';
@@ -145,32 +150,27 @@ export function WASenderBulkWorkspace({
   }, [loadContactsAndPhones]);
 
   // Compute multi-phone audit and extract deduplicated valid mobile candidates
-  const { dedupedCandidates, duplicateCount } = useMemo(() => {
+  const { dedupedCandidates, duplicateCount, ambiguousSharedList } = useMemo(() => {
     if (rawContacts.length === 0) {
-      return { dedupedCandidates: [], duplicateCount: 0 };
+      return { dedupedCandidates: [], duplicateCount: 0, ambiguousSharedList: [] };
     }
 
     const audit = auditContactsMultiPhone(rawContacts, phoneRecords);
     const candidateItems = audit.items.filter((i) => i.is_candidate);
 
-    const seenNumbers = new Set<string>();
-    const unique: VerifiedContactItem[] = [];
-    let dups = 0;
+    // Apply strict canonical phone deduplication and detect shared switchboards across entities
+    const { unique, duplicates, ambiguousShared } = deduplicateCampaignPhoneRecipients(candidateItems);
 
-    for (const item of candidateItems) {
-      const numKey = getNormalizedDestinationPhone(item);
-      if (!numKey) continue;
-      if (seenNumbers.has(numKey)) {
-        dups++;
-        continue;
-      }
-      seenNumbers.add(numKey);
-      unique.push(item);
-    }
+    // Clean contact_person so company names or phone numbers are never shown
+    const cleanedUnique = unique.map((item) => ({
+      ...item,
+      contact_person: cleanContactPerson(item.contact_person, item.company_name),
+    }));
 
     return {
-      dedupedCandidates: unique,
-      duplicateCount: dups,
+      dedupedCandidates: cleanedUnique,
+      duplicateCount: duplicates.length,
+      ambiguousSharedList: ambiguousShared,
     };
   }, [rawContacts, phoneRecords]);
 
@@ -1021,11 +1021,21 @@ export function WASenderBulkWorkspace({
                 </button>
               </div>
 
-              {duplicateCount > 0 && (
-                <span className="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                  {duplicateCount} Dups Auto-Excluded
-                </span>
-              )}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {duplicateCount > 0 && (
+                  <span className="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200" title="Same company duplicate numbers automatically consolidated to one message">
+                    {duplicateCount} Dups Auto-Excluded
+                  </span>
+                )}
+                {ambiguousSharedList.length > 0 && (
+                  <span
+                    className="text-[10px] text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200 font-medium"
+                    title={ambiguousSharedList.map(s => `${s.phone}: ${s.reason} (${s.companies.join(', ')})`).join('\n')}
+                  >
+                    {ambiguousSharedList.length} Shared Switchboard(s) Excluded
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1367,7 +1377,7 @@ export function WASenderBulkWorkspace({
                         {activePreviewCandidate?.company_name || 'PT Farmasi Indonesia'}
                       </div>
                       <div className="text-[9px] text-emerald-100 truncate">
-                        {activePreviewCandidate?.contact_person || 'Bpk Rudi'} &bull;{' '}
+                        {resolvePersonalizedGreeting(activePreviewCandidate?.contact_person, activePreviewCandidate?.company_name)} &bull;{' '}
                         {activePreviewCandidate ? getNormalizedDestinationPhone(activePreviewCandidate) : '+628123456789'}
                       </div>
                     </div>

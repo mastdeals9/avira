@@ -5,6 +5,8 @@
 // Enforces that every recipient receives their own resolved fields with sensible fallbacks,
 // preventing any raw unresolved {{tag}} placeholders from being dispatched.
 
+import { resolvePersonalizedGreeting } from './crmContactCleaners.ts';
+
 export interface WhatsAppRecipientData {
   id?: string;
   company_name?: string | null;
@@ -39,10 +41,13 @@ export function formatPersonalizedWhatsAppMessage(
 ): string {
   if (!template) return '';
 
-  const contactPerson =
-    (recipient?.contact_name || recipient?.contact_person || '').trim() || 'Bapak/Ibu';
   const companyName =
     (recipient?.customer_name || recipient?.company_name || '').trim() || 'Rekan Bisnis';
+  const rawPerson = recipient?.contact_name || recipient?.contact_person;
+  const contactPerson = resolvePersonalizedGreeting(rawPerson, companyName, {
+    contextTemplate: template,
+    language: (options as any)?.language,
+  });
   const productName = (options?.productName || '').trim() || 'Bahan Baku Farmasi & API';
   const designation = (recipient?.designation || '').trim() || 'Purchasing';
   const city = (recipient?.city || '').trim() || (options?.defaultCity || 'Jakarta');
