@@ -14,7 +14,7 @@ const managerSource = readFileSync(
 );
 
 const migrationSource = readFileSync(
-  new URL('../supabase/migrations/20261117130000_correct_pv26_028_party_type_and_guard_settled_advances.sql', import.meta.url),
+  new URL('../supabase/migrations/20261117140111_correct_pv26_028_party_type_and_guard_settled_advances.sql', import.meta.url),
   'utf8',
 );
 
