@@ -603,10 +603,29 @@ test('Bank Reconciliation & Fund Transfer Linkage Regression Suite', async (t) =
     assert.match(reconCode, /const fundId = firstFund\?\.document_id \|\| legacyFundTransferId \|\| null;/);
     assert.match(reconCode, /if \(!firstFund && row\.matched_fund_transfer_id\)/);
 
-    // 2. FundTransferManager triggers refresh on contra operations
+    // 2. Direct fund_transfers table query does NOT request from_currency or to_currency
+    assert.doesNotMatch(
+      reconCode,
+      /\.from\('fund_transfers'\)[\s\S]*?\.select\([^)]*from_currency/,
+      'Direct fund_transfers query must never select from_currency'
+    );
+    assert.doesNotMatch(
+      reconCode,
+      /\.from\('fund_transfers'\)[\s\S]*?\.select\([^)]*to_currency/,
+      'Direct fund_transfers query must never select to_currency'
+    );
+
+    // 3. Exact valid projection used on fund_transfers table
+    const expectedProjection = 'id, transfer_number, amount, from_amount, to_amount, description, transfer_date, from_account_type, to_account_type, from_bank_account_id, to_bank_account_id, from_bank_statement_line_id, to_bank_statement_line_id, journal_entry_id, status';
+    assert.ok(
+      reconCode.includes(expectedProjection),
+      `Expected BankReconciliationEnhanced to select exact projection: ${expectedProjection}`
+    );
+
+    // 4. FundTransferManager triggers refresh on contra operations
     assert.match(fundCode, /notifyFinanceReconciliationRefresh\(\);/);
 
-    // 3. bankTransactionLinking includes matched_fund_transfer_id check
+    // 5. bankTransactionLinking includes matched_fund_transfer_id check
     assert.match(linkCode, /matched_fund_transfer_id/);
   });
 
@@ -672,7 +691,26 @@ test('Bank Reconciliation & Fund Transfer Linkage Regression Suite', async (t) =
       assert.equal(bslRes.rows[0].reconciliation_status, 'matched');
       assert.equal(bslRes.rows[0].matched_fund_transfer_id, '37267bc2-e958-4a17-8d52-ee47306807e7');
 
-      // 3. Rollback-only simulation of trigger update_fund_transfer_bank_links()
+      // 3. Verify base table columns for fund_transfers: all projected columns exist and currency cols do not exist
+      const colRes = await client.query(`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'fund_transfers'
+      `);
+      const existingCols = new Set(colRes.rows.map(r => r.column_name));
+      assert.equal(existingCols.has('from_currency'), false, 'from_currency must not exist in fund_transfers table');
+      assert.equal(existingCols.has('to_currency'), false, 'to_currency must not exist in fund_transfers table');
+      const projectedCols = [
+        'id', 'transfer_number', 'amount', 'from_amount', 'to_amount', 'description',
+        'transfer_date', 'from_account_type', 'to_account_type', 'from_bank_account_id',
+        'to_bank_account_id', 'from_bank_statement_line_id', 'to_bank_statement_line_id',
+        'journal_entry_id', 'status',
+      ];
+      for (const col of projectedCols) {
+        assert.ok(existingCols.has(col), `Expected column ${col} to exist in fund_transfers table`);
+      }
+
+      // 4. Rollback-only simulation of trigger update_fund_transfer_bank_links()
       await client.query('BEGIN');
       try {
         await client.query(`SET LOCAL "request.jwt.claim.role" = 'service_role'`);

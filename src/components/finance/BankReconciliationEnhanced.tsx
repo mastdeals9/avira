@@ -176,8 +176,6 @@ interface StatementLine {
     to_bank_account_id?: string | null;
     from_bank_statement_line_id?: string | null;
     to_bank_statement_line_id?: string | null;
-    from_currency?: string | null;
-    to_currency?: string | null;
     journal_entry_id?: string | null;
     status?: string;
   } | null;
@@ -979,7 +977,7 @@ export function BankReconciliationEnhanced({
       if (fundTransferIds.length > 0) {
         const fundTransfers = await loadBankReconciliationRowsInBatches<any>(fundTransferIds, batchIds => supabase
           .from('fund_transfers')
-          .select('id, transfer_number, amount, from_amount, to_amount, description, transfer_date, from_account_type, to_account_type, from_bank_account_id, to_bank_account_id, from_bank_statement_line_id, to_bank_statement_line_id, from_currency, to_currency, journal_entry_id, status')
+          .select('id, transfer_number, amount, from_amount, to_amount, description, transfer_date, from_account_type, to_account_type, from_bank_account_id, to_bank_account_id, from_bank_statement_line_id, to_bank_statement_line_id, journal_entry_id, status')
           .in('id', batchIds));
         fundTransfers.forEach(f => fundTransferMap.set(f.id, f));
       }
