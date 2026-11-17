@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLanguage } from '../../contexts/LanguageContext';
-import { Search, ArrowUpCircle, Printer, Lock, RotateCcw, CheckCircle, X, ExternalLink, Info, Link2, ChevronDown } from 'lucide-react';
+import { Search, ArrowUpCircle, Printer, Lock, RotateCcw, CheckCircle, X, ExternalLink, Info, Link2, ChevronDown, AlertCircle } from 'lucide-react';
 import { FinanceModal as Modal } from './FinanceModal';
 import { SearchableSelect } from '../SearchableSelect';
 import { MoneyInput } from '../MoneyInput';
@@ -34,6 +34,11 @@ import {
   type CanonicalAllocationDetail,
   type LegacyLinkDetail,
 } from '../../utils/voucherBankLinks';
+import {
+  resolvePaymentPartyType,
+  isSettledSalaryAdvance,
+  getSettledSalaryAdvanceSummary,
+} from '../../utils/paymentVoucherPartyResolver';
 
 interface Supplier {
   id: string;
@@ -892,7 +897,8 @@ export function PaymentVoucherManager({
         updated.customer_id = '';
         updated.staff_id = partyId;
         const staff = staffList.find(s => s.id === partyId);
-        if (staff?.default_payment_method) {
+        // Only initialize default payment method for new vouchers; preserve saved payment method on edit
+        if (!editingVoucher && staff?.default_payment_method) {
           updated.payment_method = staff.default_payment_method;
         }
       } else if (partyType === 'director') {
@@ -1089,6 +1095,9 @@ export function PaymentVoucherManager({
   const totalDiscount = allocations.reduce((sum, a) => sum + (a.discountAmount || 0), 0);
   const totalExpenseBillAllocated = expenseBillAllocations.reduce((sum, a) => sum + a.amount, 0);
 
+  const isSettledAdvance = isSettledSalaryAdvance(editingVoucher);
+  const isAccountingLocked = !!(editingVoucher?.is_posted || isSettledAdvance);
+
   const resetForm = () => {
     setFormData({
       voucher_date: new Date().toISOString().split('T')[0],
@@ -1191,7 +1200,7 @@ export function PaymentVoucherManager({
       return;
     }
     setEditingVoucher(v);
-    const vPartyType: PartyType = (v.party_type as PartyType) || (v.customer_id ? 'customer' : v.staff_id ? 'employee' : 'supplier');
+    const vPartyType: PartyType = resolvePaymentPartyType(v);
     setPartyType(vPartyType);
     setFormData({
       voucher_date: v.voucher_date,
@@ -1493,6 +1502,60 @@ export function PaymentVoucherManager({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (editingVoucher && isSettledSalaryAdvance(editingVoucher)) {
+      const originalPartyType = resolvePaymentPartyType(editingVoucher);
+      const accountingChanged =
+        formData.amount !== editingVoucher.amount ||
+        formData.staff_id !== (editingVoucher.staff_id || '') ||
+        formData.payment_method !== editingVoucher.payment_method ||
+        formData.payment_purpose !== editingVoucher.payment_purpose ||
+        formData.bank_account_id !== (editingVoucher.bank_account_id || '') ||
+        formData.voucher_date !== editingVoucher.voucher_date ||
+        formData.party_type !== originalPartyType ||
+        formData.pph_amount !== (editingVoucher.pph_amount || 0) ||
+        formData.pph_code_id !== (editingVoucher.pph_code_id || '');
+
+      if (accountingChanged) {
+        alert(
+          'This salary advance has already been applied to payroll and its accounting details are locked. ' +
+          'Please reverse or unapply the payroll settlement before making accounting changes.'
+        );
+        return;
+      }
+
+      // Safe metadata-only update: bypass save_payment_voucher_with_allocations to prevent resetting
+      // salary_advance_status to 'outstanding' or dropping allocations
+      try {
+        const uploadedUrls = uploadingFiles.length > 0
+          ? await uploadFinanceDocuments(uploadingFiles, `payments/${editingVoucher.id}`)
+          : [];
+        const allDocUrls = [...formData.document_urls, ...uploadedUrls];
+        const { error: updateErr } = await supabase
+          .from('payment_vouchers')
+          .update({
+            description: formData.description || null,
+            reference_number: formData.reference_number || null,
+            document_urls: allDocUrls,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', editingVoucher.id);
+        if (updateErr) throw updateErr;
+
+        setModalOpen(false);
+        setEditingVoucher(null);
+        resetForm();
+        onCloseEmbedded?.();
+        loadVouchers();
+        return;
+      } catch (err) {
+        const msg = (err instanceof Error ? err.message : null)
+          ?? (err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : null)
+          ?? 'Unknown error';
+        alert('Failed to update metadata: ' + msg);
+        return;
+      }
+    }
+
     const currentPartyType: PartyType = formData.party_type || (formData.payee_type === 'staff' ? 'employee' : 'supplier');
     if (currentPartyType === 'supplier' && !formData.supplier_id) {
       alert('Please select a supplier.');
@@ -1695,19 +1758,20 @@ export function PaymentVoucherManager({
   };
 
   const getPartyDisplayName = (v: PaymentVoucher) => {
-    if (v.party_type === 'customer' || v.customer_id) {
+    const pType = resolvePaymentPartyType(v);
+    if (pType === 'customer') {
       return v.customers?.company_name || 'Customer';
     }
-    if (v.party_type === 'employee' || v.staff_id) {
+    if (pType === 'employee') {
       return v.finance_staff_master?.full_name || 'Staff';
     }
-    if (v.party_type === 'director') {
+    if (pType === 'director') {
       return v.description?.replace(/^Director:\s*/i, '') || 'Director';
     }
-    if (v.party_type === 'other') {
+    if (pType === 'other') {
       return v.description || 'Other Party';
     }
-    return v.suppliers?.company_name || v.customers?.company_name || v.finance_staff_master?.full_name || '—';
+    return v.suppliers?.company_name || '—';
   };
 
   const getPartyTypeBadge = (pType?: string | null) => {
@@ -1827,7 +1891,7 @@ export function PaymentVoucherManager({
               <div>
                 <div className="font-medium text-gray-900 text-xs">{getPartyDisplayName(v)}</div>
                 <div className="flex items-center gap-1 mt-0.5">
-                  {getPartyTypeBadge(v.party_type || (v.customer_id ? 'customer' : v.staff_id ? 'employee' : 'supplier'))}
+                  {getPartyTypeBadge(resolvePaymentPartyType(v))}
                   {v.settlement_discount && v.settlement_discount > 0 ? (
                     <span className="inline-block px-1.5 py-0.2 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
                       Disc: {fmt(v.settlement_discount, v.payment_currency || 'IDR')}
@@ -2048,7 +2112,7 @@ export function PaymentVoucherManager({
                         {getPartyDisplayName(voucher)}
                       </span>
                       <span className="shrink-0 scale-90 origin-left">
-                        {getPartyTypeBadge(voucher.party_type || (voucher.customer_id ? 'customer' : voucher.staff_id ? 'employee' : 'supplier'))}
+                        {getPartyTypeBadge(resolvePaymentPartyType(voucher))}
                       </span>
                     </div>
                     <span className="text-[11px] text-gray-400 font-normal shrink-0">
@@ -2159,12 +2223,25 @@ export function PaymentVoucherManager({
               Cancel
             </button>
             <button type="submit" form="payment-voucher-form" className={`${F_BTN_PRIMARY} bg-red-600 hover:bg-red-700`}>
-              {editingVoucher ? 'Update Payment' : 'Save Payment'}
+              {editingVoucher ? (isSettledAdvance ? 'Update Metadata' : 'Update Payment') : 'Save Payment'}
             </button>
           </>
         }
       >
         <form id="payment-voucher-form" onSubmit={handleSubmit} className="flex flex-col gap-3">
+          {editingVoucher && isSettledAdvance && (
+            <div className="p-3 bg-amber-50 border border-amber-300 rounded-md text-xs text-amber-900 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div>
+                <span className="font-semibold">Salary Advance Applied to Payroll:</span>{' '}
+                This voucher has already been applied to payroll ({getSettledSalaryAdvanceSummary(editingVoucher)}).
+                Accounting fields (Party, Staff, Purpose, Payment Method, Amount, Bank, Date) are locked to protect settlement integrity.
+                Only non-accounting metadata (Description, Reference, Attachments) can be updated.
+                To modify accounting fields, reverse or unapply the payroll settlement in Salary Expenses first.
+              </div>
+            </div>
+          )}
+
           {/* Row 1 — Party & Settlement Details */}
           <SapRow>
             <FloatingField label="Date" required span={3} filled={!!formData.voucher_date}>
@@ -2173,6 +2250,7 @@ export function PaymentVoucherManager({
                 aria-label="Voucher Date"
                 type="date"
                 required
+                disabled={isAccountingLocked}
                 value={formData.voucher_date}
                 onChange={(e) => setFormData({ ...formData, voucher_date: e.target.value })}
                 className={FLOAT_INPUT}
@@ -2183,7 +2261,7 @@ export function PaymentVoucherManager({
                 name="party_type"
                 aria-label="Party Type"
                 value={formData.party_type}
-                disabled={!!editingVoucher}
+                disabled={!!editingVoucher || isAccountingLocked}
                 onChange={(e) => handlePartyTypeChange(e.target.value as PartyType)}
                 className={FLOAT_INPUT}
               >
@@ -2203,12 +2281,14 @@ export function PaymentVoucherManager({
               {editingVoucher ? (
                 <div className={FLOAT_INPUT + ' !bg-gray-50 flex items-center'}>
                   {formData.party_type === 'customer'
-                    ? (customers.find(c => c.id === formData.customer_id)?.company_name || 'Unknown Customer')
+                    ? (customers.find(c => c.id === formData.customer_id)?.company_name || editingVoucher.customers?.company_name || 'Unknown Customer')
                     : formData.party_type === 'employee'
-                    ? (staffList.find(s => s.id === formData.staff_id)?.full_name || 'Unknown Staff')
+                    ? (staffList.find(s => s.id === formData.staff_id)?.full_name || editingVoucher.finance_staff_master?.full_name || 'Staff Member')
                     : formData.party_type === 'director'
-                    ? (formData.other_party_name || 'Director')
-                    : (suppliers.find(s => s.id === formData.supplier_id)?.company_name || 'Unknown Supplier')}
+                    ? (formData.other_party_name || editingVoucher.description?.replace(/^Director:\s*/i, '') || 'Director')
+                    : formData.party_type === 'other'
+                    ? (formData.other_party_name || editingVoucher.description || 'Other Party')
+                    : (suppliers.find(s => s.id === formData.supplier_id)?.company_name || editingVoucher.suppliers?.company_name || 'Unknown Supplier')}
                 </div>
               ) : formData.party_type === 'customer' ? (
                 <SearchableSelect
@@ -2258,6 +2338,7 @@ export function PaymentVoucherManager({
                 name="settlement_against"
                 aria-label="Settlement Against"
                 value={formData.settlement_against}
+                disabled={isAccountingLocked}
                 onChange={(e) => setFormData({ ...formData, settlement_against: e.target.value as any })}
                 className={FLOAT_INPUT}
               >
@@ -2284,11 +2365,14 @@ export function PaymentVoucherManager({
                 value={formData.payment_purpose}
                 onChange={(e) => setFormData({ ...formData, payment_purpose: e.target.value })}
                 className={FLOAT_INPUT}
-                disabled={!!editingVoucher?.is_posted}
+                disabled={isAccountingLocked || !!editingVoucher?.is_posted}
               >
                 {(PAYMENT_PURPOSES[formData.party_type] || PAYMENT_PURPOSES.supplier).map(p => (
                   <option key={p.value} value={p.value}>{p.label}</option>
                 ))}
+                {formData.payment_purpose && !(PAYMENT_PURPOSES[formData.party_type] || PAYMENT_PURPOSES.supplier).some(p => p.value === formData.payment_purpose) && (
+                  <option value={formData.payment_purpose}>{formData.payment_purpose.replace(/_/g, ' ')}</option>
+                )}
               </select>
             </FloatingField>
 
@@ -2298,6 +2382,7 @@ export function PaymentVoucherManager({
                 aria-label="Payment Method"
                 required
                 value={formData.payment_method}
+                disabled={isAccountingLocked}
                 onChange={(e) => setFormData({ ...formData, payment_method: e.target.value })}
                 className={FLOAT_INPUT}
               >
@@ -2308,6 +2393,9 @@ export function PaymentVoucherManager({
                 <option value="other">Other</option>
                 {formData.party_type === 'employee' && (
                   <option value="advance_adjustment">Adjust Against Staff Advance</option>
+                )}
+                {formData.payment_method && !['cash', 'bank_transfer', 'check', 'giro', 'other', ...(formData.party_type === 'employee' ? ['advance_adjustment'] : [])].includes(formData.payment_method) && (
+                  <option value={formData.payment_method}>{formData.payment_method.replace(/_/g, ' ')}</option>
                 )}
               </select>
             </FloatingField>
@@ -2330,6 +2418,7 @@ export function PaymentVoucherManager({
                     name="bank_account_id"
                     aria-label="Bank Account Id"
                     value={formData.bank_account_id}
+                    disabled={isAccountingLocked}
                     onChange={(e) => setFormData({ ...formData, bank_account_id: e.target.value })}
                     className={FLOAT_INPUT}
                   >
@@ -2404,6 +2493,7 @@ export function PaymentVoucherManager({
               <MoneyInput
                 required
                 decimal
+                disabled={isAccountingLocked}
                 value={formData.amount}
                 onChange={(n) => setFormData({ ...formData, amount: n })}
                 className={`${FLOAT_INPUT} !text-right !font-mono !font-semibold text-rose-700`}
@@ -2413,6 +2503,7 @@ export function PaymentVoucherManager({
             <FloatingField label={`Purchase / Settlement Discount (${bankCurrency})`} span={4} filled={formData.settlement_discount > 0}>
               <MoneyInput
                 decimal
+                disabled={isAccountingLocked}
                 value={formData.settlement_discount}
                 onChange={(n) => setFormData({ ...formData, settlement_discount: n })}
                 className={`${FLOAT_INPUT} !text-right !font-mono text-amber-700 bg-amber-50/20`}
@@ -2425,6 +2516,7 @@ export function PaymentVoucherManager({
                   name="adjustment_reason"
                   aria-label="Adjustment Reason"
                   value={formData.adjustment_reason}
+                  disabled={isAccountingLocked}
                   onChange={(e) => setFormData({ ...formData, adjustment_reason: e.target.value })}
                   className={FLOAT_INPUT}
                 >
@@ -2674,6 +2766,7 @@ export function PaymentVoucherManager({
                   name="pph_code_id"
                   aria-label="Pph Code Id"
                   value={formData.pph_code_id}
+                  disabled={isAccountingLocked}
                   onChange={(e) => setFormData({ ...formData, pph_code_id: e.target.value })}
                   className={FLOAT_INPUT}
                 >
@@ -2690,6 +2783,7 @@ export function PaymentVoucherManager({
               >
                 <MoneyInput
                   decimal
+                  disabled={isAccountingLocked}
                   value={formData.pph_amount}
                   onChange={(n) => setFormData({ ...formData, pph_amount: n })}
                   className={`${FLOAT_INPUT} !text-right !font-mono text-orange-700`}
@@ -3040,7 +3134,7 @@ export function PaymentVoucherManager({
               <div>
                 <div className="text-xs text-gray-500 mb-0.5">Party</div>
                 <div className="font-medium text-gray-900">{getPartyDisplayName(viewingVoucher)}</div>
-                <div className="mt-0.5">{getPartyTypeBadge(viewingVoucher.party_type || (viewingVoucher.customer_id ? 'customer' : viewingVoucher.staff_id ? 'employee' : 'supplier'))}</div>
+                <div className="mt-0.5">{getPartyTypeBadge(resolvePaymentPartyType(viewingVoucher))}</div>
               </div>
               <div>
                 <div className="text-xs text-gray-500 mb-0.5">Payment Method</div>
