@@ -1,8 +1,14 @@
 import { Fragment, useEffect, useState, useRef, useMemo } from 'react';
 import { supabase } from '../../lib/supabase';
-import { Upload, RefreshCw, CheckCircle2, AlertCircle, XCircle, Plus, Calendar, Landmark, FileText, Layers, ExternalLink, Pencil as Edit, ChevronDown, ChevronRight, ChevronLeft, Clock, Info, X, Sparkles, Link2, Search, RotateCcw } from 'lucide-react';
+import { Upload, RefreshCw, CheckCircle2, AlertCircle, XCircle, Plus, Calendar, Landmark, FileText, Layers, ExternalLink, Pencil as Edit, ChevronDown, ChevronRight, ChevronLeft, Clock, Info, X, Sparkles, Link2, Search, RotateCcw, HelpCircle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { FinanceModal as Modal } from './FinanceModal';
+import {
+  findExpenseCandidatesForBankLine,
+  isCandidateAmbiguous,
+  getExpenseOutstandingAmount,
+  type CandidateExpense,
+} from './interactiveBankMatching';
 import { SearchableSelect } from '../SearchableSelect';
 import { MoneyInput } from '../MoneyInput';
 import { FloatingField, FLOAT_INPUT, FLOAT_TEXTAREA } from './FloatingField';
@@ -96,6 +102,7 @@ interface StatementLine {
   balance: number;
   currency: string;
   status: 'matched' | 'partially_reconciled' | 'suggested' | 'unmatched' | 'recorded';
+  manually_unlinked?: boolean | null;
   allocatedAmount: number;
   remainingAmount: number;
   allocations: Array<{
@@ -457,6 +464,17 @@ export function BankReconciliationEnhanced({
   const [loadingUploadsAudit, setLoadingUploadsAudit] = useState(false);
   const [showUnmatchedDrawer, setShowUnmatchedDrawer] = useState(false);
 
+  // Interactive Bank Reconciliation Matching Queue & Popup
+  const [interactiveQueue, setInteractiveQueue] = useState<Array<{ line: StatementLine; candidates: CandidateExpense[] }>>([]);
+  const [queueIndex, setQueueIndex] = useState(0);
+  const [selectedCandidateId, setSelectedCandidateId] = useState('');
+  const [skippedSessionLineIds, setSkippedSessionLineIds] = useState<Set<string>>(new Set());
+  const [isInteractiveModalOpen, setIsInteractiveModalOpen] = useState(false);
+  const [noMatchModalOpen, setNoMatchModalOpen] = useState(false);
+  const [noMatchLine, setNoMatchLine] = useState<StatementLine | null>(null);
+  const [isLinkingCandidate, setIsLinkingCandidate] = useState(false);
+  const [inspectingExpense, setInspectingExpense] = useState<any | null>(null);
+
   const loadUploadsAudit = async () => {
     if (!selectedBank) return;
     setLoadingUploadsAudit(true);
@@ -782,6 +800,11 @@ export function BankReconciliationEnhanced({
           amount,
           expense_category,
           voucher_number,
+          approval_status,
+          bank_account_id,
+          payment_method,
+          payment_reference,
+          invoice_number,
           paid_amount,
           pph_amount,
           pph_paid_amount,
@@ -789,7 +812,8 @@ export function BankReconciliationEnhanced({
           stamp_duty_amount,
           bank_charges_amount,
           broker_items,
-          suppliers(company_name)
+          suppliers(company_name),
+          finance_staff_master:staff_id(full_name)
         `)
         .order('expense_date', { ascending: false });
 
@@ -799,8 +823,14 @@ export function BankReconciliationEnhanced({
       const postingStates = await getEffectiveExpensePostingStates((allExpenses || []).map(expense => expense.id));
       // Expenses can receive legal partial payments. A prior bank link is only
       // unavailable once the relevant supplier/PPh balance is fully settled.
+      // Include approved expenses with effective posting states AND pending_approval expenses.
       setExpenses((allExpenses || [])
-        .filter(expense => isEffectiveExpensePosting(postingStates.get(expense.id)?.effective_posting_state))
+        .filter(expense => {
+          if (expense.approval_status === 'approved') {
+            return isEffectiveExpensePosting(postingStates.get(expense.id)?.effective_posting_state);
+          }
+          return expense.approval_status === 'pending_approval';
+        })
         .map((expense: any) => ({
         ...expense,
         _linked: linked.expenseIds.has(expense.id),
@@ -1219,6 +1249,7 @@ export function BankReconciliationEnhanced({
           matchedTaxPayment: taxId ? taxPaymentMap.get(taxId) : null,
           matchedEntryRecord: journalId ? entryMap.get(journalId) : null,
           notes: row.notes,
+          manually_unlinked: row.manually_unlinked,
         };
       });
 
@@ -2222,6 +2253,170 @@ export function BankReconciliationEnhanced({
     return { lines, metadata };
   };
 
+  const findAmbiguousLines = (lines: StatementLine[], expenseList: any[], skippedSet: Set<string>) => {
+    const items: Array<{ line: StatementLine; candidates: CandidateExpense[] }> = [];
+    for (const line of lines) {
+      if (line.status === 'matched') continue;
+      if (line.manually_unlinked) continue;
+      if (skippedSet.has(line.id)) continue;
+      const candidates = findExpenseCandidatesForBankLine(line, expenseList, selectedBank);
+      if (isCandidateAmbiguous(candidates)) {
+        items.push({ line, candidates });
+      }
+    }
+    return items;
+  };
+
+  const ambiguousLines = useMemo(() => {
+    return findAmbiguousLines(statementLines, expenses, skippedSessionLineIds);
+  }, [statementLines, expenses, selectedBank, skippedSessionLineIds]);
+  const ambiguousCount = ambiguousLines.length;
+
+  const openInteractiveMatchForLine = (line: StatementLine) => {
+    const candidates = findExpenseCandidatesForBankLine(line, expenses, selectedBank);
+    if (candidates.length === 0) {
+      setNoMatchLine(line);
+      setNoMatchModalOpen(true);
+      return;
+    }
+    setInteractiveQueue([{ line, candidates }]);
+    setQueueIndex(0);
+    setSelectedCandidateId('');
+    setIsInteractiveModalOpen(true);
+  };
+
+  const handleLinkSelectedCandidate = async () => {
+    const currentItem = interactiveQueue[queueIndex];
+    if (!currentItem || !selectedCandidateId || isLinkingCandidate) return;
+    const cand = currentItem.candidates.find(c => c.id === selectedCandidateId);
+    if (!cand) return;
+    const line = currentItem.line;
+
+    setIsLinkingCandidate(true);
+    try {
+      if (cand.approvalStatus === 'approved') {
+        const lineRemaining = line.remainingAmount !== undefined && line.remainingAmount > 0.01
+          ? line.remainingAmount
+          : Number(line.debit || line.credit || 0);
+        const allocAmount = Math.min(lineRemaining, cand.outstandingAmount);
+        if (allocAmount <= 0.01) {
+          throw new Error('No remaining amount is available to allocate');
+        }
+
+        await linkBankStatementLine(line.id, 'expense', cand.id, 'supplier', allocAmount);
+
+        // Verify canonical allocation was created before counting as matched
+        const { data: allocCheck, error: allocErr } = await supabase
+          .from('bank_statement_allocations')
+          .select('id')
+          .eq('bank_statement_line_id', line.id)
+          .eq('document_type', 'expense')
+          .eq('document_id', cand.id)
+          .limit(1);
+
+        if (allocErr || !allocCheck || allocCheck.length === 0) {
+          throw new Error('Verification failed: canonical bank allocation row was not created in database');
+        }
+
+        setActionFeedback({
+          type: 'success',
+          title: 'Bank transaction linked',
+          message: `Linked ${cand.voucherNumber} to statement line.`,
+          details: [
+            { label: 'Voucher', value: cand.voucherNumber },
+            { label: 'Allocated Amount', value: formatCurrency(allocAmount, line.currency) },
+            { label: 'Status', value: 'Reconciled' },
+          ],
+          timestamp: Date.now(),
+        });
+      } else {
+        // Pending approval expense: link safely in supported workflow, preserving pending status
+        // No second bank match approval will be required when expense is approved
+        await supabase
+          .from('finance_expenses')
+          .update({ originating_bank_statement_line_id: line.id })
+          .eq('id', cand.id);
+
+        await supabase
+          .from('bank_statement_lines')
+          .update({
+            matched_expense_id: cand.id,
+            matching_status: 'suggested',
+            reconciliation_status: 'needs_review',
+            notes: `User-confirmed link to pending expense ${cand.voucherNumber}; ledger reconciliation completes automatically on expense approval`,
+            manually_unlinked: false,
+          })
+          .eq('id', line.id);
+
+        setActionFeedback({
+          type: 'success',
+          title: 'Bank transaction linked to pending expense',
+          message: `Linked to ${cand.voucherNumber}. No second bank reconciliation approval is needed; ledger reconciliation will complete automatically when approved in Finance Expenses.`,
+          details: [
+            { label: 'Voucher', value: cand.voucherNumber },
+            { label: 'Expense Status', value: 'Pending Approval' },
+            { label: 'Reconciliation', value: 'Awaiting Expense Approval' },
+          ],
+          timestamp: Date.now(),
+        });
+      }
+
+      selfActionTimestampRef.current = Date.now();
+      await loadStatementLines();
+      await loadExpenses();
+
+      // Advance to next ambiguous transaction in queue
+      if (queueIndex + 1 < interactiveQueue.length) {
+        setQueueIndex(queueIndex + 1);
+        setSelectedCandidateId('');
+      } else {
+        setIsInteractiveModalOpen(false);
+        setInteractiveQueue([]);
+        setQueueIndex(0);
+        setSelectedCandidateId('');
+      }
+    } catch (err: any) {
+      console.error('Error linking candidate:', err);
+      setActionFeedback({
+        type: 'error',
+        title: 'Failed to link expense',
+        message: err?.message || 'Unknown error occurred',
+        timestamp: Date.now(),
+      });
+    } finally {
+      setIsLinkingCandidate(false);
+    }
+  };
+
+  const handleSkipCurrentCandidate = () => {
+    const currentItem = interactiveQueue[queueIndex];
+    if (currentItem) {
+      setSkippedSessionLineIds(prev => new Set(prev).add(currentItem.line.id));
+    }
+    if (queueIndex + 1 < interactiveQueue.length) {
+      setQueueIndex(queueIndex + 1);
+      setSelectedCandidateId('');
+    } else {
+      setIsInteractiveModalOpen(false);
+      setInteractiveQueue([]);
+      setQueueIndex(0);
+      setSelectedCandidateId('');
+    }
+  };
+
+  const handleSkipAllCandidates = () => {
+    const remainingIds = interactiveQueue.slice(queueIndex).map(item => item.line.id);
+    setSkippedSessionLineIds(prev => {
+      const next = new Set(prev);
+      remainingIds.forEach(id => next.add(id));
+      return next;
+    });
+    setIsInteractiveModalOpen(false);
+    setInteractiveQueue([]);
+    setQueueIndex(0);
+    setSelectedCandidateId('');
+  };
+
   const autoMatchTransactions = async () => {
     if (!selectedBank || autoMatching) return;
 
@@ -2239,16 +2434,26 @@ export function BankReconciliationEnhanced({
       const skippedCount = result?.skipped_count || 0;
 
       await loadStatementLines();
+      await loadExpenses();
 
-      if (suggestedCount > 0 && activeFilter === 'unmatched') {
+      // Detect ambiguous transactions with >= 2 candidates that need user decision
+      const freshAmbiguous = findAmbiguousLines(statementLines, expenses, skippedSessionLineIds);
+
+      if (freshAmbiguous.length > 0) {
+        setInteractiveQueue(freshAmbiguous);
+        setQueueIndex(0);
+        setSelectedCandidateId('');
+        setIsInteractiveModalOpen(true);
+      } else if (suggestedCount > 0 && activeFilter === 'unmatched') {
         setActiveFilter('suggested');
       }
 
       setActionFeedback({
         type: 'success',
-        title: 'Auto-match completed successfully',
+        title: 'Auto-match completed',
         details: [
-          { label: 'Matched', value: `${matchedCount}` },
+          { label: 'Auto-Matched', value: `${matchedCount}` },
+          { label: 'Needs Decision', value: `${freshAmbiguous.length}` },
           { label: 'Needs Review', value: `${suggestedCount}` },
           { label: 'Unmatched / Skipped', value: `${skippedCount}` },
           { label: 'Tolerance', value: '±7 days maximum' },
@@ -2349,10 +2554,28 @@ export function BankReconciliationEnhanced({
           .maybeSingle();
 
         if (exp?.approval_status === 'pending_approval') {
+          // User selection/confirmation authorizes the bank match without a second approval.
+          // Safely record confirmed bank-link decision without auto-approving or fabricating journals.
+          await supabase
+            .from('finance_expenses')
+            .update({ originating_bank_statement_line_id: lineId })
+            .eq('id', exp.id);
+          await supabase
+            .from('bank_statement_lines')
+            .update({
+              matched_expense_id: exp.id,
+              matching_status: 'suggested',
+              reconciliation_status: 'needs_review',
+              notes: `User-confirmed link to pending expense ${exp.voucher_number || ''}; ledger reconciliation completes automatically on expense approval`,
+              manually_unlinked: false,
+            })
+            .eq('id', lineId);
+          selfActionTimestampRef.current = Date.now();
+          await loadStatementLines();
           setActionFeedback({
-            type: 'error',
-            title: 'Expense pending approval',
-            message: `Expense ${exp.voucher_number || ''} is pending approval.\n\nPlease approve the expense in Finance Expenses before confirming this match.\n\nBank transactions cannot automatically approve pending expenses.`,
+            type: 'success',
+            title: 'Bank transaction linked to pending expense',
+            message: `Linked to ${exp.voucher_number || 'expense'}. No second bank reconciliation approval is needed; ledger reconciliation will complete automatically when approved in Finance Expenses.`,
             timestamp: Date.now(),
           });
           return;
@@ -2368,6 +2591,18 @@ export function BankReconciliationEnhanced({
           return;
         }
         await linkBankStatementLine(lineId, 'expense', bsl.matched_expense_id);
+
+        const { data: allocRows, error: allocErr } = await supabase
+          .from('bank_statement_allocations')
+          .select('id')
+          .eq('bank_statement_line_id', lineId)
+          .eq('document_type', 'expense')
+          .eq('document_id', bsl.matched_expense_id)
+          .limit(1);
+
+        if (allocErr || !allocRows || allocRows.length === 0) {
+          throw new Error('Verification failed: canonical bank allocation row was not created in database');
+        }
       }
       else if (bsl.matched_receipt_id) await linkBankStatementLine(lineId, 'receipt', bsl.matched_receipt_id);
       else if (bsl.matched_payment_id) await linkBankStatementLine(lineId, 'payment', bsl.matched_payment_id);
@@ -4200,6 +4435,26 @@ export function BankReconciliationEnhanced({
               {autoMatching ? 'Matching…' : 'Auto-Match'}
             </button>
 
+            {/* Interactive Review Ambiguous Button */}
+            {ambiguousCount > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (ambiguousLines.length > 0) {
+                    setInteractiveQueue(ambiguousLines);
+                    setQueueIndex(0);
+                    setSelectedCandidateId('');
+                    setIsInteractiveModalOpen(true);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs bg-purple-600 text-white rounded-md hover:bg-purple-700 font-semibold shadow-sm whitespace-nowrap ml-1"
+                title={`${ambiguousCount} ambiguous transaction${ambiguousCount === 1 ? '' : 's'} need your decision`}
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+                Review Ambiguous ({ambiguousCount})
+              </button>
+            )}
+
             {/* Import Integrity Audit Button */}
             <button
               type="button"
@@ -4497,14 +4752,24 @@ export function BankReconciliationEnhanced({
                         </>
                       )}
                       {(line.status === 'unmatched' || line.status === 'partially_reconciled') && canManage && (
-                        <button
-                          onClick={() => openRecordModal(line)}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
-                          title={line.status === 'partially_reconciled' ? 'Allocate remaining amount' : 'Record transaction'}
-                        >
-                          <Plus className="w-3 h-3" />
-                          {line.status === 'partially_reconciled' ? 'Allocate' : 'Record'}
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openInteractiveMatchForLine(line)}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded font-medium"
+                            title="Interactive candidate match"
+                          >
+                            Match
+                          </button>
+                          <button
+                            onClick={() => openRecordModal(line)}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                            title={line.status === 'partially_reconciled' ? 'Allocate remaining amount' : 'Record transaction'}
+                          >
+                            <Plus className="w-3 h-3" />
+                            {line.status === 'partially_reconciled' ? 'Allocate' : 'Record'}
+                          </button>
+                        </div>
                       )}
                       {line.allocatedAmount > 0 && (
                         <div className="text-[10px] text-gray-600 leading-tight">
@@ -6978,7 +7243,7 @@ export function BankReconciliationEnhanced({
 
         const isPending = exp.approval_status === 'pending_approval';
         const isRejected = exp.approval_status === 'rejected' || exp.approval_status === 'cancelled';
-        const cannotConfirm = isPending || isRejected;
+        const cannotConfirm = isRejected;
 
         return (
           <Modal
@@ -6994,10 +7259,10 @@ export function BankReconciliationEnhanced({
                   <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
                   <div>
                     <p className="font-semibold text-amber-900">
-                      Pending Approval — Confirm Match Disabled
+                      Pending Accounting Approval
                     </p>
                     <p className="text-xs text-amber-800 mt-0.5">
-                      Approve this expense in Finance before confirming the bank match. Bank transactions cannot automatically approve pending expenses.
+                      Confirming this match records this bank transaction as payment evidence. When the expense is approved in Finance Expenses, ledger reconciliation will complete automatically without asking for another bank match approval.
                     </p>
                   </div>
                 </div>
@@ -7612,6 +7877,319 @@ export function BankReconciliationEnhanced({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Interactive Match Review Modal */}
+      {isInteractiveModalOpen && interactiveQueue[queueIndex] && (() => {
+        const item = interactiveQueue[queueIndex];
+        const line = item.line;
+        const candidates = item.candidates;
+        const selectedCandidate = candidates.find(c => c.id === selectedCandidateId) || null;
+        const remainingCount = interactiveQueue.length - queueIndex;
+
+        return (
+          <Modal
+            isOpen={true}
+            onClose={() => setIsInteractiveModalOpen(false)}
+            title="Interactive Bank Reconciliation Match"
+            maxWidth="max-w-2xl"
+          >
+            <div className="space-y-4 text-xs">
+              {/* Queue Header / Decision Banner */}
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-amber-900 text-sm block">
+                    {remainingCount} transaction{remainingCount === 1 ? '' : 's'} need your decision
+                  </span>
+                  <span className="text-amber-700 text-xs">
+                    Transaction {queueIndex + 1} of {interactiveQueue.length}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSkipAllCandidates}
+                  className="px-2.5 py-1 text-xs text-amber-800 hover:text-amber-950 font-medium bg-amber-100 hover:bg-amber-200 rounded transition-colors"
+                >
+                  Skip All
+                </button>
+              </div>
+
+              {/* Bank Transaction Summary Card */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5">
+                <div className="font-semibold text-slate-700 flex items-center gap-1.5 uppercase tracking-wide text-[11px]">
+                  <Landmark className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Bank Statement Transaction</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-200">
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Date</span>
+                    <span className="font-medium text-slate-800">{new Date(line.date).toLocaleDateString('id-ID')}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">Amount</span>
+                    <span className="font-bold text-red-600">{formatCurrency(line.debit || line.credit, line.currency)}</span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-slate-500 block text-[10px]">Description</span>
+                    <span className="font-medium text-slate-800 block break-words">{line.description}</span>
+                  </div>
+                  {line.reference && (
+                    <div className="col-span-2">
+                      <span className="text-slate-500 block text-[10px]">Reference</span>
+                      <span className="font-mono text-slate-700">{line.reference}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Core Question & Prompt */}
+              <div className="space-y-1">
+                <h4 className="font-bold text-sm text-slate-900">Which expense should this bank transaction link to?</h4>
+                <p className="text-slate-500 text-xs">
+                  {candidates.length >= 2
+                    ? `${candidates.length} candidate expenses matched this transaction. Select which expense to link, or skip to leave it untouched.`
+                    : 'Select a candidate expense to link, or skip.'}
+                </p>
+              </div>
+
+              {/* Dropdown with Candidates (Default Selection EMPTY) */}
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-slate-700 text-xs">
+                  Candidate Expense Options
+                </label>
+                <select
+                  value={selectedCandidateId}
+                  onChange={(e) => setSelectedCandidateId(e.target.value)}
+                  className="w-full text-xs border border-slate-300 rounded-lg p-2.5 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="">Choose an expense...</option>
+                  {candidates.map(cand => (
+                    <option key={cand.id} value={cand.id}>
+                      {cand.voucherNumber} — {new Date(cand.expenseDate).toLocaleDateString('id-ID')} — {formatCurrency(cand.outstandingAmount, line.currency)} — {cand.supplierPayee} ({cand.approvalStatus === 'approved' ? 'Approved' : 'Pending'}) [{cand.matchReason}]
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Candidate Detail Card */}
+              {selectedCandidate && (
+                <div className="bg-blue-50/60 border border-blue-200 rounded-lg p-3 space-y-2">
+                  <div className="flex items-center justify-between border-b border-blue-200 pb-1.5">
+                    <span className="font-bold text-blue-950 text-xs flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5 text-blue-600" />
+                      {selectedCandidate.voucherNumber}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                      selectedCandidate.approvalStatus === 'approved'
+                        ? 'bg-green-100 text-green-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      {selectedCandidate.approvalStatus === 'approved' ? 'Approved' : 'Pending Approval'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">Expense Date</span>
+                      <span className="font-medium text-slate-800">
+                        {new Date(selectedCandidate.expenseDate).toLocaleDateString('id-ID')}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">Category</span>
+                      <span className="font-medium text-slate-800 capitalize">
+                        {selectedCandidate.category.replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">Supplier / Payee</span>
+                      <span className="font-medium text-slate-800">
+                        {selectedCandidate.supplierPayee}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">Outstanding Amount</span>
+                      <span className="font-bold text-slate-900">
+                        {formatCurrency(selectedCandidate.outstandingAmount, line.currency)}
+                      </span>
+                    </div>
+                    <div className="col-span-2">
+                      <span className="text-slate-500 block text-[10px]">Description</span>
+                      <span className="font-medium text-slate-800 block break-words">
+                        {selectedCandidate.description || '(No description)'}
+                      </span>
+                    </div>
+                    <div className="col-span-2 bg-white/80 p-1.5 rounded border border-blue-100">
+                      <span className="text-slate-500 block text-[10px]">Match Reason</span>
+                      <span className="font-semibold text-blue-900">
+                        {selectedCandidate.matchReason}
+                      </span>
+                    </div>
+                  </div>
+
+                  {selectedCandidate.approvalStatus === 'pending_approval' && (
+                    <div className="bg-amber-100/70 border border-amber-300 rounded p-2 text-amber-900 text-[11px] leading-tight flex items-start gap-1.5">
+                      <Info className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <strong>Awaiting Accounting Approval:</strong> Linking now records this bank payment as the source transaction. When approved in Finance Expenses, ledger reconciliation will complete automatically without asking for another bank match approval.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSkipCurrentCandidate}
+                    className="px-3 py-1.5 text-xs text-slate-700 bg-slate-100 hover:bg-slate-200 rounded font-medium transition-colors"
+                  >
+                    Skip
+                  </button>
+                  {selectedCandidate && (
+                    <button
+                      type="button"
+                      onClick={() => setInspectingExpense(selectedCandidate.expense)}
+                      className="px-3 py-1.5 text-xs text-blue-700 bg-blue-50 hover:bg-blue-100 rounded font-medium transition-colors"
+                    >
+                      View Expense
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  disabled={!selectedCandidateId || isLinkingCandidate}
+                  onClick={handleLinkSelectedCandidate}
+                  className="px-4 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded shadow-sm flex items-center gap-1.5 transition-colors"
+                >
+                  {isLinkingCandidate ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Linking…
+                    </>
+                  ) : (
+                    'Link Selected'
+                  )}
+                </button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* No Match Found Modal */}
+      {noMatchModalOpen && noMatchLine && (
+        <Modal
+          isOpen={true}
+          onClose={() => setNoMatchModalOpen(false)}
+          title="No Match Found"
+          maxWidth="max-w-md"
+        >
+          <div className="space-y-4 text-xs">
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1">
+              <div className="font-semibold text-slate-800">{noMatchLine.description}</div>
+              <div className="text-slate-500">
+                {new Date(noMatchLine.date).toLocaleDateString('id-ID')} · {formatCurrency(noMatchLine.debit || noMatchLine.credit, noMatchLine.currency)}
+              </div>
+              {noMatchLine.reference && (
+                <div className="text-slate-500 font-mono text-[10px]">
+                  Ref: {noMatchLine.reference}
+                </div>
+              )}
+            </div>
+
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-900 font-medium flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+              <span>No matching expense found. This transaction has been left unmatched.</span>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setNoMatchModalOpen(false)}
+                className="px-3 py-1.5 text-xs text-slate-700 bg-slate-100 hover:bg-slate-200 rounded font-medium"
+              >
+                Skip
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const line = noMatchLine;
+                    setNoMatchModalOpen(false);
+                    openRecordModal(line);
+                  }}
+                  className="px-3 py-1.5 text-xs text-blue-700 bg-blue-50 hover:bg-blue-100 rounded font-medium"
+                >
+                  Search Expenses manually
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const line = noMatchLine;
+                    setNoMatchModalOpen(false);
+                    openInteractiveMatchForLine(line);
+                  }}
+                  className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded"
+                >
+                  Retry matching
+                </button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Inspecting Expense Modal */}
+      {inspectingExpense && (
+        <Modal
+          isOpen={true}
+          onClose={() => setInspectingExpense(null)}
+          title={`Expense Details: ${inspectingExpense.voucher_number || 'Expense'}`}
+          maxWidth="max-w-lg"
+        >
+          <div className="space-y-3 text-xs">
+            <div className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
+              <div>
+                <span className="text-slate-500 block text-[10px]">Voucher</span>
+                <span className="font-bold text-slate-900">{inspectingExpense.voucher_number || '—'}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block text-[10px]">Date</span>
+                <span className="font-medium text-slate-800">{new Date(inspectingExpense.expense_date).toLocaleDateString('id-ID')}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block text-[10px]">Amount</span>
+                <span className="font-bold text-slate-900">{formatCurrency(inspectingExpense.amount, inspectingExpense.currency_code || 'IDR')}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block text-[10px]">Approval Status</span>
+                <span className="font-semibold text-slate-800 capitalize">{inspectingExpense.approval_status}</span>
+              </div>
+              <div className="col-span-2">
+                <span className="text-slate-500 block text-[10px]">Description</span>
+                <span className="font-medium text-slate-800">{inspectingExpense.description || '(No description)'}</span>
+              </div>
+              {inspectingExpense.suppliers?.company_name && (
+                <div className="col-span-2">
+                  <span className="text-slate-500 block text-[10px]">Supplier / Payee</span>
+                  <span className="font-medium text-slate-800">{inspectingExpense.suppliers.company_name}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setInspectingExpense(null)}
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-medium text-xs"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   );
