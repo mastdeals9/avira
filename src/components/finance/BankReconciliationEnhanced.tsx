@@ -166,10 +166,20 @@ interface StatementLine {
     id: string;
     transfer_number: string;
     amount: number;
-    description: string;
+    from_amount?: number;
+    to_amount?: number;
+    description: string | null;
     transfer_date: string;
     from_account_type: string;
     to_account_type: string;
+    from_bank_account_id?: string | null;
+    to_bank_account_id?: string | null;
+    from_bank_statement_line_id?: string | null;
+    to_bank_statement_line_id?: string | null;
+    from_currency?: string | null;
+    to_currency?: string | null;
+    journal_entry_id?: string | null;
+    status?: string;
   } | null;
   matchedPettyCash?: {
     id: string;
@@ -969,7 +979,7 @@ export function BankReconciliationEnhanced({
       if (fundTransferIds.length > 0) {
         const fundTransfers = await loadBankReconciliationRowsInBatches<any>(fundTransferIds, batchIds => supabase
           .from('fund_transfers')
-          .select('id, transfer_number, amount, description, transfer_date, from_account_type, to_account_type')
+          .select('id, transfer_number, amount, from_amount, to_amount, description, transfer_date, from_account_type, to_account_type, from_bank_account_id, to_bank_account_id, from_bank_statement_line_id, to_bank_statement_line_id, from_currency, to_currency, journal_entry_id, status')
           .in('id', batchIds));
         fundTransfers.forEach(f => fundTransferMap.set(f.id, f));
       }
@@ -987,8 +997,13 @@ export function BankReconciliationEnhanced({
 
       // Batch load all journal entries (canonical link fallback for display)
       const entryMap = new Map();
-      if (entryIds.length > 0) {
-        const entries = await loadBankReconciliationRowsInBatches<any>(entryIds, batchIds => supabase
+      const allEntryIds = new Set(entryIds);
+      fundTransferMap.forEach(f => {
+        if (f.journal_entry_id) allEntryIds.add(f.journal_entry_id);
+      });
+      const finalEntryIds = Array.from(allEntryIds);
+      if (finalEntryIds.length > 0) {
+        const entries = await loadBankReconciliationRowsInBatches<any>(finalEntryIds, batchIds => supabase
           .from('journal_entries')
           .select('id, source_module, reference_id, reference_number, description, entry_date, entry_number, is_posted, is_reversed')
           .in('id', batchIds));
@@ -1019,7 +1034,61 @@ export function BankReconciliationEnhanced({
           if (!journal || !journal.is_posted || journal.is_reversed) return false;
           return true;
         });
-        const allocatedAmount = validAllocations.reduce((sum, allocation) => sum + allocation.allocation_amount, 0) + (isDirectRecorded && allocations.length === 0 ? bankAmount : 0);
+
+        // Resolve Fund Transfer: canonical allocation is authoritative; fallback to validated legacy link
+        const firstFund = allocations.find(a => a.document_type === 'fund_transfer');
+        let legacyFundAllocation: any = null;
+        let legacyFundTransferId: string | null = null;
+
+        if (!firstFund && row.matched_fund_transfer_id) {
+          const ft = fundTransferMap.get(row.matched_fund_transfer_id);
+          if (ft && !row.manually_unlinked && ft.status === 'posted' && ft.journal_entry_id) {
+            const ftJournal = entryMap.get(ft.journal_entry_id);
+            if (ftJournal && ftJournal.is_posted && !ftJournal.is_reversed) {
+              const isFromLine = row.id === ft.from_bank_statement_line_id;
+              const isToLine = row.id === ft.to_bank_statement_line_id;
+              if (isFromLine || isToLine) {
+                const side = isFromLine ? 'from' : 'to';
+                const debit = Number(row.debit_amount || 0);
+                const credit = Number(row.credit_amount || 0);
+                const expectedAccount = side === 'from' ? ft.from_bank_account_id : ft.to_bank_account_id;
+                const expectedAccountType = side === 'from' ? ft.from_account_type : ft.to_account_type;
+                const expectedAmount = Number(side === 'from' ? (ft.from_amount ?? ft.amount) : (ft.to_amount ?? ft.amount));
+                const actualAmount = side === 'from' ? debit : credit;
+                const otherAmount = side === 'from' ? credit : debit;
+                const rowDate = typeof row.transaction_date === 'string' ? row.transaction_date.split('T')[0] : '';
+                const ftDate = typeof ft.transfer_date === 'string' ? ft.transfer_date.split('T')[0] : '';
+
+                const isAccountMatch = expectedAccountType === 'bank' && expectedAccount === row.bank_account_id;
+                const isDirectionMatch = actualAmount > BANK_ALLOCATION_EPSILON && otherAmount <= BANK_ALLOCATION_EPSILON;
+                const isAmountMatch = Math.abs(actualAmount - expectedAmount) <= BANK_ALLOCATION_EPSILON;
+                const isDateMatch = !rowDate || !ftDate || rowDate === ftDate;
+
+                if (isAccountMatch && isDirectionMatch && isAmountMatch && isDateMatch) {
+                  legacyFundTransferId = ft.id;
+                  legacyFundAllocation = {
+                    id: `legacy-fund-${ft.id}`,
+                    bank_statement_line_id: row.id,
+                    document_type: 'fund_transfer',
+                    document_id: ft.id,
+                    journal_entry_id: ft.journal_entry_id,
+                    allocation_amount: actualAmount,
+                    payment_kind: 'fund_transfer',
+                    label: ft.transfer_number || 'Fund Transfer',
+                    counterparty: `${ft.from_account_type} → ${ft.to_account_type}`,
+                    document_total: expectedAmount,
+                    document_remaining: 0,
+                    journal_status: 'Posted',
+                  };
+                }
+              }
+            }
+          }
+        }
+
+        const allocatedAmount = validAllocations.reduce((sum, allocation) => sum + allocation.allocation_amount, 0)
+          + (legacyFundAllocation ? legacyFundAllocation.allocation_amount : 0)
+          + (isDirectRecorded && allocations.length === 0 && !legacyFundAllocation ? bankAmount : 0);
         const remainingAmount = Math.max(0, bankAmount - allocatedAmount);
         const isSuggested =
           (row.matching_status === 'suggested' ||
@@ -1037,7 +1106,6 @@ export function BankReconciliationEnhanced({
         const firstExpense = allocations.find(a => a.document_type === 'expense');
         const firstReceipt = allocations.find(a => a.document_type === 'receipt');
         const firstPayment = allocations.find(a => a.document_type === 'payment');
-        const firstFund = allocations.find(a => a.document_type === 'fund_transfer');
         const firstPetty = allocations.find(a => a.document_type === 'petty_cash');
         const firstTax = allocations.find(a => a.document_type === 'tax_payment');
         const firstJournal = allocations.find(a => a.document_type === 'journal');
@@ -1069,6 +1137,9 @@ export function BankReconciliationEnhanced({
           } else if (allocation.document_type === 'fund_transfer') {
             const ft = fundTransferMap.get(allocation.document_id);
             label = ft?.transfer_number || 'Fund Transfer';
+            counterparty = ft ? `${ft.from_account_type} → ${ft.to_account_type}` : undefined;
+            documentTotal = Number(ft?.to_amount ?? ft?.from_amount ?? ft?.amount ?? allocation.allocation_amount);
+            documentRemaining = 0;
           } else if (allocation.document_type === 'petty_cash') {
             label = pettyCashMap.get(allocation.document_id)?.description || 'Petty Cash';
           } else if (allocation.document_type === 'tax_payment') {
@@ -1089,6 +1160,10 @@ export function BankReconciliationEnhanced({
               : undefined,
           };
         });
+
+        if (labeledAllocations.length === 0 && legacyFundAllocation) {
+          labeledAllocations.push(legacyFundAllocation);
+        }
 
         if (labeledAllocations.length === 0 && isDirectRecorded && row.matched_entry_id) {
           const directJournal = entryMap.get(row.matched_entry_id);
@@ -1114,10 +1189,10 @@ export function BankReconciliationEnhanced({
         const expenseId = firstExpense?.document_id || row.matched_expense_id || null;
         const receiptId = firstReceipt?.document_id || null;
         const paymentId = firstPayment?.document_id || null;
-        const fundId = firstFund?.document_id || null;
+        const fundId = firstFund?.document_id || legacyFundTransferId || null;
         const pettyId = firstPetty?.document_id || null;
         const taxId = firstTax?.document_id || null;
-        const journalId = firstJournal?.document_id || (isDirectRecorded ? row.matched_entry_id : null);
+        const journalId = firstJournal?.document_id || (legacyFundAllocation ? legacyFundAllocation.journal_entry_id : null) || (isDirectRecorded ? row.matched_entry_id : null);
         return {
           id: row.id,
           date: row.transaction_date,
@@ -4318,7 +4393,7 @@ export function BankReconciliationEnhanced({
                           </span>
                           {line.allocations.map(allocation => (
                             <span key={allocation.id} className="text-xs text-gray-600">
-                              → {allocation.document_type === 'expense' ? 'Expense' : allocation.document_type.replace('_', ' ')}: {allocation.label} ({formatCurrency(allocation.allocation_amount, line.currency)})
+                              → {allocation.document_type === 'expense' ? 'Expense' : allocation.document_type === 'fund_transfer' ? 'Fund Transfer' : allocation.document_type.replace('_', ' ')}: {allocation.label} ({formatCurrency(allocation.allocation_amount, line.currency)})
                               {allocation.document_remaining !== undefined && allocation.document_remaining > 0.01 && (
                                 <span className="ml-1 text-amber-700">· Remaining {formatCurrency(allocation.document_remaining, line.currency)}</span>
                               )}
@@ -4333,7 +4408,7 @@ export function BankReconciliationEnhanced({
                           </span>
                           {line.allocations.map(allocation => (
                             <span key={allocation.id} className="text-xs text-gray-600">
-                              → {allocation.document_type === 'expense' ? 'Expense' : allocation.document_type.replace('_', ' ')}: {allocation.label} ({formatCurrency(allocation.allocation_amount, line.currency)})
+                              → {allocation.document_type === 'expense' ? 'Expense' : allocation.document_type === 'fund_transfer' ? 'Fund Transfer' : allocation.document_type.replace('_', ' ')}: {allocation.label} ({formatCurrency(allocation.allocation_amount, line.currency)})
                             </span>
                           ))}
                         </>

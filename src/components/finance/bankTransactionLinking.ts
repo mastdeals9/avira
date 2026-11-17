@@ -88,8 +88,8 @@ export function canonicalBankReconciliationStatus(
 export function isAvailableTransaction(line: BankTransactionLine) {
   if (
     !line.manually_unlinked &&
-    Boolean(line.matched_entry_id) &&
-    (line.matching_status === 'confirmed' || line.reconciliation_status === 'recorded')
+    Boolean(line.matched_entry_id || line.matched_fund_transfer_id) &&
+    (line.matching_status === 'confirmed' || line.reconciliation_status === 'recorded' || line.reconciliation_status === 'matched')
   ) {
     return false;
   }

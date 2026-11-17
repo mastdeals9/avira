@@ -536,6 +536,7 @@ export function FundTransferManager({
 
         if (error) throw error;
 
+        notifyFinanceReconciliationRefresh();
         showToast({ type: 'success', title: 'Success', message: 'Fund transfer created and posted successfully!' });
       }
 
@@ -702,6 +703,7 @@ export function FundTransferManager({
     try {
       const { error } = await supabase.rpc('reverse_fund_transfer', { p_id: transferId });
       if (error) throw error;
+      notifyFinanceReconciliationRefresh();
       showToast({ type: 'success', title: 'Success', message: 'Fund transfer reversed successfully!' });
       loadData();
     } catch (error: any) {
