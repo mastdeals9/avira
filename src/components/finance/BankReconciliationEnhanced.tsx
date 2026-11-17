@@ -1,6 +1,30 @@
 import { Fragment, useEffect, useState, useRef, useMemo } from 'react';
 import { supabase } from '../../lib/supabase';
-import { Upload, RefreshCw, CheckCircle2, AlertCircle, XCircle, Plus, Calendar, Landmark, FileText, Layers, ExternalLink, Pencil as Edit, ChevronDown, ChevronRight, ChevronLeft, Clock, Info, X, Sparkles, Link2, Search, RotateCcw, HelpCircle } from 'lucide-react';
+import {
+  Upload,
+  RefreshCw,
+  CheckCircle2,
+  AlertCircle,
+  XCircle,
+  Plus,
+  Calendar,
+  Landmark,
+  FileText,
+  Layers,
+  ExternalLink,
+  Pencil as Edit,
+  ChevronDown,
+  ChevronRight,
+  ChevronLeft,
+  Clock,
+  Info,
+  X,
+  Sparkles,
+  Link2,
+  Search,
+  RotateCcw,
+  HelpCircle,
+} from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { FinanceModal as Modal } from './FinanceModal';
 import {
@@ -19,7 +43,11 @@ import { normalizeDateToIso, toInputFormat, formatDate } from '../../utils/dateF
 import { useSupabaseRealtimeChannel } from '../../hooks/useSupabaseRealtimeChannel';
 import { useExpenseCategories } from './useExpenseCategories';
 import { groupExpenseCategories } from './ExpenseCategorySelect';
-import { calculateCanonicalCashPayable, calculateCanonicalExpenseTotal, paymentDateGapWarning } from '../../utils/taxCalculations';
+import {
+  calculateCanonicalCashPayable,
+  calculateCanonicalExpenseTotal,
+  paymentDateGapWarning,
+} from '../../utils/taxCalculations';
 import { ExpenseManager, BankReconciliationExpensePrefill } from './ExpenseManager';
 import { ReceiptVoucherManager, BankReconciliationReceiptPrefill } from './ReceiptVoucherManager';
 import { PaymentVoucherManager } from './PaymentVoucherManager';
@@ -221,8 +249,27 @@ interface BankReconciliationEnhancedProps {
   initialBankAccountId?: string | null;
   initialStatementLineId?: string | null;
   onInitialFocusHandled?: () => void;
-  onRecordContra?: (line: { bankAccountId: string; statementLineId: string; date: string; amount: number; description: string; direction: 'from' | 'to' }) => void;
-  onRecordPayment?: (line: { bankAccountId: string; statementLineId: string; date: string; amount: number; currency: 'IDR' | 'USD'; reference: string; description: string; partyType?: any; partyId?: string; paymentPurpose?: string; settlementAgainst?: string }) => void;
+  onRecordContra?: (line: {
+    bankAccountId: string;
+    statementLineId: string;
+    date: string;
+    amount: number;
+    description: string;
+    direction: 'from' | 'to';
+  }) => void;
+  onRecordPayment?: (line: {
+    bankAccountId: string;
+    statementLineId: string;
+    date: string;
+    amount: number;
+    currency: 'IDR' | 'USD';
+    reference: string;
+    description: string;
+    partyType?: any;
+    partyId?: string;
+    paymentPurpose?: string;
+    settlementAgainst?: string;
+  }) => void;
   onRecordExpense?: (line: BankReconciliationExpensePrefill) => void;
   onRecordReceipt?: (line: BankReconciliationReceiptPrefill) => void;
   onOpenJournal?: (journalEntryId: string) => void;
@@ -238,7 +285,7 @@ export const BANK_RECONCILIATION_PAGE_SIZE = 1000;
 
 async function loadBankReconciliationRowsInBatches<T>(
   ids: Array<string | null | undefined>,
-  queryBatch: (batchIds: string[]) => PromiseLike<{ data: T[] | null; error: any }>,
+  queryBatch: (batchIds: string[]) => PromiseLike<{ data: T[] | null; error: any }>
 ): Promise<T[]> {
   const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
   const rows: T[] = [];
@@ -256,7 +303,7 @@ function rankBankCandidates<T extends PickerCandidate>(
   line: StatementLine,
   amountOf: (candidate: T) => number,
   dateOf: (candidate: T) => string | null | undefined,
-  partyOf: (candidate: T) => string | null | undefined = () => null,
+  partyOf: (candidate: T) => string | null | undefined = () => null
 ): T[] {
   const bankAmount = Number(line.debit || line.credit || 0);
   const bankText = `${line.description} ${line.reference}`.toLocaleLowerCase();
@@ -292,7 +339,9 @@ const NON_CUSTOMER_JOURNAL_TYPES = new Set([
 ]);
 
 function directorOwnerName(option: DirectorOwnerLoanOption): string {
-  return option.account.name.replace(/^director\s+loan\s*[-–—:]\s*/i, '').trim() || option.account.name;
+  return (
+    option.account.name.replace(/^director\s+loan\s*[-–—:]\s*/i, '').trim() || option.account.name
+  );
 }
 
 export function BankReconciliationEnhanced({
@@ -310,7 +359,11 @@ export function BankReconciliationEnhanced({
   const { categories: expenseCategories } = useExpenseCategories();
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [selectedBank, setSelectedBank] = useState<string>(() => {
-    try { return localStorage.getItem('bank_recon_selected_bank') || ''; } catch { return ''; }
+    try {
+      return localStorage.getItem('bank_recon_selected_bank') || '';
+    } catch {
+      return '';
+    }
   });
   const [selectedAccount, setSelectedAccount] = useState<BankAccount | null>(null);
   const [accountBalances, setAccountBalances] = useState<{
@@ -325,8 +378,12 @@ export function BankReconciliationEnhanced({
   // an empty bank account.
   const [statementLoadError, setStatementLoadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'matched' | 'suggested' | 'unmatched'>('unmatched');
-  const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
+  const [activeFilter, setActiveFilter] = useState<'all' | 'matched' | 'suggested' | 'unmatched'>(
+    'unmatched'
+  );
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(
+    null
+  );
   const [highlightedLineId, setHighlightedLineId] = useState<string | null>(null);
   const [expandedLineIds, setExpandedLineIds] = useState<Set<string>>(new Set());
 
@@ -346,10 +403,13 @@ export function BankReconciliationEnhanced({
     setLocalEndDate(financeDateRange.endDate);
   }, [financeDateRange.startDate, financeDateRange.endDate]);
 
-  const dateRange = useMemo(() => ({
-    start: normalizeDateToIso(localStartDate) || financeDateRange.startDate,
-    end: normalizeDateToIso(localEndDate) || financeDateRange.endDate,
-  }), [localStartDate, localEndDate, financeDateRange.startDate, financeDateRange.endDate]);
+  const dateRange = useMemo(
+    () => ({
+      start: normalizeDateToIso(localStartDate) || financeDateRange.startDate,
+      end: normalizeDateToIso(localEndDate) || financeDateRange.endDate,
+    }),
+    [localStartDate, localEndDate, financeDateRange.startDate, financeDateRange.endDate]
+  );
 
   const handleDateChange = (newStart: string, newEnd: string) => {
     const s = normalizeDateToIso(newStart) || newStart;
@@ -369,16 +429,32 @@ export function BankReconciliationEnhanced({
   };
   const [recordingLine, setRecordingLine] = useState<StatementLine | null>(null);
   const [recordModal, setRecordModal] = useState(false);
-  const [embeddedExpensePrefill, setEmbeddedExpensePrefill] = useState<BankReconciliationExpensePrefill | null>(null);
-  const [embeddedReceiptPrefill, setEmbeddedReceiptPrefill] = useState<BankReconciliationReceiptPrefill | null>(null);
+  const [embeddedExpensePrefill, setEmbeddedExpensePrefill] =
+    useState<BankReconciliationExpensePrefill | null>(null);
+  const [embeddedReceiptPrefill, setEmbeddedReceiptPrefill] =
+    useState<BankReconciliationReceiptPrefill | null>(null);
   const [embeddedPaymentPrefill, setEmbeddedPaymentPrefill] = useState<{
-    bankAccountId: string; statementLineId: string; date: string; amount: number; currency: 'IDR' | 'USD'; reference: string; description: string; partyType?: any; partyId?: string; paymentPurpose?: string; settlementAgainst?: string;
+    bankAccountId: string;
+    statementLineId: string;
+    date: string;
+    amount: number;
+    currency: 'IDR' | 'USD';
+    reference: string;
+    description: string;
+    partyType?: any;
+    partyId?: string;
+    paymentPurpose?: string;
+    settlementAgainst?: string;
   } | null>(null);
   const [expenses, setExpenses] = useState<any[]>([]);
   const [linkToExpense, setLinkToExpense] = useState(false);
   const [linkPaymentKind, setLinkPaymentKind] = useState<'supplier' | 'pph23'>('supplier');
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [ocrError, setOcrError] = useState<{message: string; canUseOCR: boolean; suggestions: string[]} | null>(null);
+  const [ocrError, setOcrError] = useState<{
+    message: string;
+    canUseOCR: boolean;
+    suggestions: string[];
+  } | null>(null);
   const [ocrPreview, setOcrPreview] = useState<any | null>(null);
   const [lastUploadedFile, setLastUploadedFile] = useState<File | null>(null);
   const [editingLine, setEditingLine] = useState<StatementLine | null>(null);
@@ -394,7 +470,7 @@ export function BankReconciliationEnhanced({
   const [receiptType, setReceiptType] = useState('');
   const [receiptCustomerId, setReceiptCustomerId] = useState('');
   const [receiptInvoices, setReceiptInvoices] = useState<any[]>([]);
-  const [receiptAllocations, setReceiptAllocations] = useState<{[invoiceId: string]: number}>({});
+  const [receiptAllocations, setReceiptAllocations] = useState<{ [invoiceId: string]: number }>({});
   const [loadingInvoices, setLoadingInvoices] = useState(false);
   const [recordingReceipt, setRecordingReceipt] = useState(false);
   const [recordExchangeRate, setRecordExchangeRate] = useState(1);
@@ -411,10 +487,19 @@ export function BankReconciliationEnhanced({
   const [recordLoanRepayment, setRecordLoanRepayment] = useState(false);
   const [loanDirection, setLoanDirection] = useState<'given' | 'taken'>('given');
   const [loanCoaId, setLoanCoaId] = useState('');
-  const [loanAccounts, setLoanAccounts] = useState<Array<{ id: string; code: string; name: string; account_type: string }>>([]);
-  const [activeLoans, setActiveLoans] = useState<Array<{
-    id: string; loan_number: string; counterparty_name: string; loan_type?: string; outstanding_balance: number; currency: string;
-  }>>([]);
+  const [loanAccounts, setLoanAccounts] = useState<
+    Array<{ id: string; code: string; name: string; account_type: string }>
+  >([]);
+  const [activeLoans, setActiveLoans] = useState<
+    Array<{
+      id: string;
+      loan_number: string;
+      counterparty_name: string;
+      loan_type?: string;
+      outstanding_balance: number;
+      currency: string;
+    }>
+  >([]);
   const [repaymentLoanId, setRepaymentLoanId] = useState('');
   const [repaymentPrincipal, setRepaymentPrincipal] = useState(0);
   const [repaymentInterest, setRepaymentInterest] = useState(0);
@@ -431,7 +516,9 @@ export function BankReconciliationEnhanced({
   const [linkSettleBills, setLinkSettleBills] = useState(false);
   const [outstandingBills, setOutstandingBills] = useState<OutstandingBill[]>([]);
   const [loadingBills, setLoadingBills] = useState(false);
-  const [billAllocations, setBillAllocations] = useState<{ expenseId: string; amount: number }[]>([]);
+  const [billAllocations, setBillAllocations] = useState<{ expenseId: string; amount: number }[]>(
+    []
+  );
   const [settleSubmitting, setSettleSubmitting] = useState(false);
   const [showImportResultModal, setShowImportResultModal] = useState(false);
   const [importResult, setImportResult] = useState<{
@@ -465,7 +552,9 @@ export function BankReconciliationEnhanced({
   const [showUnmatchedDrawer, setShowUnmatchedDrawer] = useState(false);
 
   // Interactive Bank Reconciliation Matching Queue & Popup
-  const [interactiveQueue, setInteractiveQueue] = useState<Array<{ line: StatementLine; candidates: CandidateExpense[] }>>([]);
+  const [interactiveQueue, setInteractiveQueue] = useState<
+    Array<{ line: StatementLine; candidates: CandidateExpense[] }>
+  >([]);
   const [queueIndex, setQueueIndex] = useState(0);
   const [selectedCandidateId, setSelectedCandidateId] = useState('');
   const [skippedSessionLineIds, setSkippedSessionLineIds] = useState<Set<string>>(new Set());
@@ -515,9 +604,15 @@ export function BankReconciliationEnhanced({
   const noopAsync = useRef<() => Promise<void> | void>(() => {});
   const loadStatementLinesRef = useRef<() => Promise<void> | void>(noopAsync.current);
   const loadExpensesRef = useRef<() => Promise<void> | void>(noopAsync.current);
-  useEffect(() => { selectedBankRef.current = selectedBank; }, [selectedBank]);
-  useEffect(() => { loadStatementLinesRef.current = loadStatementLines; });
-  useEffect(() => { loadExpensesRef.current = loadExpenses; });
+  useEffect(() => {
+    selectedBankRef.current = selectedBank;
+  }, [selectedBank]);
+  useEffect(() => {
+    loadStatementLinesRef.current = loadStatementLines;
+  });
+  useEffect(() => {
+    loadExpensesRef.current = loadExpenses;
+  });
 
   useEffect(() => {
     const refresh = () => {
@@ -530,13 +625,10 @@ export function BankReconciliationEnhanced({
     return () => window.removeEventListener(FINANCE_RECONCILIATION_REFRESH_EVENT, refresh);
   }, []);
 
-  useErpSyncListener(
-    ['bank_transactions', 'vouchers', 'expenses', 'sales_invoices'],
-    () => {
-      loadExpensesRef.current();
-      if (selectedBankRef.current) loadStatementLinesRef.current();
-    }
-  );
+  useErpSyncListener(['bank_transactions', 'vouchers', 'expenses', 'sales_invoices'], () => {
+    loadExpensesRef.current();
+    if (selectedBankRef.current) loadStatementLinesRef.current();
+  });
 
   useEffect(() => {
     loadBankAccounts();
@@ -550,16 +642,19 @@ export function BankReconciliationEnhanced({
     setSelectedBank(initialBankAccountId);
     setActiveFilter('all');
     setHighlightedLineId(initialStatementLineId);
-    try { localStorage.setItem('bank_recon_selected_bank', initialBankAccountId); } catch {
+    try {
+      localStorage.setItem('bank_recon_selected_bank', initialBankAccountId);
+    } catch {
       // Reconciliation still works when browser storage is unavailable.
     }
   }, [initialBankAccountId, initialStatementLineId]);
 
   useEffect(() => {
-    if (!highlightedLineId || !statementLines.some(line => line.id === highlightedLineId)) return;
+    if (!highlightedLineId || !statementLines.some((line) => line.id === highlightedLineId)) return;
 
     const frame = window.requestAnimationFrame(() => {
-      document.getElementById(`bank-statement-line-${highlightedLineId}`)
+      document
+        .getElementById(`bank-statement-line-${highlightedLineId}`)
         ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
     const timer = window.setTimeout(() => setHighlightedLineId(null), 5000);
@@ -625,12 +720,13 @@ export function BankReconciliationEnhanced({
     if (exceptBankLineId) query = query.neq('bank_statement_line_id', exceptBankLineId);
     const { data, error } = await query;
     if (error) throw error;
-    const ids = (documentType: string) => new Set(
-      (data || [])
-        .filter((row: { document_type: string }) => row.document_type === documentType)
-        .map((row: { document_id: string }) => row.document_id)
-        .filter(Boolean),
-    );
+    const ids = (documentType: string) =>
+      new Set(
+        (data || [])
+          .filter((row: { document_type: string }) => row.document_type === documentType)
+          .map((row: { document_id: string }) => row.document_id)
+          .filter(Boolean)
+      );
     return {
       expenseIds: ids('expense'),
       receiptIds: ids('receipt'),
@@ -652,15 +748,17 @@ export function BankReconciliationEnhanced({
     return calculateCanonicalCashPayable(expense) - Number(expense.paid_amount || 0) > 0.01;
   };
 
-  const visibleExpenseCandidates = (candidates: any[]) => rankBankCandidates(
-    candidates.filter(expenseCanAcceptLink),
-    recordingLine!,
-    (expense) => linkPaymentKind === 'pph23'
-      ? Number(expense.pph_amount || 0)
-      : calculateCanonicalCashPayable(expense),
-    (expense) => expense.expense_date,
-    (expense) => expense.suppliers?.company_name,
-  );
+  const visibleExpenseCandidates = (candidates: any[]) =>
+    rankBankCandidates(
+      candidates.filter(expenseCanAcceptLink),
+      recordingLine!,
+      (expense) =>
+        linkPaymentKind === 'pph23'
+          ? Number(expense.pph_amount || 0)
+          : calculateCanonicalCashPayable(expense),
+      (expense) => expense.expense_date,
+      (expense) => expense.suppliers?.company_name
+    );
 
   const loadActiveLoans = async () => {
     const { data, error } = await supabase
@@ -679,16 +777,19 @@ export function BankReconciliationEnhanced({
 
   const loadLoanAccounts = async (direction: 'given' | 'taken', currentCounterparty?: string) => {
     try {
-      let query = supabase.from('chart_of_accounts')
+      let query = supabase
+        .from('chart_of_accounts')
         .select('id, code, name, account_type')
         .eq('is_active', true)
         .eq('is_header', false);
 
       if (direction === 'given') {
-        query = query.eq('account_type', 'asset')
+        query = query
+          .eq('account_type', 'asset')
           .or('code.ilike.131%,code.ilike.116%,name.ilike.%loan%,name.ilike.%advance%');
       } else {
-        query = query.eq('account_type', 'liability')
+        query = query
+          .eq('account_type', 'liability')
           .or('code.ilike.2105%,code.ilike.221%,name.ilike.%loan%,name.ilike.%director%');
       }
 
@@ -698,18 +799,21 @@ export function BankReconciliationEnhanced({
       setLoanAccounts(accounts);
 
       if (direction === 'given') {
-        const default1310 = accounts.find(a => a.code === '1310') || accounts[0];
+        const default1310 = accounts.find((a) => a.code === '1310') || accounts[0];
         if (default1310) setLoanCoaId(default1310.id);
       } else {
         const cp = (currentCounterparty ?? loanCounterparty).toLowerCase();
         if (cp.includes('vijay') || cp.includes('lunkad') || cp.includes('director')) {
-          const default2105 = accounts.find(a => a.code === '2105') || accounts[0];
+          const default2105 = accounts.find((a) => a.code === '2105') || accounts[0];
           if (default2105) setLoanCoaId(default2105.id);
         } else if (cp.match(/bank|bca|mandiri|bni|bri|cimb|danamon|permata|uob/)) {
-          const default2210 = accounts.find(a => a.code === '2210') || accounts[0];
+          const default2210 = accounts.find((a) => a.code === '2210') || accounts[0];
           if (default2210) setLoanCoaId(default2210.id);
         } else {
-          const defaultAcc = accounts.find(a => a.code === '2105') || accounts.find(a => a.code === '2210') || accounts[0];
+          const defaultAcc =
+            accounts.find((a) => a.code === '2105') ||
+            accounts.find((a) => a.code === '2210') ||
+            accounts[0];
           if (defaultAcc) setLoanCoaId(defaultAcc.id);
         }
       }
@@ -721,7 +825,7 @@ export function BankReconciliationEnhanced({
 
   useEffect(() => {
     if (selectedBank) {
-      const account = bankAccounts.find(b => b.id === selectedBank);
+      const account = bankAccounts.find((b) => b.id === selectedBank);
       setSelectedAccount(account || null);
       void loadAccountBalances();
     }
@@ -737,9 +841,11 @@ export function BankReconciliationEnhanced({
   const loadAccountBalances = async () => {
     if (!selectedBank) return;
     try {
-      const asOfDate = dateRange.end || financeDateRange.endDate || new Date().toISOString().split('T')[0];
-      const { data, error } = await supabase
-        .rpc('get_bank_account_balances', { p_as_of_date: asOfDate });
+      const asOfDate =
+        dateRange.end || financeDateRange.endDate || new Date().toISOString().split('T')[0];
+      const { data, error } = await supabase.rpc('get_bank_account_balances', {
+        p_as_of_date: asOfDate,
+      });
       if (!error && data) {
         const row = (data as any[]).find((b: any) => b.bank_account_id === selectedBank);
         if (row) {
@@ -763,23 +869,30 @@ export function BankReconciliationEnhanced({
     try {
       const { data, error } = await supabase
         .from('bank_accounts')
-        .select('id, account_name, bank_name, account_number, currency, alias, opening_balance, opening_balance_date')
+        .select(
+          'id, account_name, bank_name, account_number, currency, alias, opening_balance, opening_balance_date'
+        )
         .eq('is_active', true)
         .order('account_name');
       if (error) throw error;
       setBankAccounts(data || []);
       if (data && data.length > 0 && !selectedBank) {
         const savedBank = localStorage.getItem('bank_recon_selected_bank');
-        const savedExists = savedBank && data.some(a => a.id === savedBank);
+        const savedExists = savedBank && data.some((a) => a.id === savedBank);
         if (!savedExists) {
           const bcaAccount = data.find(
-            acc => acc.bank_name === 'BCA Bank' &&
-                   acc.account_number === '0930 2010 14' &&
-                   acc.currency === 'IDR'
+            (acc) =>
+              acc.bank_name === 'BCA Bank' &&
+              acc.account_number === '0930 2010 14' &&
+              acc.currency === 'IDR'
           );
           const defaultId = bcaAccount?.id || data[0].id;
           setSelectedBank(defaultId);
-          try { localStorage.setItem('bank_recon_selected_bank', defaultId); } catch { /* Storage may be unavailable. */ }
+          try {
+            localStorage.setItem('bank_recon_selected_bank', defaultId);
+          } catch {
+            /* Storage may be unavailable. */
+          }
         }
       }
     } catch (err) {
@@ -793,7 +906,8 @@ export function BankReconciliationEnhanced({
       // First, get all expenses (removed limit to show all expenses)
       const { data: allExpenses, error } = await supabase
         .from('finance_expenses')
-        .select(`
+        .select(
+          `
           id,
           expense_date,
           description,
@@ -814,27 +928,34 @@ export function BankReconciliationEnhanced({
           broker_items,
           suppliers(company_name),
           finance_staff_master:staff_id(full_name)
-        `)
+        `
+        )
         .order('expense_date', { ascending: false });
 
       if (error) throw error;
 
       const linked = await loadLinkedDocumentIds();
-      const postingStates = await getEffectiveExpensePostingStates((allExpenses || []).map(expense => expense.id));
+      const postingStates = await getEffectiveExpensePostingStates(
+        (allExpenses || []).map((expense) => expense.id)
+      );
       // Expenses can receive legal partial payments. A prior bank link is only
       // unavailable once the relevant supplier/PPh balance is fully settled.
       // Include approved expenses with effective posting states AND pending_approval expenses.
-      setExpenses((allExpenses || [])
-        .filter(expense => {
-          if (expense.approval_status === 'approved') {
-            return isEffectiveExpensePosting(postingStates.get(expense.id)?.effective_posting_state);
-          }
-          return expense.approval_status === 'pending_approval';
-        })
-        .map((expense: any) => ({
-        ...expense,
-        _linked: linked.expenseIds.has(expense.id),
-      })));
+      setExpenses(
+        (allExpenses || [])
+          .filter((expense) => {
+            if (expense.approval_status === 'approved') {
+              return isEffectiveExpensePosting(
+                postingStates.get(expense.id)?.effective_posting_state
+              );
+            }
+            return expense.approval_status === 'pending_approval';
+          })
+          .map((expense: any) => ({
+            ...expense,
+            _linked: linked.expenseIds.has(expense.id),
+          }))
+      );
     } catch (err) {
       console.error('Error loading expenses:', err);
     }
@@ -863,7 +984,9 @@ export function BankReconciliationEnhanced({
         const { data: page, error } = await supabase
           .from('bank_statement_lines')
           // perf: projected columns (was select('*'))
-          .select('id, bank_account_id, transaction_date, description, reference, currency, debit_amount, credit_amount, running_balance, reconciliation_status, matching_status, manually_unlinked, notes, matched_expense_id, matched_receipt_id, matched_payment_id, matched_fund_transfer_id, matched_entry_id, matched_petty_cash_id, matched_tax_payment_id')
+          .select(
+            'id, bank_account_id, transaction_date, description, reference, currency, debit_amount, credit_amount, running_balance, reconciliation_status, matching_status, manually_unlinked, notes, matched_expense_id, matched_receipt_id, matched_payment_id, matched_fund_transfer_id, matched_entry_id, matched_petty_cash_id, matched_tax_payment_id'
+          )
           .eq('bank_account_id', selectedBank)
           .gte('transaction_date', startIso)
           .lte('transaction_date', endIso)
@@ -877,13 +1000,15 @@ export function BankReconciliationEnhanced({
 
       let data = rangeData;
       if (
-        initialStatementLineId
-        && initialBankAccountId === selectedBank
-        && !data.some(row => row.id === initialStatementLineId)
+        initialStatementLineId &&
+        initialBankAccountId === selectedBank &&
+        !data.some((row) => row.id === initialStatementLineId)
       ) {
         const { data: focusedLine, error: focusedLineError } = await supabase
           .from('bank_statement_lines')
-          .select('id, bank_account_id, transaction_date, description, reference, currency, debit_amount, credit_amount, running_balance, reconciliation_status, matching_status, manually_unlinked, notes, matched_expense_id, matched_receipt_id, matched_payment_id, matched_fund_transfer_id, matched_entry_id, matched_petty_cash_id, matched_tax_payment_id')
+          .select(
+            'id, bank_account_id, transaction_date, description, reference, currency, debit_amount, credit_amount, running_balance, reconciliation_status, matching_status, manually_unlinked, notes, matched_expense_id, matched_receipt_id, matched_payment_id, matched_fund_transfer_id, matched_entry_id, matched_petty_cash_id, matched_tax_payment_id'
+          )
           .eq('id', initialStatementLineId)
           .eq('bank_account_id', selectedBank)
           .maybeSingle();
@@ -892,13 +1017,17 @@ export function BankReconciliationEnhanced({
         if (focusedLine) data = [focusedLine, ...data];
       }
 
-      const lineIds = data.map(row => row.id);
+      const lineIds = data.map((row) => row.id);
       const allocationMap = new Map<string, StatementLine['allocations']>();
       if (lineIds.length > 0) {
-        const allocations = await loadBankReconciliationRowsInBatches<any>(lineIds, batchIds => supabase
-          .from('bank_statement_allocations')
-          .select('id, bank_statement_line_id, document_type, document_id, journal_entry_id, allocation_amount, payment_kind')
-          .in('bank_statement_line_id', batchIds));
+        const allocations = await loadBankReconciliationRowsInBatches<any>(lineIds, (batchIds) =>
+          supabase
+            .from('bank_statement_allocations')
+            .select(
+              'id, bank_statement_line_id, document_type, document_id, journal_entry_id, allocation_amount, payment_kind'
+            )
+            .in('bank_statement_line_id', batchIds)
+        );
         for (const allocation of allocations) {
           const list = allocationMap.get(allocation.bank_statement_line_id) || [];
           list.push({
@@ -914,25 +1043,53 @@ export function BankReconciliationEnhanced({
       }
 
       const allAllocations = [...allocationMap.values()].flat();
-      const idsFor = (documentType: string, legacy: Array<string | null | undefined>) =>
-        [...new Set([
+      const idsFor = (documentType: string, legacy: Array<string | null | undefined>) => [
+        ...new Set([
           ...legacy.filter((id): id is string => Boolean(id)),
-          ...allAllocations.filter(a => a.document_type === documentType).map(a => a.document_id),
-        ])];
+          ...allAllocations
+            .filter((a) => a.document_type === documentType)
+            .map((a) => a.document_id),
+        ]),
+      ];
 
       // Display lookups use allocation document ids. Legacy matched_* columns
       // are only extra keys so a leftover FK can still render a name; they do
       // not decide linked/unlinked status.
-      const expenseIds = idsFor('expense', data.map(r => r.matched_expense_id));
-      const receiptIds = idsFor('receipt', data.map(r => r.matched_receipt_id));
-      const paymentIds = idsFor('payment', data.map(r => r.matched_payment_id));
-      const fundTransferIds = idsFor('fund_transfer', data.map(r => r.matched_fund_transfer_id));
-      const pettyCashIds = idsFor('petty_cash', data.map(r => r.matched_petty_cash_id));
-      const entryIds = [...new Set([
-        ...idsFor('journal', data.map(r => r.matched_entry_id)),
-        ...allAllocations.map(a => a.journal_entry_id).filter((id): id is string => Boolean(id)),
-      ])];
-      const taxPaymentIds = idsFor('tax_payment', data.map(r => r.matched_tax_payment_id));
+      const expenseIds = idsFor(
+        'expense',
+        data.map((r) => r.matched_expense_id)
+      );
+      const receiptIds = idsFor(
+        'receipt',
+        data.map((r) => r.matched_receipt_id)
+      );
+      const paymentIds = idsFor(
+        'payment',
+        data.map((r) => r.matched_payment_id)
+      );
+      const fundTransferIds = idsFor(
+        'fund_transfer',
+        data.map((r) => r.matched_fund_transfer_id)
+      );
+      const pettyCashIds = idsFor(
+        'petty_cash',
+        data.map((r) => r.matched_petty_cash_id)
+      );
+      const entryIds = [
+        ...new Set([
+          ...idsFor(
+            'journal',
+            data.map((r) => r.matched_entry_id)
+          ),
+          ...allAllocations
+            .map((a) => a.journal_entry_id)
+            .filter((id): id is string => Boolean(id)),
+        ]),
+      ];
+      const taxPaymentIds = idsFor(
+        'tax_payment',
+        data.map((r) => r.matched_tax_payment_id)
+      );
 
       // Batch load all expenses with optimized projections: loadBankReconciliationRowsInBatches<any>(expenseIds
       // Rich relations are only loaded for suggested matches (for review modal),
@@ -940,42 +1097,63 @@ export function BankReconciliationEnhanced({
       const expenseMap = new Map();
       if (expenseIds.length > 0) {
         const suggestedSet = new Set(
-          data.filter(r => r.matching_status === 'suggested' && r.matched_expense_id).map(r => r.matched_expense_id)
+          data
+            .filter((r) => r.matching_status === 'suggested' && r.matched_expense_id)
+            .map((r) => r.matched_expense_id)
         );
-        const suggestedExpenseIds = expenseIds.filter(id => suggestedSet.has(id));
-        const historicalExpenseIds = expenseIds.filter(id => !suggestedSet.has(id));
+        const suggestedExpenseIds = expenseIds.filter((id) => suggestedSet.has(id));
+        const historicalExpenseIds = expenseIds.filter((id) => !suggestedSet.has(id));
 
         // 1. Bulk historical expenses: lightweight select without heavy joins
         if (historicalExpenseIds.length > 0) {
-          const histExpenses = await loadBankReconciliationRowsInBatches<any>(historicalExpenseIds, batchIds => supabase
-            .from('finance_expenses')
-            .select('id, expense_category, amount, paid_amount, description, expense_date, voucher_number, invoice_number, payment_reference, payment_method, currency_code, transaction_currency, exchange_rate, approval_status')
-            .in('id', batchIds));
-          histExpenses.forEach(e => expenseMap.set(e.id, e));
+          const histExpenses = await loadBankReconciliationRowsInBatches<any>(
+            historicalExpenseIds,
+            (batchIds) =>
+              supabase
+                .from('finance_expenses')
+                .select(
+                  'id, expense_category, amount, paid_amount, description, expense_date, voucher_number, invoice_number, payment_reference, payment_method, currency_code, transaction_currency, exchange_rate, approval_status'
+                )
+                .in('id', batchIds)
+          );
+          histExpenses.forEach((e) => expenseMap.set(e.id, e));
         }
 
         // 2. Suggested expenses: full detail select for side-by-side review
         if (suggestedExpenseIds.length > 0) {
-          const suggestedExpenses = await loadBankReconciliationRowsInBatches<any>(suggestedExpenseIds, batchIds => supabase
-            .from('finance_expenses')
-            .select('id, expense_category, amount, paid_amount, description, expense_date, voucher_number, invoice_number, payment_reference, payment_method, currency_code, transaction_currency, exchange_rate, document_urls, ppn_amount, ppn_rate, pph_amount, pph_rate, stamp_duty_amount, bank_charges_amount, broker_items, approval_status, suppliers(company_name), finance_staff_master(full_name), finance_payees(full_name), import_containers(container_ref), bank_accounts(account_name, account_number), created_by_profile:user_profiles!finance_expenses_created_by_fkey(full_name)')
-            .in('id', batchIds));
-          suggestedExpenses.forEach(e => expenseMap.set(e.id, e));
+          const suggestedExpenses = await loadBankReconciliationRowsInBatches<any>(
+            suggestedExpenseIds,
+            (batchIds) =>
+              supabase
+                .from('finance_expenses')
+                .select(
+                  'id, expense_category, amount, paid_amount, description, expense_date, voucher_number, invoice_number, payment_reference, payment_method, currency_code, transaction_currency, exchange_rate, document_urls, ppn_amount, ppn_rate, pph_amount, pph_rate, stamp_duty_amount, bank_charges_amount, broker_items, approval_status, suppliers(company_name), finance_staff_master(full_name), finance_payees(full_name), import_containers(container_ref), bank_accounts(account_name, account_number), created_by_profile:user_profiles!finance_expenses_created_by_fkey(full_name)'
+                )
+                .in('id', batchIds)
+          );
+          suggestedExpenses.forEach((e) => expenseMap.set(e.id, e));
         }
       }
 
       const paymentMap = new Map();
       if (paymentIds.length > 0) {
-        const payments = await loadBankReconciliationRowsInBatches<any>(paymentIds, batchIds => supabase
-          .from('payment_vouchers')
-          .select('id, amount, actual_bank_debit, bank_amount, payment_currency, voucher_date, voucher_number, supplier_id, staff_id, suppliers(company_name), finance_staff_master(full_name)')
-          .in('id', batchIds));
-        payments.forEach(payment => {
+        const payments = await loadBankReconciliationRowsInBatches<any>(paymentIds, (batchIds) =>
+          supabase
+            .from('payment_vouchers')
+            .select(
+              'id, amount, actual_bank_debit, bank_amount, payment_currency, voucher_date, voucher_number, supplier_id, staff_id, suppliers(company_name), finance_staff_master(full_name)'
+            )
+            .in('id', batchIds)
+        );
+        payments.forEach((payment) => {
           paymentMap.set(payment.id, {
             id: payment.id,
-            amount: payment.actual_bank_debit && Number(payment.actual_bank_debit) > 0
-              ? payment.actual_bank_debit
-              : payment.bank_amount && Number(payment.bank_amount) > 0 ? payment.bank_amount : payment.amount,
+            amount:
+              payment.actual_bank_debit && Number(payment.actual_bank_debit) > 0
+                ? payment.actual_bank_debit
+                : payment.bank_amount && Number(payment.bank_amount) > 0
+                  ? payment.bank_amount
+                  : payment.amount,
             voucher_date: payment.voucher_date,
             voucher_number: payment.voucher_number,
             supplier_name: (payment.suppliers as any)?.company_name,
@@ -987,17 +1165,21 @@ export function BankReconciliationEnhanced({
       // Batch load all receipts with customers
       const receiptMap = new Map();
       if (receiptIds.length > 0) {
-        const receipts = await loadBankReconciliationRowsInBatches<any>(receiptIds, batchIds => supabase
-          .from('receipt_vouchers')
-          .select('id, amount, voucher_date, voucher_number, customer_id, customers(company_name)')
-          .in('id', batchIds));
-        receipts.forEach(r => {
+        const receipts = await loadBankReconciliationRowsInBatches<any>(receiptIds, (batchIds) =>
+          supabase
+            .from('receipt_vouchers')
+            .select(
+              'id, amount, voucher_date, voucher_number, customer_id, customers(company_name)'
+            )
+            .in('id', batchIds)
+        );
+        receipts.forEach((r) => {
           receiptMap.set(r.id, {
             id: r.id,
             amount: r.amount,
             payment_date: r.voucher_date,
             payment_number: r.voucher_number,
-            customer_name: (r.customers as any)?.company_name
+            customer_name: (r.customers as any)?.company_name,
           });
         });
       }
@@ -1005,58 +1187,74 @@ export function BankReconciliationEnhanced({
       // Batch load all fund transfers
       const fundTransferMap = new Map();
       if (fundTransferIds.length > 0) {
-        const fundTransfers = await loadBankReconciliationRowsInBatches<any>(fundTransferIds, batchIds => supabase
-          .from('fund_transfers')
-          .select('id, transfer_number, amount, from_amount, to_amount, description, transfer_date, from_account_type, to_account_type, from_bank_account_id, to_bank_account_id, from_bank_statement_line_id, to_bank_statement_line_id, journal_entry_id, status')
-          .in('id', batchIds));
-        fundTransfers.forEach(f => fundTransferMap.set(f.id, f));
+        const fundTransfers = await loadBankReconciliationRowsInBatches<any>(
+          fundTransferIds,
+          (batchIds) =>
+            supabase
+              .from('fund_transfers')
+              .select(
+                'id, transfer_number, amount, from_amount, to_amount, description, transfer_date, from_account_type, to_account_type, from_bank_account_id, to_bank_account_id, from_bank_statement_line_id, to_bank_statement_line_id, journal_entry_id, status'
+              )
+              .in('id', batchIds)
+        );
+        fundTransfers.forEach((f) => fundTransferMap.set(f.id, f));
       }
 
       // Batch load matched petty cash by id. Do not exclude fund-transfer-backed
       // rows here — that filter hid valid matches and left the UI unresolved.
       const pettyCashMap = new Map();
       if (pettyCashIds.length > 0) {
-        const pettyCash = await loadBankReconciliationRowsInBatches<any>(pettyCashIds, batchIds => supabase
-          .from('petty_cash_transactions')
-          .select('id, description, amount, transaction_date, transaction_type')
-          .in('id', batchIds));
-        pettyCash.forEach(p => pettyCashMap.set(p.id, p));
+        const pettyCash = await loadBankReconciliationRowsInBatches<any>(pettyCashIds, (batchIds) =>
+          supabase
+            .from('petty_cash_transactions')
+            .select('id, description, amount, transaction_date, transaction_type')
+            .in('id', batchIds)
+        );
+        pettyCash.forEach((p) => pettyCashMap.set(p.id, p));
       }
 
       // Batch load all journal entries (canonical link fallback for display)
       const entryMap = new Map();
       const allEntryIds = new Set(entryIds);
-      fundTransferMap.forEach(f => {
+      fundTransferMap.forEach((f) => {
         if (f.journal_entry_id) allEntryIds.add(f.journal_entry_id);
       });
       const finalEntryIds = Array.from(allEntryIds);
       if (finalEntryIds.length > 0) {
-        const entries = await loadBankReconciliationRowsInBatches<any>(finalEntryIds, batchIds => supabase
-          .from('journal_entries')
-          .select('id, source_module, reference_id, reference_number, description, entry_date, entry_number, is_posted, is_reversed')
-          .in('id', batchIds));
-        entries.forEach(e => entryMap.set(e.id, e));
+        const entries = await loadBankReconciliationRowsInBatches<any>(finalEntryIds, (batchIds) =>
+          supabase
+            .from('journal_entries')
+            .select(
+              'id, source_module, reference_id, reference_number, description, entry_date, entry_number, is_posted, is_reversed'
+            )
+            .in('id', batchIds)
+        );
+        entries.forEach((e) => entryMap.set(e.id, e));
       }
 
       // Batch load all tax payments
       const taxPaymentMap = new Map();
       if (taxPaymentIds.length > 0) {
-        const taxPayments = await loadBankReconciliationRowsInBatches<any>(taxPaymentIds, batchIds => supabase
-          .from('tax_payments')
-          .select('id, tax_type, amount, payment_date, billing_code, ntpn')
-          .in('id', batchIds));
-        taxPayments.forEach(t => taxPaymentMap.set(t.id, t));
+        const taxPayments = await loadBankReconciliationRowsInBatches<any>(
+          taxPaymentIds,
+          (batchIds) =>
+            supabase
+              .from('tax_payments')
+              .select('id, tax_type, amount, payment_date, billing_code, ntpn')
+              .in('id', batchIds)
+        );
+        taxPayments.forEach((t) => taxPaymentMap.set(t.id, t));
       }
 
       // Map lines with pre-loaded data (NO MORE QUERIES!)
-      const lines: StatementLine[] = data.map(row => {
+      const lines: StatementLine[] = data.map((row) => {
         const allocations = allocationMap.get(row.id) || [];
         const bankAmount = bankStatementLineAmount(row.debit_amount, row.credit_amount);
         const isDirectRecorded =
           !row.manually_unlinked &&
           Boolean(row.matched_entry_id) &&
           (row.matching_status === 'confirmed' || row.reconciliation_status === 'recorded');
-        const validAllocations = allocations.filter(allocation => {
+        const validAllocations = allocations.filter((allocation) => {
           if (!allocation.journal_entry_id) return false;
           const journal = entryMap.get(allocation.journal_entry_id);
           if (!journal || !journal.is_posted || journal.is_reversed) return false;
@@ -1064,7 +1262,7 @@ export function BankReconciliationEnhanced({
         });
 
         // Resolve Fund Transfer: canonical allocation is authoritative; fallback to validated legacy link
-        const firstFund = allocations.find(a => a.document_type === 'fund_transfer');
+        const firstFund = allocations.find((a) => a.document_type === 'fund_transfer');
         let legacyFundAllocation: any = null;
         let legacyFundTransferId: string | null = null;
 
@@ -1079,17 +1277,28 @@ export function BankReconciliationEnhanced({
                 const side = isFromLine ? 'from' : 'to';
                 const debit = Number(row.debit_amount || 0);
                 const credit = Number(row.credit_amount || 0);
-                const expectedAccount = side === 'from' ? ft.from_bank_account_id : ft.to_bank_account_id;
-                const expectedAccountType = side === 'from' ? ft.from_account_type : ft.to_account_type;
-                const expectedAmount = Number(side === 'from' ? (ft.from_amount ?? ft.amount) : (ft.to_amount ?? ft.amount));
+                const expectedAccount =
+                  side === 'from' ? ft.from_bank_account_id : ft.to_bank_account_id;
+                const expectedAccountType =
+                  side === 'from' ? ft.from_account_type : ft.to_account_type;
+                const expectedAmount = Number(
+                  side === 'from' ? (ft.from_amount ?? ft.amount) : (ft.to_amount ?? ft.amount)
+                );
                 const actualAmount = side === 'from' ? debit : credit;
                 const otherAmount = side === 'from' ? credit : debit;
-                const rowDate = typeof row.transaction_date === 'string' ? row.transaction_date.split('T')[0] : '';
-                const ftDate = typeof ft.transfer_date === 'string' ? ft.transfer_date.split('T')[0] : '';
+                const rowDate =
+                  typeof row.transaction_date === 'string'
+                    ? row.transaction_date.split('T')[0]
+                    : '';
+                const ftDate =
+                  typeof ft.transfer_date === 'string' ? ft.transfer_date.split('T')[0] : '';
 
-                const isAccountMatch = expectedAccountType === 'bank' && expectedAccount === row.bank_account_id;
-                const isDirectionMatch = actualAmount > BANK_ALLOCATION_EPSILON && otherAmount <= BANK_ALLOCATION_EPSILON;
-                const isAmountMatch = Math.abs(actualAmount - expectedAmount) <= BANK_ALLOCATION_EPSILON;
+                const isAccountMatch =
+                  expectedAccountType === 'bank' && expectedAccount === row.bank_account_id;
+                const isDirectionMatch =
+                  actualAmount > BANK_ALLOCATION_EPSILON && otherAmount <= BANK_ALLOCATION_EPSILON;
+                const isAmountMatch =
+                  Math.abs(actualAmount - expectedAmount) <= BANK_ALLOCATION_EPSILON;
                 const isDateMatch = !rowDate || !ftDate || rowDate === ftDate;
 
                 if (isAccountMatch && isDirectionMatch && isAmountMatch && isDateMatch) {
@@ -1114,9 +1323,10 @@ export function BankReconciliationEnhanced({
           }
         }
 
-        const allocatedAmount = validAllocations.reduce((sum, allocation) => sum + allocation.allocation_amount, 0)
-          + (legacyFundAllocation ? legacyFundAllocation.allocation_amount : 0)
-          + (isDirectRecorded && allocations.length === 0 && !legacyFundAllocation ? bankAmount : 0);
+        const allocatedAmount =
+          validAllocations.reduce((sum, allocation) => sum + allocation.allocation_amount, 0) +
+          (legacyFundAllocation ? legacyFundAllocation.allocation_amount : 0) +
+          (isDirectRecorded && allocations.length === 0 && !legacyFundAllocation ? bankAmount : 0);
         const remainingAmount = Math.max(0, bankAmount - allocatedAmount);
         const isSuggested =
           (row.matching_status === 'suggested' ||
@@ -1131,30 +1341,26 @@ export function BankReconciliationEnhanced({
                 const status = canonicalBankReconciliationStatus(bankAmount, allocatedAmount);
                 return status;
               })();
-        const firstExpense = allocations.find(a => a.document_type === 'expense');
-        const firstReceipt = allocations.find(a => a.document_type === 'receipt');
-        const firstPayment = allocations.find(a => a.document_type === 'payment');
-        const firstPetty = allocations.find(a => a.document_type === 'petty_cash');
-        const firstTax = allocations.find(a => a.document_type === 'tax_payment');
-        const firstJournal = allocations.find(a => a.document_type === 'journal');
-        const labeledAllocations = allocations.map(allocation => {
+        const firstExpense = allocations.find((a) => a.document_type === 'expense');
+        const firstReceipt = allocations.find((a) => a.document_type === 'receipt');
+        const firstPayment = allocations.find((a) => a.document_type === 'payment');
+        const firstPetty = allocations.find((a) => a.document_type === 'petty_cash');
+        const firstTax = allocations.find((a) => a.document_type === 'tax_payment');
+        const firstJournal = allocations.find((a) => a.document_type === 'journal');
+        const labeledAllocations = allocations.map((allocation) => {
           let label = allocation.document_type;
           let counterparty: string | undefined;
           let documentTotal: number | undefined;
           let documentRemaining: number | undefined;
           if (allocation.document_type === 'expense') {
             const expense = expenseMap.get(allocation.document_id);
-            label = expense?.voucher_number
-              || expense?.expense_category
-              || 'Expense';
+            label = expense?.voucher_number || expense?.expense_category || 'Expense';
             counterparty = expense?.suppliers?.company_name;
             documentTotal = expense ? calculateCanonicalCashPayable(expense) : 0;
             documentRemaining = Math.max(0, documentTotal - Number(expense?.paid_amount || 0));
           } else if (allocation.document_type === 'receipt') {
             const receipt = receiptMap.get(allocation.document_id);
-            label = receipt?.payment_number
-              || receipt?.customer_name
-              || 'Receipt';
+            label = receipt?.payment_number || receipt?.customer_name || 'Receipt';
             counterparty = receipt?.customer_name;
             documentTotal = Number(receipt?.amount || 0);
           } else if (allocation.document_type === 'payment') {
@@ -1166,7 +1372,9 @@ export function BankReconciliationEnhanced({
             const ft = fundTransferMap.get(allocation.document_id);
             label = ft?.transfer_number || 'Fund Transfer';
             counterparty = ft ? `${ft.from_account_type} → ${ft.to_account_type}` : undefined;
-            documentTotal = Number(ft?.to_amount ?? ft?.from_amount ?? ft?.amount ?? allocation.allocation_amount);
+            documentTotal = Number(
+              ft?.to_amount ?? ft?.from_amount ?? ft?.amount ?? allocation.allocation_amount
+            );
             documentRemaining = 0;
           } else if (allocation.document_type === 'petty_cash') {
             label = pettyCashMap.get(allocation.document_id)?.description || 'Petty Cash';
@@ -1176,7 +1384,9 @@ export function BankReconciliationEnhanced({
           } else if (allocation.document_type === 'journal') {
             label = entryMap.get(allocation.document_id)?.entry_number || 'Journal';
           }
-          const journal = allocation.journal_entry_id ? entryMap.get(allocation.journal_entry_id) : undefined;
+          const journal = allocation.journal_entry_id
+            ? entryMap.get(allocation.journal_entry_id)
+            : undefined;
           return {
             ...allocation,
             label,
@@ -1184,7 +1394,11 @@ export function BankReconciliationEnhanced({
             document_total: documentTotal,
             document_remaining: documentRemaining,
             journal_status: journal
-              ? (journal.is_reversed ? 'Reversed' : journal.is_posted ? 'Posted' : 'Unposted')
+              ? journal.is_reversed
+                ? 'Reversed'
+                : journal.is_posted
+                  ? 'Posted'
+                  : 'Unposted'
               : undefined,
           };
         });
@@ -1203,13 +1417,19 @@ export function BankReconciliationEnhanced({
             allocation_amount: bankAmount,
             payment_kind: 'journal',
             label: directJournal?.entry_number
-              ? (row.notes ? `${directJournal.entry_number} · ${row.notes}` : directJournal.entry_number)
-              : (row.notes || 'Journal Entry'),
+              ? row.notes
+                ? `${directJournal.entry_number} · ${row.notes}`
+                : directJournal.entry_number
+              : row.notes || 'Journal Entry',
             counterparty: undefined,
             document_total: bankAmount,
             document_remaining: 0,
             journal_status: directJournal
-              ? (directJournal.is_reversed ? 'Reversed' : directJournal.is_posted ? 'Posted' : 'Unposted')
+              ? directJournal.is_reversed
+                ? 'Reversed'
+                : directJournal.is_posted
+                  ? 'Posted'
+                  : 'Unposted'
               : 'Posted',
           });
         }
@@ -1220,7 +1440,10 @@ export function BankReconciliationEnhanced({
         const fundId = firstFund?.document_id || legacyFundTransferId || null;
         const pettyId = firstPetty?.document_id || null;
         const taxId = firstTax?.document_id || null;
-        const journalId = firstJournal?.document_id || (legacyFundAllocation ? legacyFundAllocation.journal_entry_id : null) || (isDirectRecorded ? row.matched_entry_id : null);
+        const journalId =
+          firstJournal?.document_id ||
+          (legacyFundAllocation ? legacyFundAllocation.journal_entry_id : null) ||
+          (isDirectRecorded ? row.matched_entry_id : null);
         return {
           id: row.id,
           date: row.transaction_date,
@@ -1261,7 +1484,9 @@ export function BankReconciliationEnhanced({
       if (currentRequestId === loadingRequestIdRef.current) {
         if (err?.name !== 'AbortError' && !err?.message?.includes('aborted')) {
           console.error('Error loading statement lines:', err);
-          setStatementLoadError(err instanceof Error ? err.message : 'Unable to load bank transactions.');
+          setStatementLoadError(
+            err instanceof Error ? err.message : 'Unable to load bank transactions.'
+          );
         }
       }
     } finally {
@@ -1276,13 +1501,21 @@ export function BankReconciliationEnhanced({
     }
   };
 
-  const normalizeHeader = (s: string) => s.toLowerCase().trim().replace(/[\s_-]+/g, ' ');
+  const normalizeHeader = (s: string) =>
+    s
+      .toLowerCase()
+      .trim()
+      .replace(/[\s_-]+/g, ' ');
 
   const isDateHeader = (s: string) =>
-    ['tanggal', 'tgl', 'date', 'transaction date', 'trn date', 'tx date'].includes(normalizeHeader(s));
+    ['tanggal', 'tgl', 'date', 'transaction date', 'trn date', 'tx date'].includes(
+      normalizeHeader(s)
+    );
 
   const isDescHeader = (s: string) =>
-    ['keterangan', 'uraian', 'description', 'desc', 'transaction description'].includes(normalizeHeader(s));
+    ['keterangan', 'uraian', 'description', 'desc', 'transaction description'].includes(
+      normalizeHeader(s)
+    );
 
   const isBranchHeader = (s: string) =>
     ['cabang', 'branch', 'branch code'].includes(normalizeHeader(s));
@@ -1317,7 +1550,7 @@ export function BankReconciliationEnhanced({
     for (let i = 0; i < Math.min(25, rows.length); i++) {
       const row = rows[i];
       if (!row) continue;
-      const colIdx = row.findIndex(c => isDateHeader(String(c || '')));
+      const colIdx = row.findIndex((c) => isDateHeader(String(c || '')));
       if (colIdx !== -1) {
         dateCol = colIdx;
         break;
@@ -1382,7 +1615,6 @@ export function BankReconciliationEnhanced({
           const semicolonCount = (firstLines.match(/;/g) || []).length;
           const detectedDelimiter = commaCount > semicolonCount ? ',' : ';';
 
-
           const rows: any[][] = [];
           let currentLine = '';
           let inQuotes = false;
@@ -1413,7 +1645,10 @@ export function BankReconciliationEnhanced({
           let statementYear: number | undefined = undefined;
           if (detectNeedsYearPrompt(rows)) {
             const currentYear = new Date().getFullYear();
-            const userYear = prompt(`CSV contains dates without year (e.g., 01/12).\nWhich year is this statement for?`, String(currentYear));
+            const userYear = prompt(
+              `CSV contains dates without year (e.g., 01/12).\nWhich year is this statement for?`,
+              String(currentYear)
+            );
             if (!userYear) {
               alert('❌ Year is required to process the CSV');
               return;
@@ -1439,13 +1674,17 @@ export function BankReconciliationEnhanced({
           }
 
           if (parsedLines.length === 0) {
-            alert('No transactions found in the CSV file. Check that the file has date and amount columns.');
+            alert(
+              'No transactions found in the CSV file. Check that the file has date and amount columns.'
+            );
             return;
           }
 
           const stmtCurrency = metadata.currency || selectedAccount?.currency || 'IDR';
           if (selectedAccount?.currency && stmtCurrency !== selectedAccount.currency) {
-            alert(`❌ Statement currency (${stmtCurrency}) does not match bank account currency (${selectedAccount.currency})`);
+            alert(
+              `❌ Statement currency (${stmtCurrency}) does not match bank account currency (${selectedAccount.currency})`
+            );
             return;
           }
 
@@ -1454,16 +1693,24 @@ export function BankReconciliationEnhanced({
           const openingBal = Number(metadata.openingBalance || 0);
           const computedClosing = openingBal + totalCredits - totalDebits;
           const finalLineBal = parsedLines[parsedLines.length - 1]?.balance;
-          const closingBal = metadata.closingBalance && metadata.closingBalance !== 0
-            ? Number(metadata.closingBalance)
-            : (finalLineBal !== undefined && finalLineBal !== null ? Number(finalLineBal) : computedClosing);
+          const closingBal =
+            metadata.closingBalance && metadata.closingBalance !== 0
+              ? Number(metadata.closingBalance)
+              : finalLineBal !== undefined && finalLineBal !== null
+                ? Number(finalLineBal)
+                : computedClosing;
 
-          const dates = parsedLines.map(l => l.date).filter(Boolean).sort();
+          const dates = parsedLines
+            .map((l) => l.date)
+            .filter(Boolean)
+            .sort();
           const startDate = metadata.startDate || dates[0] || dateRange.start;
           const endDate = metadata.endDate || dates[dates.length - 1] || dateRange.end;
 
           if (startDate > endDate) {
-            alert(`❌ Invalid statement date range: start date (${startDate}) is after end date (${endDate})`);
+            alert(
+              `❌ Invalid statement date range: start date (${startDate}) is after end date (${endDate})`
+            );
             return;
           }
 
@@ -1474,7 +1721,9 @@ export function BankReconciliationEnhanced({
               .from('bank_statement_uploads')
               .insert({
                 bank_account_id: selectedBank,
-                statement_period: metadata.period || `${new Date().toLocaleString('default', { month: 'long' })} ${new Date().getFullYear()}`,
+                statement_period:
+                  metadata.period ||
+                  `${new Date().toLocaleString('default', { month: 'long' })} ${new Date().getFullYear()}`,
                 statement_start_date: startDate,
                 statement_end_date: endDate,
                 currency: stmtCurrency,
@@ -1496,9 +1745,11 @@ export function BankReconciliationEnhanced({
             return;
           }
 
-          const { data: { user } } = await supabase.auth.getUser();
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
 
-          const insertData = parsedLines.map(line => ({
+          const insertData = parsedLines.map((line) => ({
             upload_id: uploadRecord.id,
             bank_account_id: selectedBank,
             transaction_date: line.date,
@@ -1515,8 +1766,7 @@ export function BankReconciliationEnhanced({
           }));
 
           // Check for existing transactions using hash-equivalent matching (date + amounts + normalized full description + reference)
-          const normalizeDesc = (desc: string) =>
-            desc.toLowerCase().replace(/\s+/g, ' ').trim();
+          const normalizeDesc = (desc: string) => desc.toLowerCase().replace(/\s+/g, ' ').trim();
 
           const { data: existingLines } = await supabase
             .from('bank_statement_lines')
@@ -1526,15 +1776,15 @@ export function BankReconciliationEnhanced({
           // Build keys with occurrence count to detect which exact occurrence already exists in DB
           // e.g. if "BIF BIAYA TXN 2500" appears 3x in DB, we skip the first 3 from CSV
           const dbKeyCounts = new Map<string, number>();
-          (existingLines || []).forEach(e => {
-            const k = `${e.transaction_date}|${Number(e.debit_amount)||0}|${Number(e.credit_amount)||0}|${(e.reference || '').trim().toLowerCase()}|${normalizeDesc(e.description||'')}`;
+          (existingLines || []).forEach((e) => {
+            const k = `${e.transaction_date}|${Number(e.debit_amount) || 0}|${Number(e.credit_amount) || 0}|${(e.reference || '').trim().toLowerCase()}|${normalizeDesc(e.description || '')}`;
             dbKeyCounts.set(k, (dbKeyCounts.get(k) || 0) + 1);
           });
 
           const csvKeyCounts = new Map<string, number>();
           const skippedEntries: typeof insertData = [];
-          const finalInsertData = insertData.filter(line => {
-            const key = `${line.transaction_date}|${Number(line.debit_amount)||0}|${Number(line.credit_amount)||0}|${(line.reference || '').trim().toLowerCase()}|${normalizeDesc(line.description||'')}`;
+          const finalInsertData = insertData.filter((line) => {
+            const key = `${line.transaction_date}|${Number(line.debit_amount) || 0}|${Number(line.credit_amount) || 0}|${(line.reference || '').trim().toLowerCase()}|${normalizeDesc(line.description || '')}`;
             const csvOccurrence = csvKeyCounts.get(key) || 0;
             csvKeyCounts.set(key, csvOccurrence + 1);
             const dbCount = dbKeyCounts.get(key) || 0;
@@ -1583,7 +1833,9 @@ export function BankReconciliationEnhanced({
             await loadStatementLines();
           } catch (loadError: any) {
             if (loadError?.name === 'AbortError' || loadError?.message?.includes('aborted')) {
-              console.warn('loadStatementLines request was aborted (expected during fast refresh).');
+              console.warn(
+                'loadStatementLines request was aborted (expected during fast refresh).'
+              );
             } else {
               console.error('Load statement lines error:', loadError);
             }
@@ -1673,7 +1925,9 @@ export function BankReconciliationEnhanced({
         formData.append('previewOnly', 'true');
       }
 
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session) throw new Error('Not authenticated');
 
       const response = await fetch(
@@ -1681,7 +1935,7 @@ export function BankReconciliationEnhanced({
         {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${session.access_token}`,
+            Authorization: `Bearer ${session.access_token}`,
           },
           body: formData,
         }
@@ -1694,7 +1948,7 @@ export function BankReconciliationEnhanced({
           setOcrError({
             message: result.error,
             canUseOCR: true,
-            suggestions: result.suggestions
+            suggestions: result.suggestions,
           });
           setLastUploadedFile(file);
         } else {
@@ -1783,13 +2037,17 @@ export function BankReconciliationEnhanced({
           const { lines, metadata } = parseStatementDataWithMetadata(jsonData);
 
           if (lines.length === 0) {
-            alert('No valid transactions found in the file. Confirm the statement has a date column and transaction rows.');
+            alert(
+              'No valid transactions found in the file. Confirm the statement has a date column and transaction rows.'
+            );
             return;
           }
 
           const stmtCurrency = metadata.currency || selectedAccount?.currency || 'IDR';
           if (selectedAccount?.currency && stmtCurrency !== selectedAccount.currency) {
-            alert(`❌ Statement currency (${stmtCurrency}) does not match bank account currency (${selectedAccount.currency})`);
+            alert(
+              `❌ Statement currency (${stmtCurrency}) does not match bank account currency (${selectedAccount.currency})`
+            );
             return;
           }
 
@@ -1798,16 +2056,24 @@ export function BankReconciliationEnhanced({
           const openingBal = Number(metadata.openingBalance || 0);
           const computedClosing = openingBal + totalCredits - totalDebits;
           const finalLineBal = lines[lines.length - 1]?.balance;
-          const closingBal = metadata.closingBalance && metadata.closingBalance !== 0
-            ? Number(metadata.closingBalance)
-            : (finalLineBal !== undefined && finalLineBal !== null ? Number(finalLineBal) : computedClosing);
+          const closingBal =
+            metadata.closingBalance && metadata.closingBalance !== 0
+              ? Number(metadata.closingBalance)
+              : finalLineBal !== undefined && finalLineBal !== null
+                ? Number(finalLineBal)
+                : computedClosing;
 
-          const dates = lines.map(l => l.date).filter(Boolean).sort();
+          const dates = lines
+            .map((l) => l.date)
+            .filter(Boolean)
+            .sort();
           const startDate = metadata.startDate || dates[0] || dateRange.start;
           const endDate = metadata.endDate || dates[dates.length - 1] || dateRange.end;
 
           if (startDate > endDate) {
-            alert(`❌ Invalid statement date range: start date (${startDate}) is after end date (${endDate})`);
+            alert(
+              `❌ Invalid statement date range: start date (${startDate}) is after end date (${endDate})`
+            );
             return;
           }
 
@@ -1815,7 +2081,9 @@ export function BankReconciliationEnhanced({
             .from('bank_statement_uploads')
             .insert({
               bank_account_id: selectedBank,
-              statement_period: metadata.period || `${new Date().toLocaleString('default', { month: 'long' })} ${new Date().getFullYear()}`,
+              statement_period:
+                metadata.period ||
+                `${new Date().toLocaleString('default', { month: 'long' })} ${new Date().getFullYear()}`,
               statement_start_date: startDate,
               statement_end_date: endDate,
               currency: stmtCurrency,
@@ -1831,9 +2099,11 @@ export function BankReconciliationEnhanced({
 
           if (uploadError) throw uploadError;
 
-          const { data: { user } } = await supabase.auth.getUser();
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
 
-          const insertData = lines.map(line => ({
+          const insertData = lines.map((line) => ({
             upload_id: uploadRecord.id,
             bank_account_id: selectedBank,
             transaction_date: line.date,
@@ -1856,13 +2126,14 @@ export function BankReconciliationEnhanced({
             .eq('bank_account_id', selectedBank);
 
           // Find duplicates by matching date, amounts, and description
-          const duplicates = insertData.filter(newLine =>
-            existingLines?.some(existing =>
-              existing.transaction_date === newLine.transaction_date &&
-              existing.description === newLine.description &&
-              existing.debit_amount === newLine.debit_amount &&
-              existing.credit_amount === newLine.credit_amount &&
-              existing.running_balance === newLine.running_balance
+          const duplicates = insertData.filter((newLine) =>
+            existingLines?.some(
+              (existing) =>
+                existing.transaction_date === newLine.transaction_date &&
+                existing.description === newLine.description &&
+                existing.debit_amount === newLine.debit_amount &&
+                existing.credit_amount === newLine.credit_amount &&
+                existing.running_balance === newLine.running_balance
             )
           );
 
@@ -1885,14 +2156,16 @@ export function BankReconciliationEnhanced({
 
             if (!userWantsToAdd) {
               // Filter out duplicates
-              finalInsertData = insertData.filter(newLine =>
-                !existingLines?.some(existing =>
-                  existing.transaction_date === newLine.transaction_date &&
-                  existing.description === newLine.description &&
-                  existing.debit_amount === newLine.debit_amount &&
-                  existing.credit_amount === newLine.credit_amount &&
-                  existing.running_balance === newLine.running_balance
-                )
+              finalInsertData = insertData.filter(
+                (newLine) =>
+                  !existingLines?.some(
+                    (existing) =>
+                      existing.transaction_date === newLine.transaction_date &&
+                      existing.description === newLine.description &&
+                      existing.debit_amount === newLine.debit_amount &&
+                      existing.credit_amount === newLine.credit_amount &&
+                      existing.running_balance === newLine.running_balance
+                  )
               );
             }
           }
@@ -1948,7 +2221,10 @@ export function BankReconciliationEnhanced({
     }
   };
 
-  const parseStatementDataWithMetadata = (rows: any[][], providedYear?: number): { lines: StatementLine[]; metadata: any } => {
+  const parseStatementDataWithMetadata = (
+    rows: any[][],
+    providedYear?: number
+  ): { lines: StatementLine[]; metadata: any } => {
     const lines: StatementLine[] = [];
     const metadata: any = {
       period: '',
@@ -1972,18 +2248,36 @@ export function BankReconciliationEnhanced({
         const cell = String(row[j] || '').trim();
         if (!cell) continue;
 
-        const pMatch = cell.match(/Period(?:e)?\s*:\s*(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})\s*-\s*(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/i);
+        const pMatch = cell.match(
+          /Period(?:e)?\s*:\s*(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})\s*-\s*(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/i
+        );
         if (pMatch) {
-          const sDay = parseInt(pMatch[1]), sMon = parseInt(pMatch[2]);
+          const sDay = parseInt(pMatch[1]),
+            sMon = parseInt(pMatch[2]);
           let sYr = parseInt(pMatch[3]);
-          const eDay = parseInt(pMatch[4]), eMon = parseInt(pMatch[5]);
+          const eDay = parseInt(pMatch[4]),
+            eMon = parseInt(pMatch[5]);
           let eYr = parseInt(pMatch[6]);
           if (sYr < 100) sYr += 2000;
           if (eYr < 100) eYr += 2000;
           fileYear = sYr;
           metadata.startDate = `${sYr}-${String(sMon).padStart(2, '0')}-${String(sDay).padStart(2, '0')}`;
           metadata.endDate = `${eYr}-${String(eMon).padStart(2, '0')}-${String(eDay).padStart(2, '0')}`;
-          const monthNames = ['', 'JANUARI', 'FEBRUARI', 'MARET', 'APRIL', 'MEI', 'JUNI', 'JULI', 'AGUSTUS', 'SEPTEMBER', 'OKTOBER', 'NOVEMBER', 'DESEMBER'];
+          const monthNames = [
+            '',
+            'JANUARI',
+            'FEBRUARI',
+            'MARET',
+            'APRIL',
+            'MEI',
+            'JUNI',
+            'JULI',
+            'AGUSTUS',
+            'SEPTEMBER',
+            'OKTOBER',
+            'NOVEMBER',
+            'DESEMBER',
+          ];
           metadata.period = `${monthNames[sMon] || sMon} ${sYr}`;
         }
 
@@ -2000,7 +2294,10 @@ export function BankReconciliationEnhanced({
     for (let i = 0; i < Math.min(25, rows.length); i++) {
       const row = rows[i];
       if (!row || row.length === 0) continue;
-      if (row.some(isDateHeader) && (row.some(isDescHeader) || row.some(isAmountHeader) || row.some(isDebitHeader))) {
+      if (
+        row.some(isDateHeader) &&
+        (row.some(isDescHeader) || row.some(isAmountHeader) || row.some(isDebitHeader))
+      ) {
         headerRowIdx = i;
         break;
       }
@@ -2011,8 +2308,13 @@ export function BankReconciliationEnhanced({
     }
 
     const headerRow = rows[headerRowIdx];
-    let dateCol = -1, descCol = -1, branchCol = -1, amountCol = -1, balanceCol = -1;
-    let debitCol = -1, creditCol = -1;
+    let dateCol = -1,
+      descCol = -1,
+      branchCol = -1,
+      amountCol = -1,
+      balanceCol = -1;
+    let debitCol = -1,
+      creditCol = -1;
 
     headerRow.forEach((cell: any, idx: number) => {
       const s = String(cell || '');
@@ -2049,9 +2351,19 @@ export function BankReconciliationEnhanced({
       const row = rows[i];
       if (!row || row.length === 0 || row.every((c: any) => !String(c || '').trim())) continue;
 
-      const rowText = row.map((c: any) => String(c || '').toUpperCase().trim()).join(' ');
+      const rowText = row
+        .map((c: any) =>
+          String(c || '')
+            .toUpperCase()
+            .trim()
+        )
+        .join(' ');
 
-      if (rowText.includes('SALDO AWAL') || rowText.includes('START BALANCE') || rowText.includes('OPENING BALANCE')) {
+      if (
+        rowText.includes('SALDO AWAL') ||
+        rowText.includes('START BALANCE') ||
+        rowText.includes('OPENING BALANCE')
+      ) {
         continue;
       }
 
@@ -2085,12 +2397,28 @@ export function BankReconciliationEnhanced({
         const numericMatch = dateStr.match(/^(\d{1,2})[.\/-](\d{1,2})$/);
         const namedMatch = dateStr.match(/^(\d{1,2})[-\s]([A-Za-z]{3,4})(?:[-\s](\d{2,4}))?$/);
         const monthNames: Record<string, number> = {
-          jan: 1, feb: 2, mar: 3, apr: 4, may: 5, mei: 5,
-          jun: 6, jul: 7, aug: 8, agu: 8, ags: 8, sep: 9,
-          oct: 10, okt: 10, nov: 11, dec: 12, des: 12
+          jan: 1,
+          feb: 2,
+          mar: 3,
+          apr: 4,
+          may: 5,
+          mei: 5,
+          jun: 6,
+          jul: 7,
+          aug: 8,
+          agu: 8,
+          ags: 8,
+          sep: 9,
+          oct: 10,
+          okt: 10,
+          nov: 11,
+          dec: 12,
+          des: 12,
         };
 
-        let day = 0, mon = 0, yr = defaultYear;
+        let day = 0,
+          mon = 0,
+          yr = defaultYear;
 
         if (fullDateMatch) {
           day = parseInt(fullDateMatch[1]);
@@ -2116,7 +2444,8 @@ export function BankReconciliationEnhanced({
         parsedDate = `${yr}-${String(mon).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       }
 
-      let debit = 0, credit = 0;
+      let debit = 0,
+        credit = 0;
       if (debitCol >= 0 && creditCol >= 0) {
         const debitStr = String(row[debitCol] || '').trim();
         const creditStr = String(row[creditCol] || '').trim();
@@ -2129,10 +2458,23 @@ export function BankReconciliationEnhanced({
 
         if (!isCR && !isDB) {
           for (let c = 0; c < row.length; c++) {
-            if (c === amountCol || c === dateCol || c === descCol || c === branchCol || c === balanceCol) continue;
+            if (
+              c === amountCol ||
+              c === dateCol ||
+              c === descCol ||
+              c === branchCol ||
+              c === balanceCol
+            )
+              continue;
             const cellVal = String(row[c] || '').trim();
-            if (/^CR$/i.test(cellVal)) { isCR = true; break; }
-            if (/^DB$/i.test(cellVal)) { isDB = true; break; }
+            if (/^CR$/i.test(cellVal)) {
+              isCR = true;
+              break;
+            }
+            if (/^DB$/i.test(cellVal)) {
+              isDB = true;
+              break;
+            }
           }
         }
 
@@ -2152,7 +2494,12 @@ export function BankReconciliationEnhanced({
       }
 
       let balance = 0;
-      if (balanceCol >= 0 && row[balanceCol] !== undefined && row[balanceCol] !== null && String(row[balanceCol]).trim() !== '') {
+      if (
+        balanceCol >= 0 &&
+        row[balanceCol] !== undefined &&
+        row[balanceCol] !== null &&
+        String(row[balanceCol]).trim() !== ''
+      ) {
         balance = parseIndonesianNumber(row[balanceCol]);
       }
 
@@ -2243,17 +2590,25 @@ export function BankReconciliationEnhanced({
       const mDebit = rowJoined.match(/(?:Mutasi\s*Deb[ei]t|Mutasi\s*DB)\s*[:=]?\s*([\d,.]+)/i);
       if (mDebit) metadata.totalDebits = parseIndonesianNumber(mDebit[1]);
 
-      const mCredit = rowJoined.match(/(?:Mutasi\s*Kredit|Mutasi\s*Credit|Mutasi\s*CR)\s*[:=]?\s*([\d,.]+)/i);
+      const mCredit = rowJoined.match(
+        /(?:Mutasi\s*Kredit|Mutasi\s*Credit|Mutasi\s*CR)\s*[:=]?\s*([\d,.]+)/i
+      );
       if (mCredit) metadata.totalCredits = parseIndonesianNumber(mCredit[1]);
 
-      const mLast = rowJoined.match(/(?:Saldo\s*Akhir|Last\s*Balance|Ending\s*Balance|Closing\s*Balance)\s*[:=]?\s*([\d,.]+)/i);
+      const mLast = rowJoined.match(
+        /(?:Saldo\s*Akhir|Last\s*Balance|Ending\s*Balance|Closing\s*Balance)\s*[:=]?\s*([\d,.]+)/i
+      );
       if (mLast) metadata.closingBalance = parseIndonesianNumber(mLast[1]);
     }
 
     return { lines, metadata };
   };
 
-  const findAmbiguousLines = (lines: StatementLine[], expenseList: any[], skippedSet: Set<string>) => {
+  const findAmbiguousLines = (
+    lines: StatementLine[],
+    expenseList: any[],
+    skippedSet: Set<string>
+  ) => {
     const items: Array<{ line: StatementLine; candidates: CandidateExpense[] }> = [];
     for (const line of lines) {
       if (line.status === 'matched') continue;
@@ -2288,16 +2643,17 @@ export function BankReconciliationEnhanced({
   const handleLinkSelectedCandidate = async () => {
     const currentItem = interactiveQueue[queueIndex];
     if (!currentItem || !selectedCandidateId || isLinkingCandidate) return;
-    const cand = currentItem.candidates.find(c => c.id === selectedCandidateId);
+    const cand = currentItem.candidates.find((c) => c.id === selectedCandidateId);
     if (!cand) return;
     const line = currentItem.line;
 
     setIsLinkingCandidate(true);
     try {
       if (cand.approvalStatus === 'approved') {
-        const lineRemaining = line.remainingAmount !== undefined && line.remainingAmount > 0.01
-          ? line.remainingAmount
-          : Number(line.debit || line.credit || 0);
+        const lineRemaining =
+          line.remainingAmount !== undefined && line.remainingAmount > 0.01
+            ? line.remainingAmount
+            : Number(line.debit || line.credit || 0);
         const allocAmount = Math.min(lineRemaining, cand.outstandingAmount);
         if (allocAmount <= 0.01) {
           throw new Error('No remaining amount is available to allocate');
@@ -2315,7 +2671,9 @@ export function BankReconciliationEnhanced({
           .limit(1);
 
         if (allocErr || !allocCheck || allocCheck.length === 0) {
-          throw new Error('Verification failed: canonical bank allocation row was not created in database');
+          throw new Error(
+            'Verification failed: canonical bank allocation row was not created in database'
+          );
         }
 
         setActionFeedback({
@@ -2391,7 +2749,7 @@ export function BankReconciliationEnhanced({
   const handleSkipCurrentCandidate = () => {
     const currentItem = interactiveQueue[queueIndex];
     if (currentItem) {
-      setSkippedSessionLineIds(prev => new Set(prev).add(currentItem.line.id));
+      setSkippedSessionLineIds((prev) => new Set(prev).add(currentItem.line.id));
     }
     if (queueIndex + 1 < interactiveQueue.length) {
       setQueueIndex(queueIndex + 1);
@@ -2405,10 +2763,10 @@ export function BankReconciliationEnhanced({
   };
 
   const handleSkipAllCandidates = () => {
-    const remainingIds = interactiveQueue.slice(queueIndex).map(item => item.line.id);
-    setSkippedSessionLineIds(prev => {
+    const remainingIds = interactiveQueue.slice(queueIndex).map((item) => item.line.id);
+    setSkippedSessionLineIds((prev) => {
       const next = new Set(prev);
-      remainingIds.forEach(id => next.add(id));
+      remainingIds.forEach((id) => next.add(id));
       return next;
     });
     setIsInteractiveModalOpen(false);
@@ -2530,13 +2888,23 @@ export function BankReconciliationEnhanced({
       // manual Link Existing action.
       const { data: bsl } = await supabase
         .from('bank_statement_lines')
-        .select('id, matched_expense_id, matched_receipt_id, matched_payment_id, matched_petty_cash_id, matched_fund_transfer_id, matched_tax_payment_id, matched_entry_id')
+        .select(
+          'id, matched_expense_id, matched_receipt_id, matched_payment_id, matched_petty_cash_id, matched_fund_transfer_id, matched_tax_payment_id, matched_entry_id'
+        )
         .eq('id', lineId)
         .maybeSingle();
 
       if (!bsl) throw new Error('Row not found');
 
-      if (!(bsl.matched_expense_id || bsl.matched_receipt_id || bsl.matched_payment_id || bsl.matched_petty_cash_id || bsl.matched_fund_transfer_id || bsl.matched_tax_payment_id || bsl.matched_entry_id)) {
+      if (!(
+        bsl.matched_expense_id ||
+        bsl.matched_receipt_id ||
+        bsl.matched_payment_id ||
+        bsl.matched_petty_cash_id ||
+        bsl.matched_fund_transfer_id ||
+        bsl.matched_tax_payment_id ||
+        bsl.matched_entry_id
+      )) {
         setActionFeedback({
           type: 'error',
           title: 'Cannot confirm match',
@@ -2601,15 +2969,22 @@ export function BankReconciliationEnhanced({
           .limit(1);
 
         if (allocErr || !allocRows || allocRows.length === 0) {
-          throw new Error('Verification failed: canonical bank allocation row was not created in database');
+          throw new Error(
+            'Verification failed: canonical bank allocation row was not created in database'
+          );
         }
-      }
-      else if (bsl.matched_receipt_id) await linkBankStatementLine(lineId, 'receipt', bsl.matched_receipt_id);
-      else if (bsl.matched_payment_id) await linkBankStatementLine(lineId, 'payment', bsl.matched_payment_id);
-      else if (bsl.matched_fund_transfer_id) await linkBankStatementLine(lineId, 'fund_transfer', bsl.matched_fund_transfer_id);
-      else if (bsl.matched_petty_cash_id) await linkBankStatementLine(lineId, 'petty_cash', bsl.matched_petty_cash_id);
-      else if (bsl.matched_tax_payment_id) await linkBankStatementLine(lineId, 'tax_payment', bsl.matched_tax_payment_id);
-      else if (bsl.matched_entry_id) await linkBankStatementLine(lineId, 'journal', bsl.matched_entry_id);
+      } else if (bsl.matched_receipt_id)
+        await linkBankStatementLine(lineId, 'receipt', bsl.matched_receipt_id);
+      else if (bsl.matched_payment_id)
+        await linkBankStatementLine(lineId, 'payment', bsl.matched_payment_id);
+      else if (bsl.matched_fund_transfer_id)
+        await linkBankStatementLine(lineId, 'fund_transfer', bsl.matched_fund_transfer_id);
+      else if (bsl.matched_petty_cash_id)
+        await linkBankStatementLine(lineId, 'petty_cash', bsl.matched_petty_cash_id);
+      else if (bsl.matched_tax_payment_id)
+        await linkBankStatementLine(lineId, 'tax_payment', bsl.matched_tax_payment_id);
+      else if (bsl.matched_entry_id)
+        await linkBankStatementLine(lineId, 'journal', bsl.matched_entry_id);
 
       // Reload the canonical links/status. This is important for fund
       // transfers, where the RPC also writes matched_entry_id and may clear
@@ -2654,12 +3029,14 @@ export function BankReconciliationEnhanced({
       // The previous version overwrote this valid FK with crypto.randomUUID(),
       // which does not reference any row in bank_statement_uploads and
       // therefore violated bank_statement_lines_upload_id_fkey.
-      const missingUploadId = importResult.skippedEntries.some(e => !e?.upload_id);
+      const missingUploadId = importResult.skippedEntries.some((e) => !e?.upload_id);
       if (missingUploadId) {
-        alert('❌ Force import cannot proceed: the original upload record is missing. Please re-run the import.');
+        alert(
+          '❌ Force import cannot proceed: the original upload record is missing. Please re-run the import.'
+        );
         return;
       }
-      const forceData = importResult.skippedEntries.map(entry => ({
+      const forceData = importResult.skippedEntries.map((entry) => ({
         ...entry,
         transaction_hash: `${(entry as any).transaction_hash || crypto.randomUUID()}_override_${Date.now()}`,
         notes: 'Force imported (duplicate override)',
@@ -2671,9 +3048,17 @@ export function BankReconciliationEnhanced({
       if (error) throw error;
       setShowImportResultModal(false);
       setImportResult(null);
-      try { await loadStatementLines(); } catch { /* Import succeeded; refresh can be retried. */ }
+      try {
+        await loadStatementLines();
+      } catch {
+        /* Import succeeded; refresh can be retried. */
+      }
       if (inserted?.length) {
-        try { await autoMatchTransactions(); } catch { /* Auto-match failure does not invalidate import. */ }
+        try {
+          await autoMatchTransactions();
+        } catch {
+          /* Auto-match failure does not invalidate import. */
+        }
       }
       alert(`✅ Force import complete! ${inserted?.length || 0} entries added.`);
     } catch (err: any) {
@@ -2712,11 +3097,18 @@ export function BankReconciliationEnhanced({
     setRecordModal(true);
   };
 
-  const handleRecordExpense = async (line: StatementLine, category: string, description: string) => {
+  const handleRecordExpense = async (
+    line: StatementLine,
+    category: string,
+    description: string
+  ) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
-      if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
+      if (line.currency === 'USD' && recordExchangeRate <= 1)
+        throw new Error('Enter a valid USD-to-IDR exchange rate');
 
       // Recording a new expense is a document-creation action, not an
       // approval action.  Saving it as pending keeps the creator from
@@ -2759,7 +3151,8 @@ export function BankReconciliationEnhanced({
       setActionFeedback({
         type: 'success',
         title: 'Expense recorded as pending',
-        message: 'An authorized approver must approve it before this bank transaction can be linked.',
+        message:
+          'An authorized approver must approve it before this bank transaction can be linked.',
         details: [
           { label: 'Voucher Number', value: voucherNumber },
           { label: 'Amount', value: formatCurrency(line.debit, line.currency) },
@@ -2782,19 +3175,25 @@ export function BankReconciliationEnhanced({
 
   const handleLinkToExpense = async (line: StatementLine, expenseId: string) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
 
       const postingState = await getEffectiveExpensePostingState(expenseId);
       if (!isEffectiveExpensePosting(postingState?.effective_posting_state)) {
-        throw new Error('This expense is already reversed/replaced without an effective payable path and cannot receive a new bank allocation.');
+        throw new Error(
+          'This expense is already reversed/replaced without an effective payable path and cannot receive a new bank allocation.'
+        );
       }
 
       const { data: exp, error: expenseError } = await supabase
-          .from('finance_expenses')
-          .select('amount, ppn_amount, pph_amount, stamp_duty_amount, bank_charges_amount, expense_category, broker_items, paid_amount, pph_paid_amount')
-          .eq('id', expenseId)
-          .single();
+        .from('finance_expenses')
+        .select(
+          'amount, ppn_amount, pph_amount, stamp_duty_amount, bank_charges_amount, expense_category, broker_items, paid_amount, pph_paid_amount'
+        )
+        .eq('id', expenseId)
+        .single();
       if (expenseError || !exp) throw expenseError || new Error('Expense not found');
       // For import_broker expenses, the client-side broker_items JSONB may not
       // fully deserialize from PostgREST (e.g. null on some payloads), which
@@ -2804,16 +3203,19 @@ export function BankReconciliationEnhanced({
       // triggers — so the reconciliation modal matches the Expense screen.
       let canonicalPayable: number;
       if (exp.expense_category === 'import_broker' && linkPaymentKind === 'supplier') {
-        const { data: rpcPayable, error: rpcError } = await supabase
-          .rpc('calculate_finance_expense_payable', { p_expense_id: expenseId });
+        const { data: rpcPayable, error: rpcError } = await supabase.rpc(
+          'calculate_finance_expense_payable',
+          { p_expense_id: expenseId }
+        );
         if (rpcError) throw rpcError;
         canonicalPayable = Number(rpcPayable) || 0;
       } else {
         canonicalPayable = calculateCanonicalCashPayable(exp);
       }
-      const documentOutstanding = linkPaymentKind === 'supplier'
-        ? Math.max(0, canonicalPayable - Number(exp.paid_amount || 0))
-        : Math.max(0, Number(exp.pph_amount || 0) - Number(exp.pph_paid_amount || 0));
+      const documentOutstanding =
+        linkPaymentKind === 'supplier'
+          ? Math.max(0, canonicalPayable - Number(exp.paid_amount || 0))
+          : Math.max(0, Number(exp.pph_amount || 0) - Number(exp.pph_paid_amount || 0));
       const amount = Math.min(line.remainingAmount, documentOutstanding);
       if (amount <= 0.01) throw new Error('No remaining amount is available to allocate.');
       setPendingExpenseAllocation({
@@ -2872,11 +3274,10 @@ export function BankReconciliationEnhanced({
   const loadCustomerInvoices = async (custId: string) => {
     setLoadingInvoices(true);
     try {
-      const { data } = await supabase
-        .rpc('get_invoices_with_balance', {
-          customer_uuid: custId,
-          exclude_voucher_uuid: null
-        });
+      const { data } = await supabase.rpc('get_invoices_with_balance', {
+        customer_uuid: custId,
+        exclude_voucher_uuid: null,
+      });
       const unpaid = (data || []).filter((inv: any) => inv.balance_amount > 0);
       setReceiptInvoices(unpaid);
     } catch (err) {
@@ -2890,27 +3291,32 @@ export function BankReconciliationEnhanced({
     try {
       const [{ data: allReceipts, error }, linked] = await Promise.all([
         supabase
-        .from('receipt_vouchers')
-        .select('id, voucher_number, voucher_date, amount, journal_entry_id, customer_id, customers(company_name)')
-        .eq('is_posted', true)
-        .not('journal_entry_id', 'is', null)
-        .order('voucher_date', { ascending: false })
-        .limit(100),
+          .from('receipt_vouchers')
+          .select(
+            'id, voucher_number, voucher_date, amount, journal_entry_id, customer_id, customers(company_name)'
+          )
+          .eq('is_posted', true)
+          .not('journal_entry_id', 'is', null)
+          .order('voucher_date', { ascending: false })
+          .limit(100),
         loadLinkedDocumentIds(recordingLine?.id),
       ]);
       if (error) throw error;
 
-      setExistingReceipts(rankBankCandidates(
-        (allReceipts || []).map((receipt: any) => ({
-          ...receipt,
-          _linked: linked.receiptIds.has(receipt.id) || linked.journalIds.has(receipt.journal_entry_id),
-          _linkedReason: 'Already linked to another bank statement line',
-        })),
-        recordingLine!,
-        (receipt) => Number(receipt.amount || 0),
-        (receipt) => receipt.voucher_date,
-        (receipt) => receipt.customers?.company_name,
-      ));
+      setExistingReceipts(
+        rankBankCandidates(
+          (allReceipts || []).map((receipt: any) => ({
+            ...receipt,
+            _linked:
+              linked.receiptIds.has(receipt.id) || linked.journalIds.has(receipt.journal_entry_id),
+            _linkedReason: 'Already linked to another bank statement line',
+          })),
+          recordingLine!,
+          (receipt) => Number(receipt.amount || 0),
+          (receipt) => receipt.voucher_date,
+          (receipt) => receipt.customers?.company_name
+        )
+      );
     } catch (err) {
       console.error('Error loading receipts:', err);
     }
@@ -2937,28 +3343,36 @@ export function BankReconciliationEnhanced({
     }
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
-      if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
+      if (line.currency === 'USD' && recordExchangeRate <= 1)
+        throw new Error('Enter a valid USD-to-IDR exchange rate');
 
-      const isBank = /bank|bca|mandiri|bni|bri|cimb|danamon|permata|uob/i.test(loanCounterparty.trim());
+      const isBank = /bank|bca|mandiri|bni|bri|cimb|danamon|permata|uob/i.test(
+        loanCounterparty.trim()
+      );
       const counterpartyType = isBank ? 'bank' : 'person';
       const principalAmount = line.debit > 0 ? line.debit : line.credit;
-      const selectedAccount = loanAccounts.find(a => a.id === loanCoaId);
+      const selectedAccount = loanAccounts.find((a) => a.id === loanCoaId);
 
-      const result = await saveFinanceLoan({
-        loan_date: line.date,
-        counterparty_name: loanCounterparty.trim(),
-        counterparty_type: counterpartyType,
-        loan_type: loanDirection,
-        coa_id: loanCoaId,
-        principal_amount: principalAmount,
-        bank_account_id: selectedBank,
-        transaction_currency: line.currency as 'IDR' | 'USD',
-        exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
-        description: line.description,
-        created_by: user.id,
-      }, line.id);
+      const result = await saveFinanceLoan(
+        {
+          loan_date: line.date,
+          counterparty_name: loanCounterparty.trim(),
+          counterparty_type: counterpartyType,
+          loan_type: loanDirection,
+          coa_id: loanCoaId,
+          principal_amount: principalAmount,
+          bank_account_id: selectedBank,
+          transaction_currency: line.currency as 'IDR' | 'USD',
+          exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
+          description: line.description,
+          created_by: user.id,
+        },
+        line.id
+      );
 
       setRecordModal(false);
       setRecordingLine(null);
@@ -2967,14 +3381,20 @@ export function BankReconciliationEnhanced({
       setLoanCoaId('');
 
       // Optimistic local line update
-      setStatementLines(prev => prev.map(l => l.id === line.id ? {
-        ...l,
-        status: 'recorded',
-        reconciliation_status: 'recorded',
-        matching_status: 'confirmed',
-        remainingAmount: 0,
-        allocatedAmount: principalAmount,
-      } : l));
+      setStatementLines((prev) =>
+        prev.map((l) =>
+          l.id === line.id
+            ? {
+                ...l,
+                status: 'recorded',
+                reconciliation_status: 'recorded',
+                matching_status: 'confirmed',
+                remainingAmount: 0,
+                allocatedAmount: principalAmount,
+              }
+            : l
+        )
+      );
 
       selfActionTimestampRef.current = Date.now();
       await loadStatementLines();
@@ -2987,7 +3407,12 @@ export function BankReconciliationEnhanced({
           { label: 'Counterparty', value: loanCounterparty.trim() },
           { label: 'Direction', value: loanDirection === 'given' ? 'Loan Given' : 'Loan Received' },
           { label: 'Amount', value: formatCurrency(principalAmount, line.currency) },
-          { label: 'Account', value: selectedAccount ? `${selectedAccount.code} — ${selectedAccount.name}` : 'Selected Account' },
+          {
+            label: 'Account',
+            value: selectedAccount
+              ? `${selectedAccount.code} — ${selectedAccount.name}`
+              : 'Selected Account',
+          },
           { label: 'Status', value: 'Recorded / Open' },
         ],
         timestamp: Date.now(),
@@ -3033,7 +3458,10 @@ export function BankReconciliationEnhanced({
           { label: 'GL Account', value: `${result.account_code} — ${result.account_name}` },
           { label: 'Amount', value: formatCurrency(result.amount, line.currency) },
           { label: 'Action', value: result.action.replace(/_/g, ' ').toUpperCase() },
-          { label: 'Net Position After', value: `${formatCurrency(result.new_balances.net_position, line.currency)} (${result.new_balances.net_status})` }
+          {
+            label: 'Net Position After',
+            value: `${formatCurrency(result.new_balances.net_position, line.currency)} (${result.new_balances.net_status})`,
+          },
         ],
         timestamp: Date.now(),
       });
@@ -3058,38 +3486,50 @@ export function BankReconciliationEnhanced({
     }
   };
 
-  const handleRecordReceipt = async (line: StatementLine, type: string, customerId: string, description: string) => {
+  const handleRecordReceipt = async (
+    line: StatementLine,
+    type: string,
+    customerId: string,
+    description: string
+  ) => {
     if (recordingReceiptRef.current) return;
     recordingReceiptRef.current = true;
     setRecordingReceipt(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
 
       if (type === 'customer_payment') {
         if (!customerId) throw new Error('Please select a customer');
-        if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
+        if (line.currency === 'USD' && recordExchangeRate <= 1)
+          throw new Error('Enter a valid USD-to-IDR exchange rate');
 
         const validAllocations = Object.entries(receiptAllocations)
           .filter(([, amount]) => amount > 0)
           .map(([invoiceId, amount]) => ({ sales_invoice_id: invoiceId, amount }));
 
-        const receiptId = await saveReceiptVoucher(null, {
-          voucher_date: line.date,
-          party_type: 'customer',
-          customer_id: customerId,
-          payment_method: 'bank_transfer',
-          bank_account_id: selectedBank,
-          reference_number: line.reference || null,
-          amount: line.credit,
-          description: description || line.description,
-          currency_code: line.currency as 'IDR' | 'USD',
-          transaction_currency: line.currency as 'IDR' | 'USD',
-          exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
-          payment_purpose: 'invoice_payment',
-          settlement_against: validAllocations.length > 0 ? 'specific_document' : 'advance',
-          created_by: user.id,
-        }, validAllocations);
+        const receiptId = await saveReceiptVoucher(
+          null,
+          {
+            voucher_date: line.date,
+            party_type: 'customer',
+            customer_id: customerId,
+            payment_method: 'bank_transfer',
+            bank_account_id: selectedBank,
+            reference_number: line.reference || null,
+            amount: line.credit,
+            description: description || line.description,
+            currency_code: line.currency as 'IDR' | 'USD',
+            transaction_currency: line.currency as 'IDR' | 'USD',
+            exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
+            payment_purpose: 'invoice_payment',
+            settlement_against: validAllocations.length > 0 ? 'specific_document' : 'advance',
+            created_by: user.id,
+          },
+          validAllocations
+        );
 
         const { error: postError } = await supabase.rpc('post_receipt_voucher', {
           p_rv_id: receiptId,
@@ -3098,30 +3538,41 @@ export function BankReconciliationEnhanced({
         if (postError) throw postError;
         await linkBankStatementLine(line.id, 'receipt', receiptId);
 
-        const allocCount = Object.values(receiptAllocations).filter(a => a > 0).length;
-        const { data: receipt } = await supabase.from('receipt_vouchers').select('voucher_number').eq('id', receiptId).single();
+        const allocCount = Object.values(receiptAllocations).filter((a) => a > 0).length;
+        const { data: receipt } = await supabase
+          .from('receipt_vouchers')
+          .select('voucher_number')
+          .eq('id', receiptId)
+          .single();
         setActionFeedback({
           type: 'success',
           title: 'Receipt voucher created and linked successfully',
           details: [
             { label: 'Receipt', value: receipt?.voucher_number || '' },
             { label: 'Amount', value: formatCurrency(line.credit, line.currency) },
-            { label: 'Invoices', value: allocCount > 0 ? `${allocCount} allocated` : 'Unallocated' },
+            {
+              label: 'Invoices',
+              value: allocCount > 0 ? `${allocCount} allocated` : 'Unallocated',
+            },
             { label: 'Status', value: 'Recorded' },
           ],
           timestamp: Date.now(),
         });
       } else if (type === 'capital') {
-        if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
-        const result = await saveCapitalContribution({
-          voucher_date: line.date,
-          bank_account_id: selectedBank,
-          amount: line.credit,
-          transaction_currency: line.currency as 'IDR' | 'USD',
-          exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
-          description: description || line.description,
-          created_by: user.id,
-        }, line.id);
+        if (line.currency === 'USD' && recordExchangeRate <= 1)
+          throw new Error('Enter a valid USD-to-IDR exchange rate');
+        const result = await saveCapitalContribution(
+          {
+            voucher_date: line.date,
+            bank_account_id: selectedBank,
+            amount: line.credit,
+            transaction_currency: line.currency as 'IDR' | 'USD',
+            exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
+            description: description || line.description,
+            created_by: user.id,
+          },
+          line.id
+        );
         setActionFeedback({
           type: 'success',
           title: 'Capital contribution recorded successfully',
@@ -3145,20 +3596,27 @@ export function BankReconciliationEnhanced({
         await handleRecordLoanRepayment(line);
         return;
       } else if (type === 'loan_director_owner') {
-        const selectedDirectorLoan = directorLoanAccounts.find(option => option.account.id === directorLoanAccountId);
+        const selectedDirectorLoan = directorLoanAccounts.find(
+          (option) => option.account.id === directorLoanAccountId
+        );
         if (!selectedDirectorLoan) {
           throw new Error('Select the existing Director / Owner loan ledger');
         }
-        if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
+        if (line.currency === 'USD' && recordExchangeRate <= 1)
+          throw new Error('Enter a valid USD-to-IDR exchange rate');
         const result = await saveBankLinkedFinanceJournal(
           line.id,
           description || line.description,
           selectedDirectorLoan.account.code,
           'debit',
           line.currency as 'IDR' | 'USD',
-          line.currency === 'IDR' ? 1 : recordExchangeRate,
+          line.currency === 'IDR' ? 1 : recordExchangeRate
         );
-        const { data: journal } = await supabase.from('journal_entries').select('entry_number').eq('id', result.journal_entry_id).single();
+        const { data: journal } = await supabase
+          .from('journal_entries')
+          .select('entry_number')
+          .eq('id', result.journal_entry_id)
+          .single();
         setActionFeedback({
           type: 'success',
           title: 'Director loan receipt recorded successfully',
@@ -3174,19 +3632,24 @@ export function BankReconciliationEnhanced({
         if (!NON_CUSTOMER_JOURNAL_TYPES.has(type)) {
           throw new Error(`Unsupported non-customer receipt type: ${type}`);
         }
-        if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
-        const counterCode = type === 'bank_interest' ? '4920'
-          : type === 'misc_income' ? '4910' : '4900';
+        if (line.currency === 'USD' && recordExchangeRate <= 1)
+          throw new Error('Enter a valid USD-to-IDR exchange rate');
+        const counterCode =
+          type === 'bank_interest' ? '4920' : type === 'misc_income' ? '4910' : '4900';
         const result = await saveBankLinkedFinanceJournal(
           line.id,
           description || line.description,
           counterCode,
           'debit',
           line.currency as 'IDR' | 'USD',
-          line.currency === 'IDR' ? 1 : recordExchangeRate,
+          line.currency === 'IDR' ? 1 : recordExchangeRate
         );
         const journalId = result.journal_entry_id;
-        const { data: journal } = await supabase.from('journal_entries').select('entry_number').eq('id', journalId).single();
+        const { data: journal } = await supabase
+          .from('journal_entries')
+          .select('entry_number')
+          .eq('id', journalId)
+          .single();
         setActionFeedback({
           type: 'success',
           title: 'Journal entry created and linked successfully',
@@ -3210,14 +3673,20 @@ export function BankReconciliationEnhanced({
       setLinkExistingReceipt(false);
 
       // Local optimistic update of the recorded line
-      setStatementLines(prev => prev.map(l => l.id === line.id ? {
-        ...l,
-        status: 'recorded',
-        reconciliation_status: 'recorded',
-        matching_status: 'confirmed',
-        remainingAmount: 0,
-        allocatedAmount: l.credit || l.debit,
-      } : l));
+      setStatementLines((prev) =>
+        prev.map((l) =>
+          l.id === line.id
+            ? {
+                ...l,
+                status: 'recorded',
+                reconciliation_status: 'recorded',
+                matching_status: 'confirmed',
+                remainingAmount: 0,
+                allocatedAmount: l.credit || l.debit,
+              }
+            : l
+        )
+      );
 
       selfActionTimestampRef.current = Date.now();
       await loadStatementLines();
@@ -3253,11 +3722,15 @@ export function BankReconciliationEnhanced({
       setDirectorLoanAccounts([]);
       return;
     }
-    setDirectorLoanAccounts(((accounts || []) as DirectorLoanLedgerAccount[]).map(account => ({ account })));
+    setDirectorLoanAccounts(
+      ((accounts || []) as DirectorLoanLedgerAccount[]).map((account) => ({ account }))
+    );
   };
 
   const handleRecordDirectorLoanWithdrawal = async (line: StatementLine) => {
-    const selectedDirectorLoan = directorLoanAccounts.find(option => option.account.id === directorLoanAccountId);
+    const selectedDirectorLoan = directorLoanAccounts.find(
+      (option) => option.account.id === directorLoanAccountId
+    );
     if (!selectedDirectorLoan) {
       setActionFeedback({
         type: 'error',
@@ -3268,14 +3741,15 @@ export function BankReconciliationEnhanced({
       return;
     }
     try {
-      if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
+      if (line.currency === 'USD' && recordExchangeRate <= 1)
+        throw new Error('Enter a valid USD-to-IDR exchange rate');
       const result = await saveBankLinkedFinanceJournal(
         line.id,
         line.description || `Director Loan withdrawal — ${selectedDirectorLoan.account.name}`,
         selectedDirectorLoan.account.code,
         'credit',
         line.currency as 'IDR' | 'USD',
-        line.currency === 'IDR' ? 1 : recordExchangeRate,
+        line.currency === 'IDR' ? 1 : recordExchangeRate
       );
       setRecordModal(false);
       setRecordingLine(null);
@@ -3284,7 +3758,11 @@ export function BankReconciliationEnhanced({
       selfActionTimestampRef.current = Date.now();
       await loadStatementLines();
       notifyFinanceReconciliationRefresh();
-      const { data: journal } = await supabase.from('journal_entries').select('entry_number').eq('id', result.journal_entry_id).single();
+      const { data: journal } = await supabase
+        .from('journal_entries')
+        .select('entry_number')
+        .eq('id', result.journal_entry_id)
+        .single();
       setActionFeedback({
         type: 'success',
         title: 'Director loan withdrawal recorded successfully',
@@ -3309,12 +3787,15 @@ export function BankReconciliationEnhanced({
 
   const handleLinkExistingReceipt = async (line: StatementLine, receiptId: string) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
 
       const receipt = existingReceipts.find((candidate) => candidate.id === receiptId);
       const warning = paymentDateGapWarning(line.date, receipt?.voucher_date);
-      if (warning) console.warn(warning, { bankDate: line.date, voucherDate: receipt?.voucher_date });
+      if (warning)
+        console.warn(warning, { bankDate: line.date, voucherDate: receipt?.voucher_date });
 
       await linkBankStatementLine(line.id, 'receipt', receiptId);
 
@@ -3358,7 +3839,8 @@ export function BankReconciliationEnhanced({
 
       const { data: journals, error } = await supabase
         .from('journal_entries')
-        .select(`
+        .select(
+          `
           id,
           entry_number,
           entry_date,
@@ -3367,7 +3849,8 @@ export function BankReconciliationEnhanced({
           total_credit,
           source_module,
           reference_number
-        `)
+        `
+        )
         .eq('is_posted', true)
         .eq('is_reversed', false)
         .gte('entry_date', startSearch.toISOString().split('T')[0])
@@ -3381,7 +3864,7 @@ export function BankReconciliationEnhanced({
       const linked = await loadLinkedDocumentIds(line.id);
 
       const validJournals: PickerCandidate[] = [];
-      for (const j of (journals || [])) {
+      for (const j of journals || []) {
         if (j.source_module === 'expenses' && j.reference_number) {
           const expId = j.reference_number.replace('EXP-', '');
           const { data: exp } = await supabase
@@ -3428,12 +3911,14 @@ export function BankReconciliationEnhanced({
         });
       }
 
-      setAvailableJournals(rankBankCandidates(
-        validJournals as PickerCandidate[],
-        line,
-        (journal) => Number(journal.total_debit || journal.total_credit || 0),
-        (journal) => journal.entry_date,
-      ));
+      setAvailableJournals(
+        rankBankCandidates(
+          validJournals as PickerCandidate[],
+          line,
+          (journal) => Number(journal.total_debit || journal.total_credit || 0),
+          (journal) => journal.entry_date
+        )
+      );
     } catch (error) {
       console.error('Error loading journals:', error);
       setAvailableJournals([]);
@@ -3467,14 +3952,18 @@ export function BankReconciliationEnhanced({
       // date by weeks (cheque clearing, giro, cross-bank wires), so a tight
       // ±10-day window used to hide vouchers like PV/26-26/005. Widen to ±90d
       // and bound with .limit() to keep the query cheap.
-      const from = new Date(lineDate); from.setDate(from.getDate() - 90);
-      const to   = new Date(lineDate); to.setDate(to.getDate()   + 90);
+      const from = new Date(lineDate);
+      from.setDate(from.getDate() - 90);
+      const to = new Date(lineDate);
+      to.setDate(to.getDate() + 90);
 
       // Fetch candidate vouchers in the window. The finance_staff_master embed
       // requires the staff-accounting migration; fall back without it.
       const { data: initialVouchers, error: pvErr } = await supabase
         .from('payment_vouchers')
-        .select('id, voucher_number, voucher_date, amount, net_amount, pph_amount, actual_bank_debit, bank_amount, payment_currency, journal_entry_id, bank_account_id, payment_method, suppliers(company_name), finance_staff_master(full_name)')
+        .select(
+          'id, voucher_number, voucher_date, amount, net_amount, pph_amount, actual_bank_debit, bank_amount, payment_currency, journal_entry_id, bank_account_id, payment_method, suppliers(company_name), finance_staff_master(full_name)'
+        )
         .gte('voucher_date', from.toISOString().split('T')[0])
         .lte('voucher_date', to.toISOString().split('T')[0])
         .order('voucher_date', { ascending: false })
@@ -3483,7 +3972,9 @@ export function BankReconciliationEnhanced({
       if (pvErr && /finance_staff_master|staff_id/i.test(pvErr.message || '')) {
         const fb = await supabase
           .from('payment_vouchers')
-          .select('id, voucher_number, voucher_date, amount, net_amount, pph_amount, actual_bank_debit, bank_amount, payment_currency, journal_entry_id, bank_account_id, payment_method, suppliers(company_name)')
+          .select(
+            'id, voucher_number, voucher_date, amount, net_amount, pph_amount, actual_bank_debit, bank_amount, payment_currency, journal_entry_id, bank_account_id, payment_method, suppliers(company_name)'
+          )
           .gte('voucher_date', from.toISOString().split('T')[0])
           .lte('voucher_date', to.toISOString().split('T')[0])
           .order('voucher_date', { ascending: false })
@@ -3507,23 +3998,27 @@ export function BankReconciliationEnhanced({
         // "Payment voucher not yet posted (no journal entry)."
         if (!pv.journal_entry_id) return false;
         // Advance-adjustment and cash vouchers never touch the bank — exclude them.
-        if (pv.payment_method === 'advance_adjustment' || pv.payment_method === 'cash') return false;
+        if (pv.payment_method === 'advance_adjustment' || pv.payment_method === 'cash')
+          return false;
         // If the voucher pinned a specific bank account, restrict to matches on that account.
         if (pv.bank_account_id && selectedBank && pv.bank_account_id !== selectedBank) return false;
         return true;
       });
 
-      setSupplierPayments(rankBankCandidates(
-        available.map((pv: any) => ({
-          ...pv,
-          _linked: linked.paymentIds.has(pv.id) || linked.journalIds.has(pv.journal_entry_id),
-          _linkedReason: 'Already linked to another bank statement line',
-        })),
-        line,
-        (payment) => Number(payment.actual_bank_debit ?? payment.bank_amount ?? payment.net_amount ?? 0),
-        (payment) => payment.voucher_date,
-        (payment) => payment.suppliers?.company_name || payment.finance_staff_master?.full_name,
-      ).slice(0, 100));
+      setSupplierPayments(
+        rankBankCandidates(
+          available.map((pv: any) => ({
+            ...pv,
+            _linked: linked.paymentIds.has(pv.id) || linked.journalIds.has(pv.journal_entry_id),
+            _linkedReason: 'Already linked to another bank statement line',
+          })),
+          line,
+          (payment) =>
+            Number(payment.actual_bank_debit ?? payment.bank_amount ?? payment.net_amount ?? 0),
+          (payment) => payment.voucher_date,
+          (payment) => payment.suppliers?.company_name || payment.finance_staff_master?.full_name
+        ).slice(0, 100)
+      );
     } catch (err) {
       console.error('Error loading supplier payments:', err);
       setSupplierPayments([]);
@@ -3536,7 +4031,8 @@ export function BankReconciliationEnhanced({
     try {
       const payment = supplierPayments.find((candidate) => candidate.id === paymentVoucherId);
       const warning = paymentDateGapWarning(line.date, payment?.voucher_date);
-      if (warning) console.warn(warning, { bankDate: line.date, voucherDate: payment?.voucher_date });
+      if (warning)
+        console.warn(warning, { bankDate: line.date, voucherDate: payment?.voucher_date });
       await linkBankStatementLine(line.id, 'payment', paymentVoucherId);
 
       setRecordModal(false);
@@ -3555,7 +4051,9 @@ export function BankReconciliationEnhanced({
     setLoadingBills(true);
     try {
       const today = new Date().toISOString().split('T')[0];
-      const { data, error } = await supabase.rpc('get_outstanding_expense_bills', { p_as_of_date: today });
+      const { data, error } = await supabase.rpc('get_outstanding_expense_bills', {
+        p_as_of_date: today,
+      });
       if (error) throw error;
       // Voucher settlement needs a payee — supplier or staff. Payee-less
       // expenses keep using the direct "Link Expense" path.
@@ -3569,9 +4067,9 @@ export function BankReconciliationEnhanced({
   };
 
   const toggleBillAllocation = (bill: OutstandingBill, lineAmount: number) => {
-    setBillAllocations(prev => {
-      if (prev.some(a => a.expenseId === bill.id)) {
-        return prev.filter(a => a.expenseId !== bill.id);
+    setBillAllocations((prev) => {
+      if (prev.some((a) => a.expenseId === bill.id)) {
+        return prev.filter((a) => a.expenseId !== bill.id);
       }
       const allocated = prev.reduce((s, a) => s + a.amount, 0);
       const remaining = Math.max(0, lineAmount - allocated);
@@ -3580,7 +4078,9 @@ export function BankReconciliationEnhanced({
   };
 
   const setBillAllocationAmount = (expenseId: string, amount: number) => {
-    setBillAllocations(prev => prev.map(a => (a.expenseId === expenseId ? { ...a, amount } : a)));
+    setBillAllocations((prev) =>
+      prev.map((a) => (a.expenseId === expenseId ? { ...a, amount } : a))
+    );
   };
 
   // One canonical payment path: settling outstanding bills from Bank-Rec
@@ -3590,40 +4090,48 @@ export function BankReconciliationEnhanced({
   // voucher_allocations AND directly-matched lines, so setting both would
   // double-count the payment.
   const handleSettleBills = async (line: StatementLine) => {
-    const allocs = billAllocations.filter(a => a.amount > 0);
+    const allocs = billAllocations.filter((a) => a.amount > 0);
     if (allocs.length === 0) {
       alert('Select at least one bill with an allocation amount');
       return;
     }
 
     const bills = allocs
-      .map(a => outstandingBills.find(b => b.id === a.expenseId))
+      .map((a) => outstandingBills.find((b) => b.id === a.expenseId))
       .filter((b): b is OutstandingBill => !!b);
     // One voucher = one payee: all selected bills must share the same
     // supplier OR the same staff member (staff bills have no supplier).
-    const payeeKeys = [...new Set(bills.map(b => b.supplier_id ? `s:${b.supplier_id}` : `t:${b.staff_id}`))];
+    const payeeKeys = [
+      ...new Set(bills.map((b) => (b.supplier_id ? `s:${b.supplier_id}` : `t:${b.staff_id}`))),
+    ];
     if (payeeKeys.length > 1) {
-      alert('A payment voucher has a single payee — please select bills of one supplier or one staff member only.');
+      alert(
+        'A payment voucher has a single payee — please select bills of one supplier or one staff member only.'
+      );
       return;
     }
     const payeeSupplierId = bills[0]?.supplier_id ?? null;
     const payeeStaffId = payeeSupplierId ? null : (bills[0]?.staff_id ?? null);
     for (const a of allocs) {
-      const bill = bills.find(b => b.id === a.expenseId);
+      const bill = bills.find((b) => b.id === a.expenseId);
       if (bill && a.amount > bill.balance_amount + 0.01) {
-        alert(`Allocation for ${bill.invoice_number || bill.id.slice(0, 8)} exceeds its outstanding balance.`);
+        alert(
+          `Allocation for ${bill.invoice_number || bill.id.slice(0, 8)} exceeds its outstanding balance.`
+        );
         return;
       }
     }
     const total = allocs.reduce((s, a) => s + a.amount, 0);
     if (total > line.debit + 0.01) {
-      alert(`Total allocated (${formatCurrency(total, line.currency)}) exceeds the bank amount (${formatCurrency(line.debit, line.currency)}).`);
+      alert(
+        `Total allocated (${formatCurrency(total, line.currency)}) exceeds the bank amount (${formatCurrency(line.debit, line.currency)}).`
+      );
       return;
     }
     if (
       Math.abs(total - line.debit) > 0.01 &&
       !confirm(
-        `Total allocated ${formatCurrency(total, line.currency)} differs from the bank amount ${formatCurrency(line.debit, line.currency)} (partial payment or bank charges). Continue?`,
+        `Total allocated ${formatCurrency(total, line.currency)} differs from the bank amount ${formatCurrency(line.debit, line.currency)} (partial payment or bank charges). Continue?`
       )
     ) {
       return;
@@ -3631,27 +4139,38 @@ export function BankReconciliationEnhanced({
 
     setSettleSubmitting(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
-      if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
+      if (line.currency === 'USD' && recordExchangeRate <= 1)
+        throw new Error('Enter a valid USD-to-IDR exchange rate');
 
-      const savedVoucher = await savePaymentVoucher(null, {
-        voucher_date: line.date,
-        supplier_id: payeeSupplierId,
-        staff_id: payeeStaffId,
-        payment_method: 'bank_transfer',
-        bank_account_id: selectedBank || null,
-        reference_number: line.reference || null,
-        amount: total,
-        pph_amount: 0,
-        pph_code_id: null,
-        description: `Bank settlement: ${line.description}`.slice(0, 500),
-        payment_currency: line.currency as 'IDR' | 'USD',
-        exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
-        bank_amount: total,
-        bank_charge: 0,
-        created_by: user.id,
-      }, allocs.map(a => ({ finance_expense_id: a.expenseId, amount: a.amount, currency: line.currency })));
+      const savedVoucher = await savePaymentVoucher(
+        null,
+        {
+          voucher_date: line.date,
+          supplier_id: payeeSupplierId,
+          staff_id: payeeStaffId,
+          payment_method: 'bank_transfer',
+          bank_account_id: selectedBank || null,
+          reference_number: line.reference || null,
+          amount: total,
+          pph_amount: 0,
+          pph_code_id: null,
+          description: `Bank settlement: ${line.description}`.slice(0, 500),
+          payment_currency: line.currency as 'IDR' | 'USD',
+          exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
+          bank_amount: total,
+          bank_charge: 0,
+          created_by: user.id,
+        },
+        allocs.map((a) => ({
+          finance_expense_id: a.expenseId,
+          amount: a.amount,
+          currency: line.currency,
+        }))
+      );
       const voucherId = savedVoucher.id;
       const voucherNumber = savedVoucher.voucher_number;
 
@@ -3662,7 +4181,7 @@ export function BankReconciliationEnhanced({
       if (postError) {
         alert(
           `⚠️ Payment voucher ${voucherNumber} was created but could not be posted: ${postError.message}\n\n` +
-          `Post it in Finance > Payment Vouchers, then link this bank line via "Supplier Payment".`,
+            `Post it in Finance > Payment Vouchers, then link this bank line via "Supplier Payment".`
         );
         return;
       }
@@ -3712,7 +4231,7 @@ export function BankReconciliationEnhanced({
       return;
     }
     const lineAmount = line.debit > 0 ? line.debit : line.credit;
-    if (Math.abs((repaymentPrincipal + repaymentInterest) - lineAmount) > 0.01) {
+    if (Math.abs(repaymentPrincipal + repaymentInterest - lineAmount) > 0.01) {
       setActionFeedback({
         type: 'error',
         title: 'Invalid amount',
@@ -3731,25 +4250,34 @@ export function BankReconciliationEnhanced({
       return;
     }
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
-      if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
+      if (line.currency === 'USD' && recordExchangeRate <= 1)
+        throw new Error('Enter a valid USD-to-IDR exchange rate');
 
-      const targetLoan = activeLoans.find(l => l.id === repaymentLoanId);
+      const targetLoan = activeLoans.find((l) => l.id === repaymentLoanId);
 
-      const result = await saveFinanceLoanRepayment({
-        loan_id: repaymentLoanId,
-        transaction_date: line.date,
-        principal_amount: repaymentPrincipal,
-        interest_amount: repaymentInterest,
-        bank_account_id: selectedBank,
-        transaction_currency: line.currency as 'IDR' | 'USD',
-        exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
-        description: line.description,
-        created_by: user.id,
-      }, line.id);
+      const result = await saveFinanceLoanRepayment(
+        {
+          loan_id: repaymentLoanId,
+          transaction_date: line.date,
+          principal_amount: repaymentPrincipal,
+          interest_amount: repaymentInterest,
+          bank_account_id: selectedBank,
+          transaction_currency: line.currency as 'IDR' | 'USD',
+          exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
+          description: line.description,
+          created_by: user.id,
+        },
+        line.id
+      );
 
-      const newOutstanding = Math.max(0, (targetLoan?.outstanding_balance || 0) - repaymentPrincipal);
+      const newOutstanding = Math.max(
+        0,
+        (targetLoan?.outstanding_balance || 0) - repaymentPrincipal
+      );
 
       setRecordModal(false);
       setRecordingLine(null);
@@ -3785,23 +4313,33 @@ export function BankReconciliationEnhanced({
   };
 
   const handleRecordOwnerWithdrawal = async (line: StatementLine) => {
-    if (!confirm(`Record this bank debit as Owner Withdrawal for ${formatCurrency(line.debit, line.currency)}?`)) return;
+    if (
+      !confirm(
+        `Record this bank debit as Owner Withdrawal for ${formatCurrency(line.debit, line.currency)}?`
+      )
+    )
+      return;
     try {
-      if (line.currency === 'USD' && recordExchangeRate <= 1) throw new Error('Enter a valid USD-to-IDR exchange rate');
+      if (line.currency === 'USD' && recordExchangeRate <= 1)
+        throw new Error('Enter a valid USD-to-IDR exchange rate');
       const result = await saveBankLinkedFinanceJournal(
         line.id,
         line.description || 'Owner Withdrawal',
         '3100',
         'credit',
         line.currency as 'IDR' | 'USD',
-        line.currency === 'IDR' ? 1 : recordExchangeRate,
+        line.currency === 'IDR' ? 1 : recordExchangeRate
       );
       setRecordModal(false);
       setRecordingLine(null);
       selfActionTimestampRef.current = Date.now();
       await loadStatementLines();
       notifyFinanceReconciliationRefresh();
-      const { data: journal } = await supabase.from('journal_entries').select('entry_number').eq('id', result.journal_entry_id).single();
+      const { data: journal } = await supabase
+        .from('journal_entries')
+        .select('entry_number')
+        .eq('id', result.journal_entry_id)
+        .single();
       setActionFeedback({
         type: 'success',
         title: 'Owner withdrawal recorded successfully',
@@ -3834,7 +4372,9 @@ export function BankReconciliationEnhanced({
       // date (cross-bank giro, MPN batching, weekends).
       const { data: tps } = await supabase
         .from('tax_payments')
-        .select('id, tax_type, amount, payment_date, billing_code, ntpn, journal_entry_id, bank_account_id, status')
+        .select(
+          'id, tax_type, amount, payment_date, billing_code, ntpn, journal_entry_id, bank_account_id, status'
+        )
         .in('status', ['posted', 'draft'])
         .not('journal_entry_id', 'is', null)
         .order('payment_date', { ascending: false })
@@ -3844,7 +4384,8 @@ export function BankReconciliationEnhanced({
 
       const scored = (tps || [])
         .filter((tp: any) => {
-          if (tp.bank_account_id && selectedBank && tp.bank_account_id !== selectedBank) return false;
+          if (tp.bank_account_id && selectedBank && tp.bank_account_id !== selectedBank)
+            return false;
           return Math.abs(tp.amount - amount) < 1;
         })
         .map((tp: any) => ({
@@ -3853,12 +4394,14 @@ export function BankReconciliationEnhanced({
           _linkedReason: 'Already linked to another bank statement line',
         }));
 
-      setAvailableTaxPayments(rankBankCandidates(
-        scored,
-        line,
-        (payment) => Number(payment.amount || 0),
-        (payment) => payment.payment_date,
-      ));
+      setAvailableTaxPayments(
+        rankBankCandidates(
+          scored,
+          line,
+          (payment) => Number(payment.amount || 0),
+          (payment) => payment.payment_date
+        )
+      );
     } catch (err) {
       console.error('Error loading tax payments:', err);
       setAvailableTaxPayments([]);
@@ -3868,7 +4411,9 @@ export function BankReconciliationEnhanced({
   const handleLinkToTaxPayment = async (line: StatementLine, tp: any) => {
     try {
       if (!tp.journal_entry_id) {
-        alert('❌ Tax payment has no journal entry. Please ensure the payment was recorded via Record Tax Payment.');
+        alert(
+          '❌ Tax payment has no journal entry. Please ensure the payment was recorded via Record Tax Payment.'
+        );
         return;
       }
       await linkBankStatementLine(line.id, 'tax_payment', tp.id);
@@ -3878,7 +4423,9 @@ export function BankReconciliationEnhanced({
       setLinkToTaxPayment(false);
       setAvailableTaxPayments([]);
       loadStatementLines();
-      alert('Successfully linked to tax payment. Tax payment status will update to Reconciled automatically.');
+      alert(
+        'Successfully linked to tax payment. Tax payment status will update to Reconciled automatically.'
+      );
     } catch (error: any) {
       console.error('Error linking tax payment:', error);
       alert('Error: ' + error.message);
@@ -3900,7 +4447,8 @@ export function BankReconciliationEnhanced({
     if (cleanNumericQuery.length >= 3) {
       const debitDigits = String(Math.round(Number(line.debit) || 0));
       const creditDigits = String(Math.round(Number(line.credit) || 0));
-      if (debitDigits.includes(cleanNumericQuery) || creditDigits.includes(cleanNumericQuery)) return true;
+      if (debitDigits.includes(cleanNumericQuery) || creditDigits.includes(cleanNumericQuery))
+        return true;
     }
     const debitFormatted = (Number(line.debit) || 0).toLocaleString('id-ID');
     const creditFormatted = (Number(line.credit) || 0).toLocaleString('id-ID');
@@ -3915,22 +4463,43 @@ export function BankReconciliationEnhanced({
     if (normDate && line.date === normDate) return true;
 
     // 4. Linked document details
-    if (line.allocations && line.allocations.some(a =>
-      (a.label && a.label.toLowerCase().includes(q)) ||
-      (a.counterparty && a.counterparty.toLowerCase().includes(q)) ||
-      (a.document_type && a.document_type.toLowerCase().includes(q))
-    )) return true;
+    if (
+      line.allocations &&
+      line.allocations.some(
+        (a) =>
+          (a.label && a.label.toLowerCase().includes(q)) ||
+          (a.counterparty && a.counterparty.toLowerCase().includes(q)) ||
+          (a.document_type && a.document_type.toLowerCase().includes(q))
+      )
+    )
+      return true;
 
-    if (line.matchedExpense?.voucher_number && line.matchedExpense.voucher_number.toLowerCase().includes(q)) return true;
-    if (line.matchedExpense?.description && line.matchedExpense.description.toLowerCase().includes(q)) return true;
-    if (line.matchedPayment?.voucher_number && line.matchedPayment.voucher_number.toLowerCase().includes(q)) return true;
-    if (line.matchedReceipt?.payment_number && line.matchedReceipt.payment_number.toLowerCase().includes(q)) return true;
+    if (
+      line.matchedExpense?.voucher_number &&
+      line.matchedExpense.voucher_number.toLowerCase().includes(q)
+    )
+      return true;
+    if (
+      line.matchedExpense?.description &&
+      line.matchedExpense.description.toLowerCase().includes(q)
+    )
+      return true;
+    if (
+      line.matchedPayment?.voucher_number &&
+      line.matchedPayment.voucher_number.toLowerCase().includes(q)
+    )
+      return true;
+    if (
+      line.matchedReceipt?.payment_number &&
+      line.matchedReceipt.payment_number.toLowerCase().includes(q)
+    )
+      return true;
 
     return false;
   };
 
   const filteredLines = useMemo(() => {
-    return statementLines.filter(line => {
+    return statementLines.filter((line) => {
       let statusMatch = true;
       if (activeFilter === 'all') {
         statusMatch = true;
@@ -3996,9 +4565,12 @@ export function BankReconciliationEnhanced({
   const stats = useMemo(() => {
     return {
       total: statementLines.length,
-      matched: statementLines.filter(l => l.status === 'matched' || l.status === 'recorded').length,
-      suggested: statementLines.filter(l => l.status === 'suggested').length,
-      unmatched: statementLines.filter(l => l.status === 'unmatched' || l.status === 'partially_reconciled').length,
+      matched: statementLines.filter((l) => l.status === 'matched' || l.status === 'recorded')
+        .length,
+      suggested: statementLines.filter((l) => l.status === 'suggested').length,
+      unmatched: statementLines.filter(
+        (l) => l.status === 'unmatched' || l.status === 'partially_reconciled'
+      ).length,
     };
   }, [statementLines]);
 
@@ -4046,16 +4618,22 @@ export function BankReconciliationEnhanced({
       // their existing propagation path.
       const newAmount = Number(editFormData.debit) || Number(editFormData.credit) || 0;
       const hasCanonicalAllocations = editingLine.allocations.length > 0;
-      const hasLegacyLink = editingLine.matchedExpenseId || editingLine.matchedReceiptId
-        || editingLine.matchedPaymentId || editingLine.matchedFundTransferId
-        || editingLine.matchedPettyCashId || editingLine.matchedTaxPaymentId
-        || editingLine.matchedEntry;
+      const hasLegacyLink =
+        editingLine.matchedExpenseId ||
+        editingLine.matchedReceiptId ||
+        editingLine.matchedPaymentId ||
+        editingLine.matchedFundTransferId ||
+        editingLine.matchedPettyCashId ||
+        editingLine.matchedTaxPaymentId ||
+        editingLine.matchedEntry;
       if (!hasCanonicalAllocations && hasLegacyLink && newAmount > 0) {
-        const { data: propResult, error: propError } = await supabase
-          .rpc('propagate_bank_line_amount_edit', {
+        const { data: propResult, error: propError } = await supabase.rpc(
+          'propagate_bank_line_amount_edit',
+          {
             p_line_id: editingLine.id,
             p_new_amount: newAmount,
-          });
+          }
+        );
         if (propError) {
           console.error('Propagation error:', propError);
           alert('⚠️ Bank line updated, but linked document sync failed: ' + propError.message);
@@ -4063,14 +4641,18 @@ export function BankReconciliationEnhanced({
       }
 
       // Update in local state
-      setStatementLines(prev => prev.map(line =>
-        line.id === editingLine.id ? {
-          ...line,
-          debit: editFormData.debit,
-          credit: editFormData.credit,
-          description: editFormData.description
-        } : line
-      ));
+      setStatementLines((prev) =>
+        prev.map((line) =>
+          line.id === editingLine.id
+            ? {
+                ...line,
+                debit: editFormData.debit,
+                credit: editFormData.credit,
+                description: editFormData.description,
+              }
+            : line
+        )
+      );
 
       setEditModal(false);
       setEditingLine(null);
@@ -4089,7 +4671,7 @@ export function BankReconciliationEnhanced({
   const resetOrphanToUnmatched = async (line: StatementLine) => {
     const ok = window.confirm(
       'This row shows Recorded/Matched but no linked document was found.\n\n' +
-      'Reset its status to "Unmatched"?'
+        'Reset its status to "Unmatched"?'
     );
     if (!ok) return;
     try {
@@ -4107,7 +4689,7 @@ export function BankReconciliationEnhanced({
 
     const confirmUnlink = window.confirm(
       'Are you sure you want to unlink this transaction?\n\n' +
-      'This will set its status back to "Unmatched" and remove the link to the expense/receipt.'
+        'This will set its status back to "Unmatched" and remove the link to the expense/receipt.'
     );
 
     if (!confirmUnlink) return;
@@ -4116,30 +4698,34 @@ export function BankReconciliationEnhanced({
       await unlinkBankStatementLine(editingLine.id);
 
       // Update in local state
-      setStatementLines(prev => prev.map(line =>
-        line.id === editingLine.id ? {
-          ...line,
-          status: 'unmatched',
-          matchedEntry: undefined,
-          matchedExpenseId: undefined,
-          matchedReceiptId: undefined,
-          matchedPaymentId: undefined,
-          matchedFundTransferId: undefined,
-          matchedPettyCashId: undefined,
-          matchedTaxPaymentId: undefined,
-          matchedExpense: null,
-          matchedReceipt: null,
-          matchedPayment: null,
-          matchedFundTransfer: null,
-          matchedPettyCash: null,
-          matchedTaxPayment: null,
-          matchedEntryRecord: null,
-          allocations: [],
-          allocatedAmount: 0,
-          remainingAmount: bankStatementLineAmount(line.debit, line.credit),
-          notes: undefined
-        } : line
-      ));
+      setStatementLines((prev) =>
+        prev.map((line) =>
+          line.id === editingLine.id
+            ? {
+                ...line,
+                status: 'unmatched',
+                matchedEntry: undefined,
+                matchedExpenseId: undefined,
+                matchedReceiptId: undefined,
+                matchedPaymentId: undefined,
+                matchedFundTransferId: undefined,
+                matchedPettyCashId: undefined,
+                matchedTaxPaymentId: undefined,
+                matchedExpense: null,
+                matchedReceipt: null,
+                matchedPayment: null,
+                matchedFundTransfer: null,
+                matchedPettyCash: null,
+                matchedTaxPayment: null,
+                matchedEntryRecord: null,
+                allocations: [],
+                allocatedAmount: 0,
+                remainingAmount: bankStatementLineAmount(line.debit, line.credit),
+                notes: undefined,
+              }
+            : line
+        )
+      );
 
       setEditModal(false);
       setEditingLine(null);
@@ -4154,7 +4740,7 @@ export function BankReconciliationEnhanced({
   const handleUnlinkSingleAllocation = async (allocationId: string, label?: string) => {
     const ok = window.confirm(
       `Are you sure you want to unlink allocation "${label || allocationId}"?\n\n` +
-      'This will remove this specific allocation and return its amount to the unallocated bank balance.'
+        'This will remove this specific allocation and return its amount to the unallocated bank balance.'
     );
     if (!ok) return;
     try {
@@ -4177,8 +4763,8 @@ export function BankReconciliationEnhanced({
             actionFeedback.type === 'success'
               ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
               : actionFeedback.type === 'error'
-              ? 'bg-rose-50 border-rose-300 text-rose-950'
-              : 'bg-blue-50 border-blue-300 text-blue-950'
+                ? 'bg-rose-50 border-rose-300 text-rose-950'
+                : 'bg-blue-50 border-blue-300 text-blue-950'
           }`}
         >
           <div className="flex items-start gap-2.5">
@@ -4192,12 +4778,17 @@ export function BankReconciliationEnhanced({
             <div className="space-y-1">
               <div className="text-sm font-semibold">{actionFeedback.title}</div>
               {actionFeedback.message && (
-                <div className="text-xs text-slate-700 whitespace-pre-wrap">{actionFeedback.message}</div>
+                <div className="text-xs text-slate-700 whitespace-pre-wrap">
+                  {actionFeedback.message}
+                </div>
               )}
               {actionFeedback.details && actionFeedback.details.length > 0 && (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-700 mt-1">
                   {actionFeedback.details.map((d, i) => (
-                    <span key={i} className="inline-flex items-center gap-1 bg-white px-2 py-0.5 rounded border border-slate-200 font-medium shadow-xs">
+                    <span
+                      key={i}
+                      className="inline-flex items-center gap-1 bg-white px-2 py-0.5 rounded border border-slate-200 font-medium shadow-xs"
+                    >
                       <span className="text-slate-500">{d.label}:</span>
                       <span className="text-slate-900 font-semibold">{d.value}</span>
                     </span>
@@ -4223,7 +4814,9 @@ export function BankReconciliationEnhanced({
             <h3 className="text-sm font-bold">Bank Reconciliation</h3>
             {selectedAccount && (
               <span className="text-slate-300 text-xs">
-                {selectedAccount.alias ? `${selectedAccount.alias} (${selectedAccount.account_number})` : `${selectedAccount.bank_name} - ${selectedAccount.account_number}`}
+                {selectedAccount.alias
+                  ? `${selectedAccount.alias} (${selectedAccount.account_number})`
+                  : `${selectedAccount.bank_name} - ${selectedAccount.account_number}`}
               </span>
             )}
             <div className="flex gap-2 flex-wrap items-center">
@@ -4237,19 +4830,28 @@ export function BankReconciliationEnhanced({
               </div>
               {accountBalances && (
                 <>
-                  <div className="bg-white/20 rounded px-2.5 py-1" title="All imported bank statement transactions + opening balance">
+                  <div
+                    className="bg-white/20 rounded px-2.5 py-1"
+                    title="All imported bank statement transactions + opening balance"
+                  >
                     <div className="text-slate-200 text-[9px] leading-tight">Statement Balance</div>
                     <div className="text-xs font-bold text-sky-300">
                       {formatCurrency(accountBalances.statementBalance, selectedAccount?.currency)}
                     </div>
                   </div>
-                  <div className="bg-white/20 rounded px-2.5 py-1" title="General Ledger Book Balance">
+                  <div
+                    className="bg-white/20 rounded px-2.5 py-1"
+                    title="General Ledger Book Balance"
+                  >
                     <div className="text-slate-200 text-[9px] leading-tight">Book Balance</div>
                     <div className="text-xs font-bold text-slate-100">
                       {formatCurrency(accountBalances.bookBalance, selectedAccount?.currency)}
                     </div>
                   </div>
-                  <div className={`rounded px-2.5 py-1 ${Math.abs(accountBalances.difference) < 0.01 ? 'bg-green-600/30 text-green-300' : 'bg-amber-600/30 text-amber-300'}`} title="Statement Balance minus Book Balance">
+                  <div
+                    className={`rounded px-2.5 py-1 ${Math.abs(accountBalances.difference) < 0.01 ? 'bg-green-600/30 text-green-300' : 'bg-amber-600/30 text-amber-300'}`}
+                    title="Statement Balance minus Book Balance"
+                  >
                     <div className="text-slate-200 text-[9px] leading-tight">Difference</div>
                     <div className="text-xs font-bold">
                       {formatCurrency(accountBalances.difference, selectedAccount?.currency)}
@@ -4260,7 +4862,6 @@ export function BankReconciliationEnhanced({
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-  
             {canManage && (
               <>
                 <button
@@ -4271,7 +4872,9 @@ export function BankReconciliationEnhanced({
                 >
                   <XCircle className="w-3.5 h-3.5" />
                 </button>
-                <input name="file_upload" aria-label="Upload file"
+                <input
+                  name="file_upload"
+                  aria-label="Upload file"
                   ref={fileInputRef}
                   type="file"
                   accept=".pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg"
@@ -4297,14 +4900,25 @@ export function BankReconciliationEnhanced({
       <div className="bg-white rounded border border-gray-200 p-2.5 shadow-sm space-y-2">
         <div className="flex items-center gap-2.5 flex-wrap">
           {/* Bank Account Selector */}
-          <select name="bank" aria-label="Bank"
+          <select
+            name="bank"
+            aria-label="Bank"
             value={selectedBank}
-            onChange={(e) => { setSelectedBank(e.target.value); try { localStorage.setItem('bank_recon_selected_bank', e.target.value); } catch { /* Storage may be unavailable. */ } }}
+            onChange={(e) => {
+              setSelectedBank(e.target.value);
+              try {
+                localStorage.setItem('bank_recon_selected_bank', e.target.value);
+              } catch {
+                /* Storage may be unavailable. */
+              }
+            }}
             className="px-2.5 py-1.5 border border-gray-300 rounded-md text-xs font-medium bg-white text-gray-800 shadow-sm"
           >
-            {bankAccounts.map(bank => (
+            {bankAccounts.map((bank) => (
               <option key={bank.id} value={bank.id}>
-                {bank.alias ? `${bank.alias} (${bank.account_number})` : `${bank.bank_name} - ${bank.account_number} (${bank.currency})`}
+                {bank.alias
+                  ? `${bank.alias} (${bank.account_number})`
+                  : `${bank.bank_name} - ${bank.account_number} (${bank.currency})`}
               </option>
             ))}
           </select>
@@ -4425,7 +5039,9 @@ export function BankReconciliationEnhanced({
             {/* Auto Match Button beside status filters */}
             <button
               type="button"
-              onClick={() => { void autoMatchTransactions(); }}
+              onClick={() => {
+                void autoMatchTransactions();
+              }}
               disabled={!selectedBank || autoMatching}
               className="inline-flex items-center gap-1.5 px-3 py-1 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 font-semibold shadow-sm whitespace-nowrap ml-1"
               title="Match unlinked transactions to posted finance documents; ambiguous matches remain unlinked"
@@ -4458,7 +5074,10 @@ export function BankReconciliationEnhanced({
             {/* Import Integrity Audit Button */}
             <button
               type="button"
-              onClick={() => { void loadUploadsAudit(); setShowIntegrityAuditModal(true); }}
+              onClick={() => {
+                void loadUploadsAudit();
+                setShowIntegrityAuditModal(true);
+              }}
               disabled={!selectedBank}
               className="inline-flex items-center gap-1.5 px-3 py-1 text-xs bg-slate-700 text-white rounded-md hover:bg-slate-800 disabled:opacity-50 font-semibold shadow-sm whitespace-nowrap ml-1"
               title="View statement upload integrity audit, opening/closing equation, and transaction extraction status"
@@ -4493,14 +5112,19 @@ export function BankReconciliationEnhanced({
           <RefreshCw className="w-6 h-6 animate-spin text-blue-600" />
         </div>
       ) : statementLoadError ? (
-        <div role="alert" className="flex items-start gap-3 py-5 px-4 bg-red-50 border border-red-200 rounded-lg text-red-800">
+        <div
+          role="alert"
+          className="flex items-start gap-3 py-5 px-4 bg-red-50 border border-red-200 rounded-lg text-red-800"
+        >
           <AlertCircle className="w-5 h-5 mt-0.5 shrink-0" />
           <div>
             <h3 className="font-medium">Unable to load bank transactions</h3>
             <p className="text-sm mt-1">{statementLoadError}</p>
             <button
               type="button"
-              onClick={() => { void loadStatementLines(); }}
+              onClick={() => {
+                void loadStatementLines();
+              }}
               className="mt-3 inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Retry
@@ -4510,9 +5134,12 @@ export function BankReconciliationEnhanced({
       ) : statementLines.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-lg border-2 border-dashed">
           <Landmark className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-          <h3 className="text-lg font-medium text-gray-600 mb-1">No Bank Transactions in this Date Range</h3>
+          <h3 className="text-lg font-medium text-gray-600 mb-1">
+            No Bank Transactions in this Date Range
+          </h3>
           <p className="text-sm text-gray-500 mb-4">
-            No transactions found between {formatDate(dateRange.start)} and {formatDate(dateRange.end)}. Adjust the date filter or upload a BCA statement.
+            No transactions found between {formatDate(dateRange.start)} and{' '}
+            {formatDate(dateRange.end)}. Adjust the date filter or upload a BCA statement.
           </p>
           {canManage && (
             <button
@@ -4528,7 +5155,9 @@ export function BankReconciliationEnhanced({
         <div className="text-center py-12 bg-white rounded-lg border border-gray-200 p-6">
           <Landmark className="w-10 h-10 text-gray-300 mx-auto mb-3" />
           <h3 className="text-base font-semibold text-gray-800 mb-1">
-            {searchTerm ? 'No Matching Transactions' : `No ${activeFilter.charAt(0).toUpperCase() + activeFilter.slice(1)} Transactions`}
+            {searchTerm
+              ? 'No Matching Transactions'
+              : `No ${activeFilter.charAt(0).toUpperCase() + activeFilter.slice(1)} Transactions`}
           </h3>
           <p className="text-xs text-gray-500 max-w-md mx-auto mb-4">
             {searchTerm
@@ -4558,7 +5187,9 @@ export function BankReconciliationEnhanced({
                   <div className="flex items-center gap-1">
                     Date
                     {sortConfig?.key === 'date' && (
-                      <span className="text-blue-600">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>
+                      <span className="text-blue-600">
+                        {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                      </span>
                     )}
                   </div>
                 </th>
@@ -4569,7 +5200,9 @@ export function BankReconciliationEnhanced({
                   <div className="flex items-center gap-1">
                     Description
                     {sortConfig?.key === 'description' && (
-                      <span className="text-blue-600">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>
+                      <span className="text-blue-600">
+                        {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                      </span>
                     )}
                   </div>
                 </th>
@@ -4580,7 +5213,9 @@ export function BankReconciliationEnhanced({
                   <div className="flex items-center justify-end gap-1">
                     Debit
                     {sortConfig?.key === 'debit' && (
-                      <span className="text-blue-600">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>
+                      <span className="text-blue-600">
+                        {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                      </span>
                     )}
                   </div>
                 </th>
@@ -4591,7 +5226,9 @@ export function BankReconciliationEnhanced({
                   <div className="flex items-center justify-end gap-1">
                     Credit
                     {sortConfig?.key === 'credit' && (
-                      <span className="text-blue-600">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>
+                      <span className="text-blue-600">
+                        {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                      </span>
                     )}
                   </div>
                 </th>
@@ -4602,7 +5239,9 @@ export function BankReconciliationEnhanced({
                   <div className="flex items-center justify-center gap-1">
                     Status
                     {sortConfig?.key === 'status' && (
-                      <span className="text-blue-600">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>
+                      <span className="text-blue-600">
+                        {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                      </span>
                     )}
                   </div>
                 </th>
@@ -4610,240 +5249,321 @@ export function BankReconciliationEnhanced({
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {paginatedLines.map(line => (
+              {paginatedLines.map((line) => (
                 <Fragment key={line.id}>
-                <tr
-                  id={`bank-statement-line-${line.id}`}
-                  data-statement-line-id={line.id}
-                  key={`${line.id}-row`}
-                  className={
-                    line.id === highlightedLineId
-                      ? 'bg-amber-100 ring-2 ring-inset ring-amber-400'
-                      : 'hover:bg-gray-50'
-                  }
-                >
-                  <td className="px-1.5 py-1 text-gray-700 whitespace-nowrap">
-                    {new Date(line.date).toLocaleDateString('id-ID')}
-                  </td>
-                  <td className="px-1.5 py-1 text-gray-700 max-w-md">
-                    <div className="whitespace-pre-wrap text-sm leading-tight">{line.description}</div>
-                    {line.reference && (
-                      <div className="text-xs text-gray-500 font-mono mt-1">{line.reference}</div>
-                    )}
-                  </td>
-                  <td className="px-1.5 py-1 text-right text-red-600 font-medium whitespace-nowrap">
-                    {line.debit > 0 ? formatCurrency(line.debit, line.currency) : '-'}
-                  </td>
-                  <td className="px-1.5 py-1 text-right text-green-600 font-medium whitespace-nowrap">
-                    {line.credit > 0 ? formatCurrency(line.credit, line.currency) : '-'}
-                  </td>
-                  <td className="px-1.5 py-1">
-                    <div className="flex flex-col gap-1">
-                      {(line.status === 'matched' || line.status === 'recorded') && (
-                        <>
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                            <CheckCircle2 className="w-3 h-3" /> Recorded
-                          </span>
-                          {line.allocations.map(allocation => (
-                            <span key={allocation.id} className="text-xs text-gray-600">
-                              → {allocation.document_type === 'expense' ? 'Expense' : allocation.document_type === 'fund_transfer' ? 'Fund Transfer' : allocation.document_type.replace('_', ' ')}: {allocation.label} ({formatCurrency(allocation.allocation_amount, line.currency)})
-                              {allocation.document_remaining !== undefined && allocation.document_remaining > 0.01 && (
-                                <span className="ml-1 text-amber-700">· Remaining {formatCurrency(allocation.document_remaining, line.currency)}</span>
-                              )}
-                            </span>
-                          ))}
-                        </>
+                  <tr
+                    id={`bank-statement-line-${line.id}`}
+                    data-statement-line-id={line.id}
+                    key={`${line.id}-row`}
+                    className={
+                      line.id === highlightedLineId
+                        ? 'bg-amber-100 ring-2 ring-inset ring-amber-400'
+                        : 'hover:bg-gray-50'
+                    }
+                  >
+                    <td className="px-1.5 py-1 text-gray-700 whitespace-nowrap">
+                      {new Date(line.date).toLocaleDateString('id-ID')}
+                    </td>
+                    <td className="px-1.5 py-1 text-gray-700 max-w-md">
+                      <div className="whitespace-pre-wrap text-sm leading-tight">
+                        {line.description}
+                      </div>
+                      {line.reference && (
+                        <div className="text-xs text-gray-500 font-mono mt-1">{line.reference}</div>
                       )}
-                      {line.status === 'partially_reconciled' && (
-                        <>
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
-                            <AlertCircle className="w-3 h-3" /> Partial
-                          </span>
-                          {line.allocations.map(allocation => (
-                            <span key={allocation.id} className="text-xs text-gray-600">
-                              → {allocation.document_type === 'expense' ? 'Expense' : allocation.document_type === 'fund_transfer' ? 'Fund Transfer' : allocation.document_type.replace('_', ' ')}: {allocation.label} ({formatCurrency(allocation.allocation_amount, line.currency)})
+                    </td>
+                    <td className="px-1.5 py-1 text-right text-red-600 font-medium whitespace-nowrap">
+                      {line.debit > 0 ? formatCurrency(line.debit, line.currency) : '-'}
+                    </td>
+                    <td className="px-1.5 py-1 text-right text-green-600 font-medium whitespace-nowrap">
+                      {line.credit > 0 ? formatCurrency(line.credit, line.currency) : '-'}
+                    </td>
+                    <td className="px-1.5 py-1">
+                      <div className="flex flex-col gap-1">
+                        {(line.status === 'matched' || line.status === 'recorded') && (
+                          <>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                              <CheckCircle2 className="w-3 h-3" /> Recorded
                             </span>
-                          ))}
-                        </>
-                      )}
-                      {line.status === 'suggested' && (
-                        <>
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
-                            <Clock className="w-3 h-3" /> Needs Review
+                            {line.allocations.map((allocation) => (
+                              <span key={allocation.id} className="text-xs text-gray-600">
+                                →{' '}
+                                {allocation.document_type === 'expense'
+                                  ? 'Expense'
+                                  : allocation.document_type === 'fund_transfer'
+                                    ? 'Fund Transfer'
+                                    : allocation.document_type.replace('_', ' ')}
+                                : {allocation.label} (
+                                {formatCurrency(allocation.allocation_amount, line.currency)})
+                                {allocation.document_remaining !== undefined &&
+                                  allocation.document_remaining > 0.01 && (
+                                    <span className="ml-1 text-amber-700">
+                                      · Remaining{' '}
+                                      {formatCurrency(allocation.document_remaining, line.currency)}
+                                    </span>
+                                  )}
+                              </span>
+                            ))}
+                          </>
+                        )}
+                        {line.status === 'partially_reconciled' && (
+                          <>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                              <AlertCircle className="w-3 h-3" /> Partial
+                            </span>
+                            {line.allocations.map((allocation) => (
+                              <span key={allocation.id} className="text-xs text-gray-600">
+                                →{' '}
+                                {allocation.document_type === 'expense'
+                                  ? 'Expense'
+                                  : allocation.document_type === 'fund_transfer'
+                                    ? 'Fund Transfer'
+                                    : allocation.document_type.replace('_', ' ')}
+                                : {allocation.label} (
+                                {formatCurrency(allocation.allocation_amount, line.currency)})
+                              </span>
+                            ))}
+                          </>
+                        )}
+                        {line.status === 'suggested' && (
+                          <>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+                              <Clock className="w-3 h-3" /> Needs Review
+                            </span>
+                            {line.matchedExpense && (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedSuggestedLine(line)}
+                                className="text-xs text-purple-700 font-medium hover:underline text-left inline-flex items-center gap-1 cursor-pointer"
+                                title="Click to view full match details side-by-side"
+                              >
+                                → Suggested: {line.matchedExpense.voucher_number || 'Expense'}
+                                {line.matchedExpense.approval_status === 'pending_approval' ? (
+                                  <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-amber-100 text-amber-800 font-semibold">
+                                    Pending Approval
+                                  </span>
+                                ) : line.matchedExpense.approval_status === 'rejected' ||
+                                  line.matchedExpense.approval_status === 'cancelled' ? (
+                                  <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-red-100 text-red-800 font-semibold">
+                                    {line.matchedExpense.approval_status === 'rejected'
+                                      ? 'Rejected'
+                                      : 'Cancelled'}
+                                  </span>
+                                ) : (
+                                  <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-green-100 text-green-800 font-semibold">
+                                    Approved
+                                  </span>
+                                )}
+                              </button>
+                            )}
+                            {line.notes && line.notes.startsWith('Suggested match:') && (
+                              <span className="text-[11px] text-gray-500 italic">{line.notes}</span>
+                            )}
+                          </>
+                        )}
+                        {line.status === 'unmatched' && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                            <XCircle className="w-3 h-3 text-gray-400" /> Unrecorded
                           </span>
-                          {line.matchedExpense && (
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-1.5 py-1 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        {line.allocations.length > 0 && (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-100"
+                            aria-expanded={expandedLineIds.has(line.id)}
+                            onClick={() =>
+                              setExpandedLineIds((previous) => {
+                                const next = new Set(previous);
+                                if (next.has(line.id)) next.delete(line.id);
+                                else next.add(line.id);
+                                return next;
+                              })
+                            }
+                          >
+                            {expandedLineIds.has(line.id) ? (
+                              <ChevronDown className="w-3 h-3" />
+                            ) : (
+                              <ChevronRight className="w-3 h-3" />
+                            )}
+                            {line.allocations.length} document
+                            {line.allocations.length === 1 ? '' : 's'}
+                          </button>
+                        )}
+                        {canManage && (
+                          <FinanceActionButton
+                            action="edit"
+                            label="Edit debit/credit"
+                            onClick={() => openEditModal(line)}
+                          />
+                        )}
+                        {line.status === 'suggested' && (
+                          <>
                             <button
                               type="button"
                               onClick={() => setSelectedSuggestedLine(line)}
-                              className="text-xs text-purple-700 font-medium hover:underline text-left inline-flex items-center gap-1 cursor-pointer"
-                              title="Click to view full match details side-by-side"
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-purple-300 text-purple-700 bg-purple-50 hover:bg-purple-100 rounded font-medium"
+                              title="Review suggested match side-by-side"
                             >
-                              → Suggested: {line.matchedExpense.voucher_number || 'Expense'}
-                              {line.matchedExpense.approval_status === 'pending_approval' ? (
-                                <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-amber-100 text-amber-800 font-semibold">
-                                  Pending Approval
-                                </span>
-                              ) : line.matchedExpense.approval_status === 'rejected' || line.matchedExpense.approval_status === 'cancelled' ? (
-                                <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-red-100 text-red-800 font-semibold">
-                                  {line.matchedExpense.approval_status === 'rejected' ? 'Rejected' : 'Cancelled'}
-                                </span>
-                              ) : (
-                                <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-green-100 text-green-800 font-semibold">
-                                  Approved
-                                </span>
-                              )}
+                              Review
                             </button>
+                            <FinanceActionButton
+                              action="approve"
+                              label="Confirm Match"
+                              onClick={() => confirmMatch(line.id)}
+                              aria-label={t.finance.bankAcceptSuggestedMatch}
+                            />
+                            <FinanceActionButton
+                              action="reject"
+                              label="Reject Match"
+                              onClick={() => rejectMatch(line.id)}
+                            />
+                          </>
+                        )}
+                        {(line.status === 'unmatched' || line.status === 'partially_reconciled') &&
+                          canManage && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => openInteractiveMatchForLine(line)}
+                                className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded font-medium"
+                                title="Interactive candidate match"
+                              >
+                                Match
+                              </button>
+                              <button
+                                onClick={() => openRecordModal(line)}
+                                className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                                title={
+                                  line.status === 'partially_reconciled'
+                                    ? 'Allocate remaining amount'
+                                    : 'Record transaction'
+                                }
+                              >
+                                <Plus className="w-3 h-3" />
+                                {line.status === 'partially_reconciled' ? 'Allocate' : 'Record'}
+                              </button>
+                            </div>
                           )}
-                          {line.notes && line.notes.startsWith('Suggested match:') && (
-                            <span className="text-[11px] text-gray-500 italic">
-                              {line.notes}
-                            </span>
-                          )}
-                        </>
-                      )}
-                      {line.status === 'unmatched' && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
-                          <XCircle className="w-3 h-3 text-gray-400" /> Unrecorded
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-1.5 py-1 text-center">
-                    <div className="flex items-center justify-center gap-1">
-                      {line.allocations.length > 0 && (
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-gray-300 rounded hover:bg-gray-100"
-                          aria-expanded={expandedLineIds.has(line.id)}
-                          onClick={() => setExpandedLineIds(previous => {
-                            const next = new Set(previous);
-                            if (next.has(line.id)) next.delete(line.id); else next.add(line.id);
-                            return next;
-                          })}
-                        >
-                          {expandedLineIds.has(line.id) ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                          {line.allocations.length} document{line.allocations.length === 1 ? '' : 's'}
-                        </button>
-                      )}
-                      {canManage && (
-                        <FinanceActionButton action="edit" label="Edit debit/credit" onClick={() => openEditModal(line)} />
-                      )}
-                      {line.status === 'suggested' && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedSuggestedLine(line)}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-purple-300 text-purple-700 bg-purple-50 hover:bg-purple-100 rounded font-medium"
-                            title="Review suggested match side-by-side"
-                          >
-                            Review
-                          </button>
-                          <FinanceActionButton
-                            action="approve"
-                            label="Confirm Match"
-                            onClick={() => confirmMatch(line.id)}
-                            aria-label={t.finance.bankAcceptSuggestedMatch}
-                          />
-                          <FinanceActionButton
-                            action="reject"
-                            label="Reject Match"
-                            onClick={() => rejectMatch(line.id)}
-                          />
-                        </>
-                      )}
-                      {(line.status === 'unmatched' || line.status === 'partially_reconciled') && canManage && (
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => openInteractiveMatchForLine(line)}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded font-medium"
-                            title="Interactive candidate match"
-                          >
-                            Match
-                          </button>
-                          <button
-                            onClick={() => openRecordModal(line)}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
-                            title={line.status === 'partially_reconciled' ? 'Allocate remaining amount' : 'Record transaction'}
-                          >
-                            <Plus className="w-3 h-3" />
-                            {line.status === 'partially_reconciled' ? 'Allocate' : 'Record'}
-                          </button>
-                        </div>
-                      )}
-                      {line.allocatedAmount > 0 && (
-                        <div className="text-[10px] text-gray-600 leading-tight">
-                          <div>Bank: {formatCurrency(line.debit || line.credit, line.currency)}</div>
-                          <div>Allocated: {formatCurrency(line.allocatedAmount, line.currency)}</div>
-                          <div className={line.remainingAmount > BANK_ALLOCATION_EPSILON ? 'text-amber-700 font-medium' : 'text-green-700 font-medium'}>
-                            Remaining: {formatCurrency(line.remainingAmount, line.currency)}
+                        {line.allocatedAmount > 0 && (
+                          <div className="text-[10px] text-gray-600 leading-tight">
+                            <div>
+                              Bank: {formatCurrency(line.debit || line.credit, line.currency)}
+                            </div>
+                            <div>
+                              Allocated: {formatCurrency(line.allocatedAmount, line.currency)}
+                            </div>
+                            <div
+                              className={
+                                line.remainingAmount > BANK_ALLOCATION_EPSILON
+                                  ? 'text-amber-700 font-medium'
+                                  : 'text-green-700 font-medium'
+                              }
+                            >
+                              Remaining: {formatCurrency(line.remainingAmount, line.currency)}
+                            </div>
+                            <div>
+                              {line.remainingAmount > BANK_ALLOCATION_EPSILON
+                                ? 'Partially Reconciled'
+                                : 'Fully Reconciled'}
+                            </div>
                           </div>
-                          <div>{line.remainingAmount > BANK_ALLOCATION_EPSILON ? 'Partially Reconciled' : 'Fully Reconciled'}</div>
-                        </div>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-                {expandedLineIds.has(line.id) && line.allocations.length > 0 && (
-                  <tr key={`${line.id}-allocations`} className="bg-slate-50 border-b">
-                    <td colSpan={6} className="px-4 py-3">
-                      <div className="flex items-center justify-between text-xs text-gray-700 mb-2">
-                        <span className="font-semibold">Allocation breakdown</span>
-                        <span>
-                          Bank {formatCurrency(line.debit || line.credit, line.currency)} · Allocated {formatCurrency(line.allocatedAmount, line.currency)} · Remaining {formatCurrency(line.remainingAmount, line.currency)}
-                        </span>
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="text-left text-gray-500 border-b">
-                              <th className="py-1 pr-2">Document</th>
-                              <th className="py-1 pr-2">Counterparty</th>
-                              <th className="py-1 pr-2 text-right">Allocated</th>
-                              <th className="py-1 pr-2 text-right">Document total</th>
-                              <th className="py-1 pr-2 text-right">Document remaining</th>
-                              <th className="py-1 pr-2">Journal</th>
-                              <th className="py-1 pr-2 text-right">Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {line.allocations.map(allocation => (
-                              <tr key={allocation.id} className="border-b last:border-b-0">
-                                <td className="py-1 pr-2">
-                                  <button
-                                    type="button"
-                                    className="font-mono text-blue-700 hover:underline"
-                                    onClick={() => allocation.journal_entry_id && onOpenJournal?.(allocation.journal_entry_id)}
-                                  >
-                                    {allocation.label || allocation.document_type}
-                                  </button>
-                                  <span className="ml-2 text-gray-500">{allocation.document_type}</span>
-                                </td>
-                                <td className="py-1 pr-2">{allocation.counterparty || '—'}</td>
-                                <td className="py-1 pr-2 text-right font-medium">{formatCurrency(allocation.allocation_amount, line.currency)}</td>
-                                <td className="py-1 pr-2 text-right">{allocation.document_total == null ? '—' : formatCurrency(allocation.document_total, line.currency)}</td>
-                                <td className="py-1 pr-2 text-right">{allocation.document_remaining == null ? '—' : formatCurrency(allocation.document_remaining, line.currency)}</td>
-                                <td className="py-1 pr-2">{allocation.journal_entry_id ? `${allocation.journal_entry_id.slice(0, 8)} · ${allocation.journal_status || 'Unknown'}` : '—'}</td>
-                                <td className="py-1 pr-2 text-right">
-                                  {canManage && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUnlinkSingleAllocation(allocation.id, allocation.label)}
-                                      className="text-xs text-red-600 hover:text-red-800 underline font-medium"
-                                      title="Unlink this individual allocation"
-                                    >
-                                      Unlink
-                                    </button>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                        )}
                       </div>
                     </td>
                   </tr>
-                )}
+                  {expandedLineIds.has(line.id) && line.allocations.length > 0 && (
+                    <tr key={`${line.id}-allocations`} className="bg-slate-50 border-b">
+                      <td colSpan={6} className="px-4 py-3">
+                        <div className="flex items-center justify-between text-xs text-gray-700 mb-2">
+                          <span className="font-semibold">Allocation breakdown</span>
+                          <span>
+                            Bank {formatCurrency(line.debit || line.credit, line.currency)} ·
+                            Allocated {formatCurrency(line.allocatedAmount, line.currency)} ·
+                            Remaining {formatCurrency(line.remainingAmount, line.currency)}
+                          </span>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="text-left text-gray-500 border-b">
+                                <th className="py-1 pr-2">Document</th>
+                                <th className="py-1 pr-2">Counterparty</th>
+                                <th className="py-1 pr-2 text-right">Allocated</th>
+                                <th className="py-1 pr-2 text-right">Document total</th>
+                                <th className="py-1 pr-2 text-right">Document remaining</th>
+                                <th className="py-1 pr-2">Journal</th>
+                                <th className="py-1 pr-2 text-right">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {line.allocations.map((allocation) => (
+                                <tr key={allocation.id} className="border-b last:border-b-0">
+                                  <td className="py-1 pr-2">
+                                    <button
+                                      type="button"
+                                      className="font-mono text-blue-700 hover:underline"
+                                      onClick={() =>
+                                        allocation.journal_entry_id &&
+                                        onOpenJournal?.(allocation.journal_entry_id)
+                                      }
+                                    >
+                                      {allocation.label || allocation.document_type}
+                                    </button>
+                                    <span className="ml-2 text-gray-500">
+                                      {allocation.document_type}
+                                    </span>
+                                  </td>
+                                  <td className="py-1 pr-2">{allocation.counterparty || '—'}</td>
+                                  <td className="py-1 pr-2 text-right font-medium">
+                                    {formatCurrency(allocation.allocation_amount, line.currency)}
+                                  </td>
+                                  <td className="py-1 pr-2 text-right">
+                                    {allocation.document_total == null
+                                      ? '—'
+                                      : formatCurrency(allocation.document_total, line.currency)}
+                                  </td>
+                                  <td className="py-1 pr-2 text-right">
+                                    {allocation.document_remaining == null
+                                      ? '—'
+                                      : formatCurrency(
+                                          allocation.document_remaining,
+                                          line.currency
+                                        )}
+                                  </td>
+                                  <td className="py-1 pr-2">
+                                    {allocation.journal_entry_id
+                                      ? `${allocation.journal_entry_id.slice(0, 8)} · ${allocation.journal_status || 'Unknown'}`
+                                      : '—'}
+                                  </td>
+                                  <td className="py-1 pr-2 text-right">
+                                    {canManage && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleUnlinkSingleAllocation(
+                                            allocation.id,
+                                            allocation.label
+                                          )
+                                        }
+                                        className="text-xs text-red-600 hover:text-red-800 underline font-medium"
+                                        title="Unlink this individual allocation"
+                                      >
+                                        Unlink
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 </Fragment>
               ))}
               {/* Totals Row */}
@@ -4852,13 +5572,24 @@ export function BankReconciliationEnhanced({
                   TOTAL ({sortedLines.length} transactions):
                 </td>
                 <td className="px-1.5 py-1 text-right text-red-700 font-bold whitespace-nowrap">
-                  {formatCurrency(sortedLines.reduce((sum, line) => sum + line.debit, 0), selectedAccount?.currency)}
+                  {formatCurrency(
+                    sortedLines.reduce((sum, line) => sum + line.debit, 0),
+                    selectedAccount?.currency
+                  )}
                 </td>
                 <td className="px-1.5 py-1 text-right text-green-700 font-bold whitespace-nowrap">
-                  {formatCurrency(sortedLines.reduce((sum, line) => sum + line.credit, 0), selectedAccount?.currency)}
+                  {formatCurrency(
+                    sortedLines.reduce((sum, line) => sum + line.credit, 0),
+                    selectedAccount?.currency
+                  )}
                 </td>
                 <td colSpan={2} className="px-1.5 py-1 text-center text-gray-600 text-sm">
-                  Net: {formatCurrency(sortedLines.reduce((sum, line) => sum + line.credit, 0) - sortedLines.reduce((sum, line) => sum + line.debit, 0), selectedAccount?.currency)}
+                  Net:{' '}
+                  {formatCurrency(
+                    sortedLines.reduce((sum, line) => sum + line.credit, 0) -
+                      sortedLines.reduce((sum, line) => sum + line.debit, 0),
+                    selectedAccount?.currency
+                  )}
                 </td>
               </tr>
             </tbody>
@@ -4869,8 +5600,11 @@ export function BankReconciliationEnhanced({
             <div className="flex items-center gap-2">
               <span>
                 Showing {totalFiltered === 0 ? 0 : (validCurrentPage - 1) * numPageSize + 1} to{' '}
-                {pageSize === 'all' ? totalFiltered : Math.min(validCurrentPage * numPageSize, totalFiltered)} of{' '}
-                <strong className="font-semibold text-gray-900">{totalFiltered}</strong> transactions
+                {pageSize === 'all'
+                  ? totalFiltered
+                  : Math.min(validCurrentPage * numPageSize, totalFiltered)}{' '}
+                of <strong className="font-semibold text-gray-900">{totalFiltered}</strong>{' '}
+                transactions
                 {searchTerm ? ` (filtered from ${statementLines.length} total)` : ''}
               </span>
             </div>
@@ -4897,7 +5631,7 @@ export function BankReconciliationEnhanced({
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
                     disabled={validCurrentPage <= 1}
                     className="p-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-40"
                     title="Previous Page"
@@ -4910,7 +5644,7 @@ export function BankReconciliationEnhanced({
                   </span>
                   <button
                     type="button"
-                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
                     disabled={validCurrentPage >= totalPages}
                     className="p-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-40"
                     title="Next Page"
@@ -4955,7 +5689,9 @@ export function BankReconciliationEnhanced({
             <div className="p-3 bg-gray-50 rounded-lg">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-gray-600">Date:</span>
-                <span className="font-medium">{new Date(recordingLine.date).toLocaleDateString('id-ID')}</span>
+                <span className="font-medium">
+                  {new Date(recordingLine.date).toLocaleDateString('id-ID')}
+                </span>
               </div>
               <div className="mt-2 text-sm">
                 <span className="text-gray-600">Description:</span>
@@ -4983,15 +5719,25 @@ export function BankReconciliationEnhanced({
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs space-y-1">
                 <div className="font-semibold text-amber-900 flex items-center justify-between">
                   <span>Partially Reconciled Bank Transaction</span>
-                  <span className="text-amber-800 font-bold">Remaining: {formatCurrency(recordingLine.remainingAmount, recordingLine.currency)}</span>
+                  <span className="text-amber-800 font-bold">
+                    Remaining:{' '}
+                    {formatCurrency(recordingLine.remainingAmount, recordingLine.currency)}
+                  </span>
                 </div>
                 <div className="flex justify-between text-gray-600">
                   <span>Total Bank Amount:</span>
-                  <span>{formatCurrency(recordingLine.debit || recordingLine.credit, recordingLine.currency)}</span>
+                  <span>
+                    {formatCurrency(
+                      recordingLine.debit || recordingLine.credit,
+                      recordingLine.currency
+                    )}
+                  </span>
                 </div>
                 <div className="flex justify-between text-gray-600">
                   <span>Already Allocated:</span>
-                  <span className="text-green-700 font-medium">{formatCurrency(recordingLine.allocatedAmount, recordingLine.currency)}</span>
+                  <span className="text-green-700 font-medium">
+                    {formatCurrency(recordingLine.allocatedAmount, recordingLine.currency)}
+                  </span>
                 </div>
               </div>
             )}
@@ -4999,8 +5745,15 @@ export function BankReconciliationEnhanced({
             {recordingLine.currency === 'USD' && (
               <div className="p-3 border border-blue-200 bg-blue-50 rounded-lg">
                 <SapRow>
-                  <FloatingField label="USD to IDR Exchange Rate" span={6} required filled={!!recordExchangeRate}>
-                    <input name="record_exchange_rate" aria-label="Record Exchange Rate"
+                  <FloatingField
+                    label="USD to IDR Exchange Rate"
+                    span={6}
+                    required
+                    filled={!!recordExchangeRate}
+                  >
+                    <input
+                      name="record_exchange_rate"
+                      aria-label="Record Exchange Rate"
                       type="number"
                       min="1.000001"
                       step="0.000001"
@@ -5012,7 +5765,10 @@ export function BankReconciliationEnhanced({
                   </FloatingField>
                   <FloatingField label="Functional Amount (IDR)" span={6} staticLabel>
                     <div className="px-2 pt-2.5 pb-0 text-right font-mono font-semibold text-xs h-full flex items-center">
-                      {formatCurrency((recordingLine.debit || recordingLine.credit) * recordExchangeRate, 'IDR')}
+                      {formatCurrency(
+                        (recordingLine.debit || recordingLine.credit) * recordExchangeRate,
+                        'IDR'
+                      )}
                     </div>
                   </FloatingField>
                 </SapRow>
@@ -5022,7 +5778,9 @@ export function BankReconciliationEnhanced({
             {recordingLine.debit > 0 && (
               <div>
                 <div className="space-y-2 mb-3">
-                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Money Out Actions</div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    Money Out Actions
+                  </div>
                   <div className="grid grid-cols-3 gap-2">
                     <button
                       type="button"
@@ -5154,14 +5912,19 @@ export function BankReconciliationEnhanced({
                     </button>
                     <button
                       type="button"
-                      onClick={() => onRecordContra?.({
-                        bankAccountId: selectedBank,
-                        statementLineId: recordingLine.id,
-                        date: recordingLine.date,
-                        amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
-                        description: recordingLine.description,
-                        direction: 'from',
-                      })}
+                      onClick={() =>
+                        onRecordContra?.({
+                          bankAccountId: selectedBank,
+                          statementLineId: recordingLine.id,
+                          date: recordingLine.date,
+                          amount:
+                            recordingLine.remainingAmount > 0
+                              ? recordingLine.remainingAmount
+                              : recordingLine.debit,
+                          description: recordingLine.description,
+                          direction: 'from',
+                        })
+                      }
                       className="py-1.5 px-3 rounded-lg text-xs font-medium bg-cyan-50 text-cyan-700 border border-cyan-200"
                     >
                       Record Contra
@@ -5173,7 +5936,10 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
+                          amount:
+                            recordingLine.remainingAmount > 0
+                              ? recordingLine.remainingAmount
+                              : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -5197,7 +5963,10 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
+                          amount:
+                            recordingLine.remainingAmount > 0
+                              ? recordingLine.remainingAmount
+                              : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -5219,7 +5988,10 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
+                          amount:
+                            recordingLine.remainingAmount > 0
+                              ? recordingLine.remainingAmount
+                              : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -5241,7 +6013,10 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
+                          amount:
+                            recordingLine.remainingAmount > 0
+                              ? recordingLine.remainingAmount
+                              : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -5263,7 +6038,10 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
+                          amount:
+                            recordingLine.remainingAmount > 0
+                              ? recordingLine.remainingAmount
+                              : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -5285,7 +6063,10 @@ export function BankReconciliationEnhanced({
                           bankAccountId: selectedBank,
                           statementLineId: recordingLine.id,
                           date: recordingLine.date,
-                          amount: recordingLine.remainingAmount > 0 ? recordingLine.remainingAmount : recordingLine.debit,
+                          amount:
+                            recordingLine.remainingAmount > 0
+                              ? recordingLine.remainingAmount
+                              : recordingLine.debit,
                           currency: recordingLine.currency as 'IDR' | 'USD',
                           reference: recordingLine.reference || '',
                           description: recordingLine.description,
@@ -5307,8 +6088,12 @@ export function BankReconciliationEnhanced({
                   <div className="space-y-4 bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
                     <div className="border-b pb-2 flex items-center justify-between">
                       <div>
-                        <h4 className="font-semibold text-sm text-slate-800">DIRECTOR / RELATED PARTY TRANSACTION</h4>
-                        <p className="text-xs text-slate-500">Money moving between SAPJ and Director / Owner</p>
+                        <h4 className="font-semibold text-sm text-slate-800">
+                          DIRECTOR / RELATED PARTY TRANSACTION
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          Money moving between SAPJ and Director / Owner
+                        </p>
                       </div>
                       <span className="px-2 py-0.5 rounded text-xs font-semibold bg-rose-100 text-rose-800">
                         Money Paid To Director (Cash Outflow)
@@ -5318,27 +6103,46 @@ export function BankReconciliationEnhanced({
                     {/* Live Balance Summary */}
                     <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
                       <div className="flex items-center justify-between text-xs text-slate-600 mb-2">
-                        <span className="font-medium">Director Position ({selectedDirectorName}):</span>
-                        {loadingDirectorSummary && <span className="text-slate-400">Loading live balances...</span>}
+                        <span className="font-medium">
+                          Director Position ({selectedDirectorName}):
+                        </span>
+                        {loadingDirectorSummary && (
+                          <span className="text-slate-400">Loading live balances...</span>
+                        )}
                       </div>
                       {directorSummary && (
                         <div className="grid grid-cols-3 gap-2 text-center">
                           <div className="bg-white p-2 rounded border border-slate-200">
-                            <span className="block text-[11px] text-slate-500 font-medium">Due TO Director (2105)</span>
+                            <span className="block text-[11px] text-slate-500 font-medium">
+                              Due TO Director (2105)
+                            </span>
                             <span className="text-xs font-bold text-rose-600">
-                              {formatCurrency(directorSummary.due_to_director, recordingLine.currency)}
+                              {formatCurrency(
+                                directorSummary.due_to_director,
+                                recordingLine.currency
+                              )}
                             </span>
                           </div>
                           <div className="bg-white p-2 rounded border border-slate-200">
-                            <span className="block text-[11px] text-slate-500 font-medium">Due FROM Director (1310)</span>
+                            <span className="block text-[11px] text-slate-500 font-medium">
+                              Due FROM Director (1310)
+                            </span>
                             <span className="text-xs font-bold text-blue-600">
-                              {formatCurrency(directorSummary.due_from_director, recordingLine.currency)}
+                              {formatCurrency(
+                                directorSummary.due_from_director,
+                                recordingLine.currency
+                              )}
                             </span>
                           </div>
                           <div className="bg-white p-2 rounded border border-slate-200">
-                            <span className="block text-[11px] text-slate-500 font-medium">Net Position</span>
-                            <span className={`text-xs font-bold ${directorSummary.net_status === 'payable' ? 'text-rose-700' : directorSummary.net_status === 'receivable' ? 'text-blue-700' : 'text-slate-700'}`}>
-                              {formatCurrency(directorSummary.net_position, recordingLine.currency)} ({directorSummary.net_status})
+                            <span className="block text-[11px] text-slate-500 font-medium">
+                              Net Position
+                            </span>
+                            <span
+                              className={`text-xs font-bold ${directorSummary.net_status === 'payable' ? 'text-rose-700' : directorSummary.net_status === 'receivable' ? 'text-blue-700' : 'text-slate-700'}`}
+                            >
+                              {formatCurrency(directorSummary.net_position, recordingLine.currency)}{' '}
+                              ({directorSummary.net_status})
                             </span>
                           </div>
                         </div>
@@ -5347,7 +6151,12 @@ export function BankReconciliationEnhanced({
 
                     {/* Form Fields */}
                     <SapRow>
-                      <FloatingField label="Director / Related Party" span={6} required filled={!!selectedDirectorName}>
+                      <FloatingField
+                        label="Director / Related Party"
+                        span={6}
+                        required
+                        filled={!!selectedDirectorName}
+                      >
                         <select
                           value={selectedDirectorName}
                           onChange={(e) => {
@@ -5399,18 +6208,36 @@ export function BankReconciliationEnhanced({
                       </div>
                       {directorSummary && directorSummary.due_to_director > 0 ? (
                         <p>
-                          SAPJ currently owes {selectedDirectorName} {formatCurrency(directorSummary.due_to_director, recordingLine.currency)}.
-                          This payment will <strong>settle Director Payable (Dr 2105)</strong> up to {formatCurrency(Math.min(recordingLine.debit, directorSummary.due_to_director), recordingLine.currency)}.
+                          SAPJ currently owes {selectedDirectorName}{' '}
+                          {formatCurrency(directorSummary.due_to_director, recordingLine.currency)}.
+                          This payment will <strong>settle Director Payable (Dr 2105)</strong> up to{' '}
+                          {formatCurrency(
+                            Math.min(recordingLine.debit, directorSummary.due_to_director),
+                            recordingLine.currency
+                          )}
+                          .
                           {recordingLine.debit > directorSummary.due_to_director && (
-                            <span> The remaining {formatCurrency(recordingLine.debit - directorSummary.due_to_director, recordingLine.currency)} will be recorded as <strong>Due from Director (Dr 1310)</strong>.</span>
+                            <span>
+                              {' '}
+                              The remaining{' '}
+                              {formatCurrency(
+                                recordingLine.debit - directorSummary.due_to_director,
+                                recordingLine.currency
+                              )}{' '}
+                              will be recorded as <strong>Due from Director (Dr 1310)</strong>.
+                            </span>
                           )}
                         </p>
                       ) : (
                         <p>
-                          SAPJ has no outstanding payable to {selectedDirectorName}. This payment will be recorded as <strong>Due from Director / Receivable (Dr 1310)</strong>.
+                          SAPJ has no outstanding payable to {selectedDirectorName}. This payment
+                          will be recorded as{' '}
+                          <strong>Due from Director / Receivable (Dr 1310)</strong>.
                         </p>
                       )}
-                      <p className="text-[11px] text-blue-700 italic">Double-entry: Dr 2105/1310, Cr Bank. No P&L impact.</p>
+                      <p className="text-[11px] text-blue-700 italic">
+                        Double-entry: Dr 2105/1310, Cr Bank. No P&L impact.
+                      </p>
                     </div>
 
                     <button
@@ -5424,9 +6251,16 @@ export function BankReconciliationEnhanced({
                   </div>
                 ) : recordLoanDebit ? (
                   <div className="space-y-3 bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
-                    <h4 className="font-semibold text-sm text-slate-800 border-b pb-2">RECORD AS LOAN</h4>
+                    <h4 className="font-semibold text-sm text-slate-800 border-b pb-2">
+                      RECORD AS LOAN
+                    </h4>
                     <SapRow>
-                      <FloatingField label="Loan Direction" span={6} required filled={!!loanDirection}>
+                      <FloatingField
+                        label="Loan Direction"
+                        span={6}
+                        required
+                        filled={!!loanDirection}
+                      >
                         <select
                           value={loanDirection}
                           onChange={(e) => {
@@ -5440,7 +6274,12 @@ export function BankReconciliationEnhanced({
                           <option value="taken">Loan Received / Liability</option>
                         </select>
                       </FloatingField>
-                      <FloatingField label="Counterparty" span={6} required filled={!!loanCounterparty}>
+                      <FloatingField
+                        label="Counterparty"
+                        span={6}
+                        required
+                        filled={!!loanCounterparty}
+                      >
                         <input
                           type="text"
                           value={loanCounterparty}
@@ -5449,15 +6288,21 @@ export function BankReconciliationEnhanced({
                             setLoanCounterparty(val);
                             const cp = val.toLowerCase();
                             if (loanDirection === 'taken') {
-                              if (cp.includes('vijay') || cp.includes('lunkad') || cp.includes('director')) {
-                                const a = loanAccounts.find(acc => acc.code === '2105');
+                              if (
+                                cp.includes('vijay') ||
+                                cp.includes('lunkad') ||
+                                cp.includes('director')
+                              ) {
+                                const a = loanAccounts.find((acc) => acc.code === '2105');
                                 if (a) setLoanCoaId(a.id);
-                              } else if (cp.match(/bank|bca|mandiri|bni|bri|cimb|danamon|permata|uob/)) {
-                                const a = loanAccounts.find(acc => acc.code === '2210');
+                              } else if (
+                                cp.match(/bank|bca|mandiri|bni|bri|cimb|danamon|permata|uob/)
+                              ) {
+                                const a = loanAccounts.find((acc) => acc.code === '2210');
                                 if (a) setLoanCoaId(a.id);
                               }
                             } else if (loanDirection === 'given') {
-                              const a = loanAccounts.find(acc => acc.code === '1310');
+                              const a = loanAccounts.find((acc) => acc.code === '1310');
                               if (a) setLoanCoaId(a.id);
                             }
                           }}
@@ -5469,7 +6314,17 @@ export function BankReconciliationEnhanced({
                     </SapRow>
 
                     <SapRow>
-                      <FloatingField label="Account" span={12} required filled={!!loanCoaId} hint={loanDirection === 'given' ? 'Asset account for loan given (default: 1310 — Loan Receivable).' : 'Liability account for borrowings (e.g. 2105 Director Loan, 2210 Bank Loans).'}>
+                      <FloatingField
+                        label="Account"
+                        span={12}
+                        required
+                        filled={!!loanCoaId}
+                        hint={
+                          loanDirection === 'given'
+                            ? 'Asset account for loan given (default: 1310 — Loan Receivable).'
+                            : 'Liability account for borrowings (e.g. 2105 Director Loan, 2210 Bank Loans).'
+                        }
+                      >
                         <select
                           value={loanCoaId}
                           onChange={(e) => setLoanCoaId(e.target.value)}
@@ -5477,7 +6332,7 @@ export function BankReconciliationEnhanced({
                           className={FLOAT_INPUT}
                         >
                           <option value="">Select account...</option>
-                          {loanAccounts.map(acc => (
+                          {loanAccounts.map((acc) => (
                             <option key={acc.id} value={acc.id}>
                               {acc.code} — {acc.name}
                             </option>
@@ -5495,7 +6350,11 @@ export function BankReconciliationEnhanced({
                     </SapRow>
 
                     <SapRow>
-                      <FloatingField label="Description" span={12} filled={!!recordingLine.description}>
+                      <FloatingField
+                        label="Description"
+                        span={12}
+                        filled={!!recordingLine.description}
+                      >
                         <input
                           type="text"
                           name="description"
@@ -5517,7 +6376,9 @@ export function BankReconciliationEnhanced({
                   <div className="space-y-3">
                     <SapRow>
                       <FloatingField label="Loan" span={12} required filled={!!repaymentLoanId}>
-                        <select name="loan" aria-label="Loan"
+                        <select
+                          name="loan"
+                          aria-label="Loan"
                           value={repaymentLoanId}
                           onChange={(e) => setRepaymentLoanId(e.target.value)}
                           className={FLOAT_INPUT}
@@ -5525,64 +6386,113 @@ export function BankReconciliationEnhanced({
                         >
                           <option value="">Select active loan...</option>
                           {activeLoans
-                            .filter(loan => loan.currency === recordingLine.currency && (!loan.loan_type || loan.loan_type === 'taken'))
-                            .map(loan => (
+                            .filter(
+                              (loan) =>
+                                loan.currency === recordingLine.currency &&
+                                (!loan.loan_type || loan.loan_type === 'taken')
+                            )
+                            .map((loan) => (
                               <option key={loan.id} value={loan.id}>
-                                {loan.loan_number} — {loan.counterparty_name} — {formatCurrency(loan.outstanding_balance, loan.currency)} outstanding
+                                {loan.loan_number} — {loan.counterparty_name} —{' '}
+                                {formatCurrency(loan.outstanding_balance, loan.currency)}{' '}
+                                outstanding
                               </option>
                             ))}
                         </select>
                       </FloatingField>
                     </SapRow>
                     <SapRow>
-                      <FloatingField label="Principal" span={6} required filled={!!repaymentPrincipal}>
-                        <MoneyInput decimal value={repaymentPrincipal}
+                      <FloatingField
+                        label="Principal"
+                        span={6}
+                        required
+                        filled={!!repaymentPrincipal}
+                      >
+                        <MoneyInput
+                          decimal
+                          value={repaymentPrincipal}
                           onChange={(n) => setRepaymentPrincipal(n)}
-                          className={FLOAT_INPUT} />
+                          className={FLOAT_INPUT}
+                        />
                       </FloatingField>
                       <FloatingField label="Interest" span={6} filled={!!repaymentInterest}>
-                        <MoneyInput decimal value={repaymentInterest}
+                        <MoneyInput
+                          decimal
+                          value={repaymentInterest}
                           onChange={(n) => setRepaymentInterest(n)}
-                          className={FLOAT_INPUT} />
+                          className={FLOAT_INPUT}
+                        />
                       </FloatingField>
                     </SapRow>
-                    <button type="button" onClick={() => handleRecordLoanRepayment(recordingLine)}
-                      className="w-full py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+                    <button
+                      type="button"
+                      onClick={() => handleRecordLoanRepayment(recordingLine)}
+                      className="w-full py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                    >
                       Record Loan Repayment
                     </button>
                   </div>
                 ) : recordDirectorLoanWithdrawal ? (
                   <div className="space-y-3">
-                    <p className="text-xs text-gray-500">Post this bank debit to an existing Director Loan COA. This creates a normal bank-linked journal only.</p>
+                    <p className="text-xs text-gray-500">
+                      Post this bank debit to an existing Director Loan COA. This creates a normal
+                      bank-linked journal only.
+                    </p>
                     <SapRow>
-                      <FloatingField label="Director / Owner loan ledger" span={12} required filled={!!directorLoanAccountId}>
+                      <FloatingField
+                        label="Director / Owner loan ledger"
+                        span={12}
+                        required
+                        filled={!!directorLoanAccountId}
+                      >
                         <SearchableSelect
                           value={directorLoanAccountId}
                           onChange={setDirectorLoanAccountId}
-                          options={directorLoanAccounts.map(option => ({ value: option.account.id, label: directorOwnerName(option) }))}
+                          options={directorLoanAccounts.map((option) => ({
+                            value: option.account.id,
+                            label: directorOwnerName(option),
+                          }))}
                           placeholder="Select existing Director / Owner..."
                         />
                       </FloatingField>
                     </SapRow>
-                    {directorLoanAccountId && (() => {
-                      const option = directorLoanAccounts.find(item => item.account.id === directorLoanAccountId);
-                      return option ? <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700"><span className="font-medium">Account:</span> <span className="font-mono">{option.account.code}</span> — {option.account.name}</div> : null;
-                    })()}
-                    <button type="button" onClick={() => handleRecordDirectorLoanWithdrawal(recordingLine)} disabled={!directorLoanAccountId}
-                      className="w-full py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50">
+                    {directorLoanAccountId &&
+                      (() => {
+                        const option = directorLoanAccounts.find(
+                          (item) => item.account.id === directorLoanAccountId
+                        );
+                        return option ? (
+                          <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                            <span className="font-medium">Account:</span>{' '}
+                            <span className="font-mono">{option.account.code}</span> —{' '}
+                            {option.account.name}
+                          </div>
+                        ) : null;
+                      })()}
+                    <button
+                      type="button"
+                      onClick={() => handleRecordDirectorLoanWithdrawal(recordingLine)}
+                      disabled={!directorLoanAccountId}
+                      className="w-full py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50"
+                    >
                       Record Director Loan Withdrawal
                     </button>
                   </div>
                 ) : linkSettleBills ? (
                   <div className="space-y-3">
                     <p className="text-xs text-gray-500">
-                      Pay one or more outstanding bills with this bank debit. A posted Payment Voucher is created and linked automatically. Bills of one supplier or one staff member per payment.
+                      Pay one or more outstanding bills with this bank debit. A posted Payment
+                      Voucher is created and linked automatically. Bills of one supplier or one
+                      staff member per payment.
                     </p>
                     {loadingBills ? (
-                      <div className="flex justify-center py-4"><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-emerald-600" /></div>
+                      <div className="flex justify-center py-4">
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-emerald-600" />
+                      </div>
                     ) : outstandingBills.length === 0 ? (
                       <div className="p-3 text-center text-gray-500 text-sm border rounded-lg">
-                        No outstanding supplier or staff bills found. Bills without a payee can be linked via "Link Expense".
+                        No outstanding supplier or staff bills found. Bills without a payee can be
+                        linked via "Link Expense".
                       </div>
                     ) : (
                       <>
@@ -5591,37 +6501,69 @@ export function BankReconciliationEnhanced({
                             <thead className="bg-emerald-50 sticky top-0">
                               <tr>
                                 <th className="px-2 py-1.5"></th>
-                                <th className="px-2 py-1.5 text-left font-medium text-emerald-700">Payee / Invoice</th>
-                                <th className="px-2 py-1.5 text-right font-medium text-emerald-700">Outstanding</th>
-                                <th className="px-2 py-1.5 text-right font-medium text-emerald-700">Pay Now</th>
+                                <th className="px-2 py-1.5 text-left font-medium text-emerald-700">
+                                  Payee / Invoice
+                                </th>
+                                <th className="px-2 py-1.5 text-right font-medium text-emerald-700">
+                                  Outstanding
+                                </th>
+                                <th className="px-2 py-1.5 text-right font-medium text-emerald-700">
+                                  Pay Now
+                                </th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-emerald-100">
-                              {outstandingBills.map(bill => {
-                                const alloc = billAllocations.find(a => a.expenseId === bill.id);
+                              {outstandingBills.map((bill) => {
+                                const alloc = billAllocations.find((a) => a.expenseId === bill.id);
                                 return (
-                                  <tr key={bill.id} className={alloc ? 'bg-emerald-50/60' : bill.days_overdue > 0 ? 'bg-red-50/50' : ''}>
+                                  <tr
+                                    key={bill.id}
+                                    className={
+                                      alloc
+                                        ? 'bg-emerald-50/60'
+                                        : bill.days_overdue > 0
+                                          ? 'bg-red-50/50'
+                                          : ''
+                                    }
+                                  >
                                     <td className="px-2 py-1.5 text-center">
-                                      <input name="checkbox" aria-label="Checkbox"
+                                      <input
+                                        name="checkbox"
+                                        aria-label="Checkbox"
                                         type="checkbox"
                                         checked={!!alloc}
-                                        onChange={() => toggleBillAllocation(bill, recordingLine.debit)}
+                                        onChange={() =>
+                                          toggleBillAllocation(bill, recordingLine.debit)
+                                        }
                                         className="accent-emerald-600"
                                       />
                                     </td>
                                     <td className="px-2 py-1.5">
                                       <div className="font-medium text-gray-800">
                                         {bill.supplier_name || bill.staff_name}
-                                        {!bill.supplier_name && bill.staff_name && <span className="ml-1 text-[9px] text-teal-600 font-semibold">STAFF</span>}
+                                        {!bill.supplier_name && bill.staff_name && (
+                                          <span className="ml-1 text-[9px] text-teal-600 font-semibold">
+                                            STAFF
+                                          </span>
+                                        )}
                                       </div>
-                                      <div className="text-gray-500 font-mono">{bill.invoice_number || bill.id.slice(0, 8)}</div>
+                                      <div className="text-gray-500 font-mono">
+                                        {bill.invoice_number || bill.id.slice(0, 8)}
+                                      </div>
                                       <div className="text-gray-400">
                                         {new Date(bill.invoice_date).toLocaleDateString('id-ID')}
-                                        {bill.days_overdue > 0 && <span className="text-red-500 ml-1">{bill.days_overdue}d overdue</span>}
+                                        {bill.days_overdue > 0 && (
+                                          <span className="text-red-500 ml-1">
+                                            {bill.days_overdue}d overdue
+                                          </span>
+                                        )}
                                       </div>
                                     </td>
                                     <td className="px-2 py-1.5 text-right font-medium text-red-600">
-                                      {formatCurrency(bill.balance_amount, 'IDR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                      {formatCurrency(bill.balance_amount, 'IDR', {
+                                        minimumFractionDigits: 0,
+                                        maximumFractionDigits: 0,
+                                      })}
                                     </td>
                                     <td className="px-2 py-1.5 text-right">
                                       {alloc && (
@@ -5630,7 +6572,12 @@ export function BankReconciliationEnhanced({
                                           min={0}
                                           max={bill.balance_amount}
                                           value={alloc.amount}
-                                          onChange={(n) => setBillAllocationAmount(bill.id, Math.min(n, bill.balance_amount))}
+                                          onChange={(n) =>
+                                            setBillAllocationAmount(
+                                              bill.id,
+                                              Math.min(n, bill.balance_amount)
+                                            )
+                                          }
                                           className="w-24 px-2 py-1 border border-emerald-300 rounded text-right focus:border-emerald-500 outline-none"
                                         />
                                       )}
@@ -5646,13 +6593,26 @@ export function BankReconciliationEnhanced({
                           const diff = recordingLine.debit - total;
                           return (
                             <div className="flex items-center justify-between text-xs font-medium">
-                              <span className={Math.abs(diff) < 0.01 ? 'text-emerald-700' : diff < 0 ? 'text-red-600' : 'text-amber-600'}>
-                                Allocated: {formatCurrency(total, recordingLine.currency)} / {formatCurrency(recordingLine.debit, recordingLine.currency)}
-                                {Math.abs(diff) >= 0.01 && ` (${diff > 0 ? 'under' : 'over'} by ${formatCurrency(Math.abs(diff), recordingLine.currency)})`}
+                              <span
+                                className={
+                                  Math.abs(diff) < 0.01
+                                    ? 'text-emerald-700'
+                                    : diff < 0
+                                      ? 'text-red-600'
+                                      : 'text-amber-600'
+                                }
+                              >
+                                Allocated: {formatCurrency(total, recordingLine.currency)} /{' '}
+                                {formatCurrency(recordingLine.debit, recordingLine.currency)}
+                                {Math.abs(diff) >= 0.01 &&
+                                  ` (${diff > 0 ? 'under' : 'over'} by ${formatCurrency(Math.abs(diff), recordingLine.currency)})`}
                               </span>
                               <button
                                 onClick={() => handleSettleBills(recordingLine)}
-                                disabled={settleSubmitting || billAllocations.filter(a => a.amount > 0).length === 0}
+                                disabled={
+                                  settleSubmitting ||
+                                  billAllocations.filter((a) => a.amount > 0).length === 0
+                                }
                                 className="py-2 px-4 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-medium"
                               >
                                 {settleSubmitting ? 'Settling…' : 'Create Voucher & Link'}
@@ -5665,12 +6625,17 @@ export function BankReconciliationEnhanced({
                   </div>
                 ) : linkJournalEntry ? (
                   <div className="space-y-3">
-                    <p className="text-xs text-gray-500">Select a journal entry to link to this bank transaction (matching amount, +/-7 days).</p>
+                    <p className="text-xs text-gray-500">
+                      Select a journal entry to link to this bank transaction (matching amount, +/-7
+                      days).
+                    </p>
                     <div className="max-h-48 overflow-y-auto border rounded-lg divide-y">
                       {visiblePickerCandidates(availableJournals).length === 0 ? (
-                        <div className="p-3 text-center text-gray-500 text-sm">No matching journal entries found</div>
+                        <div className="p-3 text-center text-gray-500 text-sm">
+                          No matching journal entries found
+                        </div>
                       ) : (
-                        visiblePickerCandidates(availableJournals).map(j => (
+                        visiblePickerCandidates(availableJournals).map((j) => (
                           <button
                             key={j.id}
                             onClick={() => handleLinkJournalEntry(recordingLine, j.id)}
@@ -5678,16 +6643,25 @@ export function BankReconciliationEnhanced({
                             className="w-full p-2 text-left hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed text-sm flex justify-between items-center"
                           >
                             <div>
-                              <span className="font-mono font-medium text-blue-600">{j.entry_number}</span>
+                              <span className="font-mono font-medium text-blue-600">
+                                {j.entry_number}
+                              </span>
                               <span className="text-xs ml-2 px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">
                                 {j.source_module === 'manual' ? 'Manual' : j.source_module}
                               </span>
                               <div className="text-xs text-gray-500 mt-0.5">{j.description}</div>
-                              <div className="text-xs text-gray-400">{new Date(j.entry_date).toLocaleDateString('id-ID')}</div>
-                              {j._linked && <div className="text-xs text-amber-700">Already linked</div>}
+                              <div className="text-xs text-gray-400">
+                                {new Date(j.entry_date).toLocaleDateString('id-ID')}
+                              </div>
+                              {j._linked && (
+                                <div className="text-xs text-amber-700">Already linked</div>
+                              )}
                             </div>
                             <span className="font-medium text-green-600">
-                              {formatCurrency(j.total_debit || j.total_credit, recordingLine.currency)}
+                              {formatCurrency(
+                                j.total_debit || j.total_credit,
+                                recordingLine.currency
+                              )}
                             </span>
                           </button>
                         ))
@@ -5696,13 +6670,19 @@ export function BankReconciliationEnhanced({
                   </div>
                 ) : linkToSupplierPayment ? (
                   <div className="space-y-3">
-                    <p className="text-xs text-gray-500">Select a supplier payment voucher to link to this bank debit.</p>
+                    <p className="text-xs text-gray-500">
+                      Select a supplier payment voucher to link to this bank debit.
+                    </p>
                     {loadingSupplierPayments ? (
-                      <div className="flex justify-center py-4"><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-orange-600" /></div>
+                      <div className="flex justify-center py-4">
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-orange-600" />
+                      </div>
                     ) : (
                       <div className="max-h-56 overflow-y-auto border rounded-lg divide-y">
                         {visiblePickerCandidates(supplierPayments).length === 0 ? (
-                          <div className="p-3 text-center text-gray-500 text-sm">No matching supplier payments found</div>
+                          <div className="p-3 text-center text-gray-500 text-sm">
+                            No matching supplier payments found
+                          </div>
                         ) : (
                           visiblePickerCandidates(supplierPayments).map((pv: any) => (
                             <button
@@ -5712,15 +6692,41 @@ export function BankReconciliationEnhanced({
                               className="w-full p-3 text-left hover:bg-orange-50 disabled:opacity-50 disabled:cursor-not-allowed text-sm flex justify-between items-center"
                             >
                               <div>
-                                <span className="font-mono font-medium text-orange-700">{pv.voucher_number}</span>
-                                <div className="text-xs text-gray-500 mt-0.5">{pv.suppliers?.company_name || pv.finance_staff_master?.full_name}</div>
-                                <div className="text-xs text-gray-400">{new Date(pv.voucher_date).toLocaleDateString('id-ID')}</div>
-                                {pv._linked && <div className="text-xs text-amber-700">Already linked</div>}
+                                <span className="font-mono font-medium text-orange-700">
+                                  {pv.voucher_number}
+                                </span>
+                                <div className="text-xs text-gray-500 mt-0.5">
+                                  {pv.suppliers?.company_name || pv.finance_staff_master?.full_name}
+                                </div>
+                                <div className="text-xs text-gray-400">
+                                  {new Date(pv.voucher_date).toLocaleDateString('id-ID')}
+                                </div>
+                                {pv._linked && (
+                                  <div className="text-xs text-amber-700">Already linked</div>
+                                )}
                               </div>
                               <div className="text-right">
-                                <div className="font-medium text-red-600">{formatCurrency(pv.bank_amount && Number(pv.bank_amount) > 0 ? pv.bank_amount : pv.net_amount, recordingLine.currency)}</div>
-                                {pv.bank_amount && Number(pv.bank_amount) > 0 && Number(pv.bank_amount) !== Number(pv.amount) && <div className="text-xs text-blue-500">Invoice: {formatCurrency(pv.amount, pv.payment_currency || 'USD')}</div>}
-                                {pv.pph_amount > 0 && <div className="text-xs text-orange-500">PPh: {formatCurrency(pv.pph_amount, recordingLine.currency)}</div>}
+                                <div className="font-medium text-red-600">
+                                  {formatCurrency(
+                                    pv.bank_amount && Number(pv.bank_amount) > 0
+                                      ? pv.bank_amount
+                                      : pv.net_amount,
+                                    recordingLine.currency
+                                  )}
+                                </div>
+                                {pv.bank_amount &&
+                                  Number(pv.bank_amount) > 0 &&
+                                  Number(pv.bank_amount) !== Number(pv.amount) && (
+                                    <div className="text-xs text-blue-500">
+                                      Invoice:{' '}
+                                      {formatCurrency(pv.amount, pv.payment_currency || 'USD')}
+                                    </div>
+                                  )}
+                                {pv.pph_amount > 0 && (
+                                  <div className="text-xs text-orange-500">
+                                    PPh: {formatCurrency(pv.pph_amount, recordingLine.currency)}
+                                  </div>
+                                )}
                               </div>
                             </button>
                           ))
@@ -5730,9 +6736,14 @@ export function BankReconciliationEnhanced({
                   </div>
                 ) : linkToTaxPayment ? (
                   <div className="space-y-3">
-                    <p className="text-xs text-gray-500">Select a posted tax payment to link to this bank debit (matching bank account, amount within Rp 1, within ±7 days).</p>
+                    <p className="text-xs text-gray-500">
+                      Select a posted tax payment to link to this bank debit (matching bank account,
+                      amount within Rp 1, within ±7 days).
+                    </p>
                     {visiblePickerCandidates(availableTaxPayments).length === 0 ? (
-                      <div className="p-3 text-center text-gray-500 text-sm border rounded-lg">No matching tax payments found</div>
+                      <div className="p-3 text-center text-gray-500 text-sm border rounded-lg">
+                        No matching tax payments found
+                      </div>
                     ) : (
                       <div className="max-h-56 overflow-y-auto border rounded-lg divide-y">
                         {visiblePickerCandidates(availableTaxPayments).map((tp: any) => (
@@ -5744,14 +6755,32 @@ export function BankReconciliationEnhanced({
                           >
                             <div>
                               <span className="font-medium text-purple-700">{tp.tax_type}</span>
-                              {tp.billing_code && <span className="text-xs ml-2 text-gray-500 font-mono">{tp.billing_code}</span>}
-                              <div className="text-xs text-gray-400">{new Date(tp.payment_date).toLocaleDateString('id-ID')}</div>
-                              {tp.ntpn && <div className="text-xs text-gray-400 font-mono">NTPN: {tp.ntpn}</div>}
-                              {tp._linked && <div className="text-xs text-amber-700">Already linked</div>}
+                              {tp.billing_code && (
+                                <span className="text-xs ml-2 text-gray-500 font-mono">
+                                  {tp.billing_code}
+                                </span>
+                              )}
+                              <div className="text-xs text-gray-400">
+                                {new Date(tp.payment_date).toLocaleDateString('id-ID')}
+                              </div>
+                              {tp.ntpn && (
+                                <div className="text-xs text-gray-400 font-mono">
+                                  NTPN: {tp.ntpn}
+                                </div>
+                              )}
+                              {tp._linked && (
+                                <div className="text-xs text-amber-700">Already linked</div>
+                              )}
                             </div>
                             <div className="text-right">
-                              <div className="font-medium text-red-600">{formatCurrency(tp.amount, 'IDR')}</div>
-                              <div className={`text-xs px-1.5 py-0.5 rounded font-medium ${tp.status === 'posted' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>{tp.status}</div>
+                              <div className="font-medium text-red-600">
+                                {formatCurrency(tp.amount, 'IDR')}
+                              </div>
+                              <div
+                                className={`text-xs px-1.5 py-0.5 rounded font-medium ${tp.status === 'posted' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}
+                              >
+                                {tp.status}
+                              </div>
                             </div>
                           </button>
                         ))}
@@ -5763,7 +6792,10 @@ export function BankReconciliationEnhanced({
                     <div className="border-b pb-2">
                       <h4 className="font-semibold text-sm text-slate-800">RECORD AS EXPENSE</h4>
                       <p className="text-xs text-slate-500">
-                        Opens the full SAPJ Expense form supporting Category, Utility (e.g. PT. PAM JAYA - water), billing date, billing month, billing reference, amount, PPN, PPH withholding/code, invoice description, payment method, currency, and original bill/receipt attachments.
+                        Opens the full SAPJ Expense form supporting Category, Utility (e.g. PT. PAM
+                        JAYA - water), billing date, billing month, billing reference, amount, PPN,
+                        PPH withholding/code, invoice description, payment method, currency, and
+                        original bill/receipt attachments.
                       </p>
                     </div>
 
@@ -5774,15 +6806,28 @@ export function BankReconciliationEnhanced({
                           <span>Existing Expense Found For This Transaction</span>
                         </div>
                         <div className="text-xs text-amber-800">
-                          Expense <strong>{recordingLine.matchedExpense.voucher_number || 'Expense'}</strong> ({formatCurrency(recordingLine.matchedExpense.amount, recordingLine.currency)} · {recordingLine.matchedExpense.description}) was previously created for this bank transaction.
+                          Expense{' '}
+                          <strong>
+                            {recordingLine.matchedExpense.voucher_number || 'Expense'}
+                          </strong>{' '}
+                          (
+                          {formatCurrency(
+                            recordingLine.matchedExpense.amount,
+                            recordingLine.currency
+                          )}{' '}
+                          · {recordingLine.matchedExpense.description}) was previously created for
+                          this bank transaction.
                         </div>
                         <button
                           type="button"
-                          onClick={() => handleLinkToExpense(recordingLine, recordingLine.matchedExpenseId!)}
+                          onClick={() =>
+                            handleLinkToExpense(recordingLine, recordingLine.matchedExpenseId!)
+                          }
                           className="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white rounded font-medium text-xs flex items-center justify-center gap-1.5 shadow-sm"
                         >
                           <Link2 className="w-3.5 h-3.5" />
-                          Link to Existing {recordingLine.matchedExpense.voucher_number || 'Expense'}
+                          Link to Existing{' '}
+                          {recordingLine.matchedExpense.voucher_number || 'Expense'}
                         </button>
                       </div>
                     )}
@@ -5790,20 +6835,28 @@ export function BankReconciliationEnhanced({
                     <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs space-y-1.5">
                       <div className="flex justify-between">
                         <span className="text-slate-500">Billing Date:</span>
-                        <span className="font-medium text-slate-800">{new Date(recordingLine.date).toLocaleDateString('id-ID')}</span>
+                        <span className="font-medium text-slate-800">
+                          {new Date(recordingLine.date).toLocaleDateString('id-ID')}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-500">Debit Amount:</span>
-                        <span className="font-bold text-red-600">{formatCurrency(recordingLine.debit, recordingLine.currency)}</span>
+                        <span className="font-bold text-red-600">
+                          {formatCurrency(recordingLine.debit, recordingLine.currency)}
+                        </span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-slate-500">Invoice Description:</span>
-                        <span className="font-medium text-slate-800 text-right max-w-[260px] truncate">{recordingLine.description}</span>
+                        <span className="font-medium text-slate-800 text-right max-w-[260px] truncate">
+                          {recordingLine.description}
+                        </span>
                       </div>
                       {recordingLine.reference && (
                         <div className="flex justify-between">
                           <span className="text-slate-500">Billing Reference:</span>
-                          <span className="font-mono text-slate-700">{recordingLine.reference}</span>
+                          <span className="font-mono text-slate-700">
+                            {recordingLine.reference}
+                          </span>
                         </div>
                       )}
                       <div className="flex justify-between">
@@ -5872,7 +6925,13 @@ export function BankReconciliationEnhanced({
                     className="space-y-3"
                   >
                     <SapRow>
-                      <FloatingField label="Select Expense" span={12} required filled={false} hint={`Showing ${visibleExpenseCandidates(expenses).length} available expense${visibleExpenseCandidates(expenses).length !== 1 ? 's' : ''}. Match by voucher number or amount.`}>
+                      <FloatingField
+                        label="Select Expense"
+                        span={12}
+                        required
+                        filled={false}
+                        hint={`Showing ${visibleExpenseCandidates(expenses).length} available expense${visibleExpenseCandidates(expenses).length !== 1 ? 's' : ''}. Match by voucher number or amount.`}
+                      >
                         <select
                           name="expense_id"
                           required
@@ -5880,9 +6939,11 @@ export function BankReconciliationEnhanced({
                           disabled={visibleExpenseCandidates(expenses).length === 0}
                         >
                           <option value="">
-                            {visibleExpenseCandidates(expenses).length === 0 ? 'No available expenses found' : 'Choose an expense...'}
+                            {visibleExpenseCandidates(expenses).length === 0
+                              ? 'No available expenses found'
+                              : 'Choose an expense...'}
                           </option>
-                          {visibleExpenseCandidates(expenses).map(expense => {
+                          {visibleExpenseCandidates(expenses).map((expense) => {
                             // Format date as DD/MM/YY
                             const date = new Date(expense.expense_date);
                             const dd = String(date.getDate()).padStart(2, '0');
@@ -5891,10 +6952,18 @@ export function BankReconciliationEnhanced({
                             const formattedDate = `${dd}/${mm}/${yy}`;
 
                             return (
-                              <option key={expense.id} value={expense.id} disabled={!expenseCanAcceptLink(expense)}>
-                                {formattedDate} - {expense.voucher_number ? `[${expense.voucher_number}] ` : ''}
+                              <option
+                                key={expense.id}
+                                value={expense.id}
+                                disabled={!expenseCanAcceptLink(expense)}
+                              >
+                                {formattedDate} -{' '}
+                                {expense.voucher_number ? `[${expense.voucher_number}] ` : ''}
                                 {expense.description} -
-                                {formatCurrency(calculateCanonicalCashPayable(expense), recordingLine.currency)}
+                                {formatCurrency(
+                                  calculateCanonicalCashPayable(expense),
+                                  recordingLine.currency
+                                )}
                                 {!expenseCanAcceptLink(expense) ? ' (already settled)' : ''}
                               </option>
                             );
@@ -5903,10 +6972,20 @@ export function BankReconciliationEnhanced({
                       </FloatingField>
                     </SapRow>
                     <SapRow>
-                      <FloatingField label="Payment Kind" span={12} required filled={!!linkPaymentKind} hint="Choose PPh23 only when this bank line is the withholding tax being remitted to the government.">
-                        <select name="payment_kind" aria-label="Payment Kind"
+                      <FloatingField
+                        label="Payment Kind"
+                        span={12}
+                        required
+                        filled={!!linkPaymentKind}
+                        hint="Choose PPh23 only when this bank line is the withholding tax being remitted to the government."
+                      >
+                        <select
+                          name="payment_kind"
+                          aria-label="Payment Kind"
                           value={linkPaymentKind}
-                          onChange={(e) => setLinkPaymentKind(e.target.value as 'supplier' | 'pph23')}
+                          onChange={(e) =>
+                            setLinkPaymentKind(e.target.value as 'supplier' | 'pph23')
+                          }
                           className={FLOAT_INPUT}
                         >
                           <option value="supplier">Supplier Payment</option>
@@ -5932,14 +7011,16 @@ export function BankReconciliationEnhanced({
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
-                      onClick={() => onRecordContra?.({
-                        bankAccountId: selectedBank,
-                        statementLineId: recordingLine.id,
-                        date: recordingLine.date,
-                        amount: recordingLine.credit,
-                        description: recordingLine.description,
-                        direction: 'to',
-                      })}
+                      onClick={() =>
+                        onRecordContra?.({
+                          bankAccountId: selectedBank,
+                          statementLineId: recordingLine.id,
+                          date: recordingLine.date,
+                          amount: recordingLine.credit,
+                          description: recordingLine.description,
+                          direction: 'to',
+                        })
+                      }
                       className="text-xs text-cyan-700 hover:underline"
                     >
                       Record Contra
@@ -6083,12 +7164,16 @@ export function BankReconciliationEnhanced({
 
                 {linkExistingReceipt ? (
                   <div className="space-y-3">
-                    <p className="text-xs text-gray-500">Select an existing receipt voucher to link to this bank statement line.</p>
+                    <p className="text-xs text-gray-500">
+                      Select an existing receipt voucher to link to this bank statement line.
+                    </p>
                     <div className="max-h-48 overflow-y-auto border rounded-lg divide-y">
                       {visiblePickerCandidates(existingReceipts).length === 0 ? (
-                        <div className="p-3 text-center text-gray-500 text-sm">No receipt vouchers found</div>
+                        <div className="p-3 text-center text-gray-500 text-sm">
+                          No receipt vouchers found
+                        </div>
                       ) : (
-                        visiblePickerCandidates(existingReceipts).map(r => (
+                        visiblePickerCandidates(existingReceipts).map((r) => (
                           <button
                             key={r.id}
                             onClick={() => handleLinkExistingReceipt(recordingLine, r.id)}
@@ -6097,9 +7182,15 @@ export function BankReconciliationEnhanced({
                           >
                             <div>
                               <span className="font-mono font-medium">{r.voucher_number}</span>
-                              <span className="text-gray-500 ml-2">{r.customers?.company_name}</span>
-                              <div className="text-xs text-gray-400">{new Date(r.voucher_date).toLocaleDateString('id-ID')}</div>
-                              {r._linked && <div className="text-xs text-amber-700">Already linked</div>}
+                              <span className="text-gray-500 ml-2">
+                                {r.customers?.company_name}
+                              </span>
+                              <div className="text-xs text-gray-400">
+                                {new Date(r.voucher_date).toLocaleDateString('id-ID')}
+                              </div>
+                              {r._linked && (
+                                <div className="text-xs text-amber-700">Already linked</div>
+                              )}
                             </div>
                             <span className="font-medium text-green-600">
                               {formatCurrency(r.amount, recordingLine.currency)}
@@ -6111,12 +7202,17 @@ export function BankReconciliationEnhanced({
                   </div>
                 ) : linkJournalEntry ? (
                   <div className="space-y-3">
-                    <p className="text-xs text-gray-500">Select a journal entry to link to this bank transaction (matching amount, +/-7 days).</p>
+                    <p className="text-xs text-gray-500">
+                      Select a journal entry to link to this bank transaction (matching amount, +/-7
+                      days).
+                    </p>
                     <div className="max-h-48 overflow-y-auto border rounded-lg divide-y">
                       {visiblePickerCandidates(availableJournals).length === 0 ? (
-                        <div className="p-3 text-center text-gray-500 text-sm">No matching journal entries found</div>
+                        <div className="p-3 text-center text-gray-500 text-sm">
+                          No matching journal entries found
+                        </div>
                       ) : (
-                        visiblePickerCandidates(availableJournals).map(j => (
+                        visiblePickerCandidates(availableJournals).map((j) => (
                           <button
                             key={j.id}
                             onClick={() => handleLinkJournalEntry(recordingLine, j.id)}
@@ -6124,16 +7220,25 @@ export function BankReconciliationEnhanced({
                             className="w-full p-2 text-left hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed text-sm flex justify-between items-center"
                           >
                             <div>
-                              <span className="font-mono font-medium text-blue-600">{j.entry_number}</span>
+                              <span className="font-mono font-medium text-blue-600">
+                                {j.entry_number}
+                              </span>
                               <span className="text-xs ml-2 px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">
                                 {j.source_module === 'manual' ? 'Manual' : j.source_module}
                               </span>
                               <div className="text-xs text-gray-500 mt-0.5">{j.description}</div>
-                              <div className="text-xs text-gray-400">{new Date(j.entry_date).toLocaleDateString('id-ID')}</div>
-                              {j._linked && <div className="text-xs text-amber-700">Already linked</div>}
+                              <div className="text-xs text-gray-400">
+                                {new Date(j.entry_date).toLocaleDateString('id-ID')}
+                              </div>
+                              {j._linked && (
+                                <div className="text-xs text-amber-700">Already linked</div>
+                              )}
                             </div>
                             <span className="font-medium text-green-600">
-                              {formatCurrency(j.total_debit || j.total_credit, recordingLine.currency)}
+                              {formatCurrency(
+                                j.total_debit || j.total_credit,
+                                recordingLine.currency
+                              )}
                             </span>
                           </button>
                         ))
@@ -6200,8 +7305,12 @@ export function BankReconciliationEnhanced({
                       <div className="space-y-4 bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
                         <div className="border-b pb-2 flex items-center justify-between">
                           <div>
-                            <h4 className="font-semibold text-sm text-slate-800">DIRECTOR / RELATED PARTY TRANSACTION</h4>
-                            <p className="text-xs text-slate-500">Money moving between Director / Owner and SAPJ</p>
+                            <h4 className="font-semibold text-sm text-slate-800">
+                              DIRECTOR / RELATED PARTY TRANSACTION
+                            </h4>
+                            <p className="text-xs text-slate-500">
+                              Money moving between Director / Owner and SAPJ
+                            </p>
                           </div>
                           <span className="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-100 text-emerald-800">
                             Money Received From Director (Cash Inflow)
@@ -6211,27 +7320,49 @@ export function BankReconciliationEnhanced({
                         {/* Live Balance Summary */}
                         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
                           <div className="flex items-center justify-between text-xs text-slate-600 mb-2">
-                            <span className="font-medium">Director Position ({selectedDirectorName}):</span>
-                            {loadingDirectorSummary && <span className="text-slate-400">Loading live balances...</span>}
+                            <span className="font-medium">
+                              Director Position ({selectedDirectorName}):
+                            </span>
+                            {loadingDirectorSummary && (
+                              <span className="text-slate-400">Loading live balances...</span>
+                            )}
                           </div>
                           {directorSummary && (
                             <div className="grid grid-cols-3 gap-2 text-center">
                               <div className="bg-white p-2 rounded border border-slate-200">
-                                <span className="block text-[11px] text-slate-500 font-medium">Due TO Director (2105)</span>
+                                <span className="block text-[11px] text-slate-500 font-medium">
+                                  Due TO Director (2105)
+                                </span>
                                 <span className="text-xs font-bold text-rose-600">
-                                  {formatCurrency(directorSummary.due_to_director, recordingLine.currency)}
+                                  {formatCurrency(
+                                    directorSummary.due_to_director,
+                                    recordingLine.currency
+                                  )}
                                 </span>
                               </div>
                               <div className="bg-white p-2 rounded border border-slate-200">
-                                <span className="block text-[11px] text-slate-500 font-medium">Due FROM Director (1310)</span>
+                                <span className="block text-[11px] text-slate-500 font-medium">
+                                  Due FROM Director (1310)
+                                </span>
                                 <span className="text-xs font-bold text-blue-600">
-                                  {formatCurrency(directorSummary.due_from_director, recordingLine.currency)}
+                                  {formatCurrency(
+                                    directorSummary.due_from_director,
+                                    recordingLine.currency
+                                  )}
                                 </span>
                               </div>
                               <div className="bg-white p-2 rounded border border-slate-200">
-                                <span className="block text-[11px] text-slate-500 font-medium">Net Position</span>
-                                <span className={`text-xs font-bold ${directorSummary.net_status === 'payable' ? 'text-rose-700' : directorSummary.net_status === 'receivable' ? 'text-blue-700' : 'text-slate-700'}`}>
-                                  {formatCurrency(directorSummary.net_position, recordingLine.currency)} ({directorSummary.net_status})
+                                <span className="block text-[11px] text-slate-500 font-medium">
+                                  Net Position
+                                </span>
+                                <span
+                                  className={`text-xs font-bold ${directorSummary.net_status === 'payable' ? 'text-rose-700' : directorSummary.net_status === 'receivable' ? 'text-blue-700' : 'text-slate-700'}`}
+                                >
+                                  {formatCurrency(
+                                    directorSummary.net_position,
+                                    recordingLine.currency
+                                  )}{' '}
+                                  ({directorSummary.net_status})
                                 </span>
                               </div>
                             </div>
@@ -6240,7 +7371,12 @@ export function BankReconciliationEnhanced({
 
                         {/* Form Fields */}
                         <SapRow>
-                          <FloatingField label="Director / Related Party" span={6} required filled={!!selectedDirectorName}>
+                          <FloatingField
+                            label="Director / Related Party"
+                            span={6}
+                            required
+                            filled={!!selectedDirectorName}
+                          >
                             <select
                               value={selectedDirectorName}
                               onChange={(e) => {
@@ -6274,7 +7410,11 @@ export function BankReconciliationEnhanced({
                         </SapRow>
 
                         <SapRow>
-                          <FloatingField label="Description / Notes" span={12} filled={!!directorNotes}>
+                          <FloatingField
+                            label="Description / Notes"
+                            span={12}
+                            filled={!!directorNotes}
+                          >
                             <input
                               type="text"
                               value={directorNotes}
@@ -6292,18 +7432,40 @@ export function BankReconciliationEnhanced({
                           </div>
                           {directorSummary && directorSummary.due_from_director > 0 ? (
                             <p>
-                              {selectedDirectorName} currently owes SAPJ {formatCurrency(directorSummary.due_from_director, recordingLine.currency)}.
-                              This receipt will <strong>settle Due from Director (Cr 1310)</strong> up to {formatCurrency(Math.min(recordingLine.credit, directorSummary.due_from_director), recordingLine.currency)}.
+                              {selectedDirectorName} currently owes SAPJ{' '}
+                              {formatCurrency(
+                                directorSummary.due_from_director,
+                                recordingLine.currency
+                              )}
+                              . This receipt will{' '}
+                              <strong>settle Due from Director (Cr 1310)</strong> up to{' '}
+                              {formatCurrency(
+                                Math.min(recordingLine.credit, directorSummary.due_from_director),
+                                recordingLine.currency
+                              )}
+                              .
                               {recordingLine.credit > directorSummary.due_from_director && (
-                                <span> The remaining {formatCurrency(recordingLine.credit - directorSummary.due_from_director, recordingLine.currency)} will be recorded as <strong>Director Funding (Cr 2105)</strong>.</span>
+                                <span>
+                                  {' '}
+                                  The remaining{' '}
+                                  {formatCurrency(
+                                    recordingLine.credit - directorSummary.due_from_director,
+                                    recordingLine.currency
+                                  )}{' '}
+                                  will be recorded as <strong>Director Funding (Cr 2105)</strong>.
+                                </span>
                               )}
                             </p>
                           ) : (
                             <p>
-                              No outstanding receivable from {selectedDirectorName}. This receipt will be recorded as <strong>Director Funding (Cr 2105 — Director Loan – Vijay)</strong>.
+                              No outstanding receivable from {selectedDirectorName}. This receipt
+                              will be recorded as{' '}
+                              <strong>Director Funding (Cr 2105 — Director Loan – Vijay)</strong>.
                             </p>
                           )}
-                          <p className="text-[11px] text-emerald-700 italic">Double-entry: Dr Bank, Cr 1310/2105. No P&L impact.</p>
+                          <p className="text-[11px] text-emerald-700 italic">
+                            Double-entry: Dr Bank, Cr 1310/2105. No P&L impact.
+                          </p>
                         </div>
 
                         <button
@@ -6312,13 +7474,20 @@ export function BankReconciliationEnhanced({
                           onClick={() => handleRecordDirectorRelatedParty(recordingLine)}
                           className="w-full py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm disabled:opacity-50"
                         >
-                          {recordingReceipt ? 'Recording...' : 'Record Money Received From Director'}
+                          {recordingReceipt
+                            ? 'Recording...'
+                            : 'Record Money Received From Director'}
                         </button>
                       </div>
                     )}
                     {receiptType === 'customer_payment' && (
                       <SapRow>
-                        <FloatingField label="Customer" span={12} required filled={!!receiptCustomerId}>
+                        <FloatingField
+                          label="Customer"
+                          span={12}
+                          required
+                          filled={!!receiptCustomerId}
+                        >
                           <SearchableSelect
                             value={receiptCustomerId}
                             onChange={(val) => {
@@ -6330,7 +7499,7 @@ export function BankReconciliationEnhanced({
                                 setReceiptInvoices([]);
                               }
                             }}
-                            options={customers.map(c => ({ value: c.id, label: c.company_name }))}
+                            options={customers.map((c) => ({ value: c.id, label: c.company_name }))}
                             placeholder="Select customer..."
                           />
                         </FloatingField>
@@ -6340,11 +7509,16 @@ export function BankReconciliationEnhanced({
                     {receiptType === 'loan_director_owner' && (
                       <div className="space-y-2">
                         <SapRow>
-                          <FloatingField label="Director / Owner" span={12} required filled={!!directorLoanAccountId}>
+                          <FloatingField
+                            label="Director / Owner"
+                            span={12}
+                            required
+                            filled={!!directorLoanAccountId}
+                          >
                             <SearchableSelect
                               value={directorLoanAccountId}
                               onChange={setDirectorLoanAccountId}
-                              options={directorLoanAccounts.map(option => ({
+                              options={directorLoanAccounts.map((option) => ({
                                 value: option.account.id,
                                 label: directorOwnerName(option),
                               }))}
@@ -6352,26 +7526,39 @@ export function BankReconciliationEnhanced({
                             />
                           </FloatingField>
                         </SapRow>
-                        {directorLoanAccountId && (() => {
-                          const option = directorLoanAccounts.find(item => item.account.id === directorLoanAccountId);
-                          return option ? (
-                            <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                              <span className="font-medium">Account:</span>{' '}
-                              <span className="font-mono">{option.account.code}</span> — {option.account.name}
-                            </div>
-                          ) : null;
-                        })()}
+                        {directorLoanAccountId &&
+                          (() => {
+                            const option = directorLoanAccounts.find(
+                              (item) => item.account.id === directorLoanAccountId
+                            );
+                            return option ? (
+                              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                                <span className="font-medium">Account:</span>{' '}
+                                <span className="font-mono">{option.account.code}</span> —{' '}
+                                {option.account.name}
+                              </div>
+                            ) : null;
+                          })()}
                         {directorLoanAccounts.length === 0 && (
-                          <p className="text-xs text-amber-700">No existing active Director/Owner loan ledger is available.</p>
+                          <p className="text-xs text-amber-700">
+                            No existing active Director/Owner loan ledger is available.
+                          </p>
                         )}
                       </div>
                     )}
 
                     {receiptType === 'loan' && (
                       <div className="space-y-3 bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
-                        <h4 className="font-semibold text-sm text-slate-800 border-b pb-2">RECORD AS LOAN</h4>
+                        <h4 className="font-semibold text-sm text-slate-800 border-b pb-2">
+                          RECORD AS LOAN
+                        </h4>
                         <div className="grid grid-cols-2 gap-3">
-                          <FloatingField label="Loan Direction" span={6} required filled={!!loanDirection}>
+                          <FloatingField
+                            label="Loan Direction"
+                            span={6}
+                            required
+                            filled={!!loanDirection}
+                          >
                             <select
                               value={loanDirection}
                               onChange={(e) => {
@@ -6385,7 +7572,12 @@ export function BankReconciliationEnhanced({
                               <option value="given">Loan Given / Receivable</option>
                             </select>
                           </FloatingField>
-                          <FloatingField label="Counterparty" span={6} required filled={!!loanCounterparty}>
+                          <FloatingField
+                            label="Counterparty"
+                            span={6}
+                            required
+                            filled={!!loanCounterparty}
+                          >
                             <input
                               type="text"
                               value={loanCounterparty}
@@ -6394,15 +7586,21 @@ export function BankReconciliationEnhanced({
                                 setLoanCounterparty(val);
                                 const cp = val.toLowerCase();
                                 if (loanDirection === 'taken') {
-                                  if (cp.includes('vijay') || cp.includes('lunkad') || cp.includes('director')) {
-                                    const a = loanAccounts.find(acc => acc.code === '2105');
+                                  if (
+                                    cp.includes('vijay') ||
+                                    cp.includes('lunkad') ||
+                                    cp.includes('director')
+                                  ) {
+                                    const a = loanAccounts.find((acc) => acc.code === '2105');
                                     if (a) setLoanCoaId(a.id);
-                                  } else if (cp.match(/bank|bca|mandiri|bni|bri|cimb|danamon|permata|uob/)) {
-                                    const a = loanAccounts.find(acc => acc.code === '2210');
+                                  } else if (
+                                    cp.match(/bank|bca|mandiri|bni|bri|cimb|danamon|permata|uob/)
+                                  ) {
+                                    const a = loanAccounts.find((acc) => acc.code === '2210');
                                     if (a) setLoanCoaId(a.id);
                                   }
                                 } else if (loanDirection === 'given') {
-                                  const a = loanAccounts.find(acc => acc.code === '1310');
+                                  const a = loanAccounts.find((acc) => acc.code === '1310');
                                   if (a) setLoanCoaId(a.id);
                                 }
                               }}
@@ -6414,7 +7612,17 @@ export function BankReconciliationEnhanced({
                         </div>
 
                         <SapRow>
-                          <FloatingField label="Account" span={12} required filled={!!loanCoaId} hint={loanDirection === 'given' ? 'Asset account for loan given (e.g. 1310 — Loan Receivable).' : 'Liability account for borrowings (e.g. 2105 Director Loan, 2210 Bank Loans).'}>
+                          <FloatingField
+                            label="Account"
+                            span={12}
+                            required
+                            filled={!!loanCoaId}
+                            hint={
+                              loanDirection === 'given'
+                                ? 'Asset account for loan given (e.g. 1310 — Loan Receivable).'
+                                : 'Liability account for borrowings (e.g. 2105 Director Loan, 2210 Bank Loans).'
+                            }
+                          >
                             <select
                               value={loanCoaId}
                               onChange={(e) => setLoanCoaId(e.target.value)}
@@ -6422,7 +7630,7 @@ export function BankReconciliationEnhanced({
                               className={FLOAT_INPUT}
                             >
                               <option value="">Select account...</option>
-                              {loanAccounts.map(acc => (
+                              {loanAccounts.map((acc) => (
                                 <option key={acc.id} value={acc.id}>
                                   {acc.code} — {acc.name}
                                 </option>
@@ -6435,17 +7643,34 @@ export function BankReconciliationEnhanced({
 
                     {receiptType === 'loan_repayment_received' && (
                       <div className="space-y-3 bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
-                        <h4 className="font-semibold text-sm text-slate-800 border-b pb-2">LOAN REPAYMENT RECEIVED</h4>
+                        <h4 className="font-semibold text-sm text-slate-800 border-b pb-2">
+                          LOAN REPAYMENT RECEIVED
+                        </h4>
                         <SapRow>
-                          <FloatingField label="Loan Being Returned" span={12} required filled={!!repaymentLoanId} hint={activeLoans.filter(l => l.currency === recordingLine.currency && l.loan_type === 'given').length === 0 ? 'No active loans given with outstanding balance found.' : undefined}>
+                          <FloatingField
+                            label="Loan Being Returned"
+                            span={12}
+                            required
+                            filled={!!repaymentLoanId}
+                            hint={
+                              activeLoans.filter(
+                                (l) =>
+                                  l.currency === recordingLine.currency && l.loan_type === 'given'
+                              ).length === 0
+                                ? 'No active loans given with outstanding balance found.'
+                                : undefined
+                            }
+                          >
                             <select
                               value={repaymentLoanId}
                               onChange={(e) => {
                                 const lid = e.target.value;
                                 setRepaymentLoanId(lid);
-                                const target = activeLoans.find(l => l.id === lid);
+                                const target = activeLoans.find((l) => l.id === lid);
                                 if (target) {
-                                  setRepaymentPrincipal(Math.min(recordingLine.credit, target.outstanding_balance));
+                                  setRepaymentPrincipal(
+                                    Math.min(recordingLine.credit, target.outstanding_balance)
+                                  );
                                   setRepaymentInterest(0);
                                 }
                               }}
@@ -6454,91 +7679,140 @@ export function BankReconciliationEnhanced({
                             >
                               <option value="">Select active loan given...</option>
                               {activeLoans
-                                .filter(loan => loan.currency === recordingLine.currency && loan.loan_type === 'given')
-                                .map(loan => (
+                                .filter(
+                                  (loan) =>
+                                    loan.currency === recordingLine.currency &&
+                                    loan.loan_type === 'given'
+                                )
+                                .map((loan) => (
                                   <option key={loan.id} value={loan.id}>
-                                    {loan.loan_number} — {loan.counterparty_name} — {formatCurrency(loan.outstanding_balance, loan.currency)} outstanding
+                                    {loan.loan_number} — {loan.counterparty_name} —{' '}
+                                    {formatCurrency(loan.outstanding_balance, loan.currency)}{' '}
+                                    outstanding
                                   </option>
                                 ))}
                             </select>
                           </FloatingField>
                         </SapRow>
                         <SapRow>
-                          <FloatingField label="Principal" span={6} required filled={!!repaymentPrincipal}>
-                            <MoneyInput decimal value={repaymentPrincipal}
+                          <FloatingField
+                            label="Principal"
+                            span={6}
+                            required
+                            filled={!!repaymentPrincipal}
+                          >
+                            <MoneyInput
+                              decimal
+                              value={repaymentPrincipal}
                               onChange={(n) => setRepaymentPrincipal(n)}
-                              className={FLOAT_INPUT} />
+                              className={FLOAT_INPUT}
+                            />
                           </FloatingField>
                           <FloatingField label="Interest" span={6} filled={!!repaymentInterest}>
-                            <MoneyInput decimal value={repaymentInterest}
+                            <MoneyInput
+                              decimal
+                              value={repaymentInterest}
                               onChange={(n) => setRepaymentInterest(n)}
-                              className={FLOAT_INPUT} />
+                              className={FLOAT_INPUT}
+                            />
                           </FloatingField>
                         </SapRow>
                       </div>
                     )}
 
-                    {receiptType === 'customer_payment' && receiptCustomerId && receiptInvoices.length > 0 && (
-                      <div className="border rounded-lg p-2">
-                        <p className="text-xs font-medium text-gray-600 mb-2">Allocate to Invoices (optional)</p>
-                        <div className="max-h-40 overflow-y-auto space-y-1">
-                          {receiptInvoices.map((inv: any) => {
-                            const isChecked = receiptAllocations[inv.id] !== undefined;
-                            return (
-                              <div key={inv.id} className="flex items-center gap-2 text-xs p-1 hover:bg-gray-50 rounded">
-                                <input name="checkbox" aria-label="Checkbox"
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      const remaining = recordingLine.credit - Object.values(receiptAllocations).reduce((a, b) => a + b, 0);
-                                      setReceiptAllocations(prev => ({
-                                        ...prev,
-                                        [inv.id]: Math.min(inv.balance_amount, remaining)
-                                      }));
-                                    } else {
-                                      const next = { ...receiptAllocations };
-                                      delete next[inv.id];
-                                      setReceiptAllocations(next);
-                                    }
-                                  }}
-                                />
-                                <div className="flex-1 min-w-0">
-                                  <span className="font-mono">{inv.invoice_number}</span>
-                                  <span className="text-red-500 ml-1">Bal: {formatCurrency(inv.balance_amount, 'IDR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>
-                                </div>
-                                {isChecked && (
-                                  <MoneyInput
-                                    decimal
-                                    min={0}
-                                    max={inv.balance_amount}
-                                    value={receiptAllocations[inv.id] || 0}
-                                    onChange={(n) => {
-                                      setReceiptAllocations(prev => ({ ...prev, [inv.id]: Math.min(n, inv.balance_amount) }));
+                    {receiptType === 'customer_payment' &&
+                      receiptCustomerId &&
+                      receiptInvoices.length > 0 && (
+                        <div className="border rounded-lg p-2">
+                          <p className="text-xs font-medium text-gray-600 mb-2">
+                            Allocate to Invoices (optional)
+                          </p>
+                          <div className="max-h-40 overflow-y-auto space-y-1">
+                            {receiptInvoices.map((inv: any) => {
+                              const isChecked = receiptAllocations[inv.id] !== undefined;
+                              return (
+                                <div
+                                  key={inv.id}
+                                  className="flex items-center gap-2 text-xs p-1 hover:bg-gray-50 rounded"
+                                >
+                                  <input
+                                    name="checkbox"
+                                    aria-label="Checkbox"
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        const remaining =
+                                          recordingLine.credit -
+                                          Object.values(receiptAllocations).reduce(
+                                            (a, b) => a + b,
+                                            0
+                                          );
+                                        setReceiptAllocations((prev) => ({
+                                          ...prev,
+                                          [inv.id]: Math.min(inv.balance_amount, remaining),
+                                        }));
+                                      } else {
+                                        const next = { ...receiptAllocations };
+                                        delete next[inv.id];
+                                        setReceiptAllocations(next);
+                                      }
                                     }}
-                                    className="w-24 px-1 py-0.5 border rounded text-right text-xs"
                                   />
-                                )}
-                              </div>
-                            );
-                          })}
+                                  <div className="flex-1 min-w-0">
+                                    <span className="font-mono">{inv.invoice_number}</span>
+                                    <span className="text-red-500 ml-1">
+                                      Bal:{' '}
+                                      {formatCurrency(inv.balance_amount, 'IDR', {
+                                        minimumFractionDigits: 0,
+                                        maximumFractionDigits: 0,
+                                      })}
+                                    </span>
+                                  </div>
+                                  {isChecked && (
+                                    <MoneyInput
+                                      decimal
+                                      min={0}
+                                      max={inv.balance_amount}
+                                      value={receiptAllocations[inv.id] || 0}
+                                      onChange={(n) => {
+                                        setReceiptAllocations((prev) => ({
+                                          ...prev,
+                                          [inv.id]: Math.min(n, inv.balance_amount),
+                                        }));
+                                      }}
+                                      className="w-24 px-1 py-0.5 border rounded text-right text-xs"
+                                    />
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-2 pt-2 border-t text-xs flex justify-between">
+                            <span>Allocated:</span>
+                            <span className="font-medium text-green-600">
+                              {formatCurrency(
+                                Object.values(receiptAllocations).reduce((a, b) => a + b, 0),
+                                recordingLine.currency
+                              )}
+                            </span>
+                          </div>
                         </div>
-                        <div className="mt-2 pt-2 border-t text-xs flex justify-between">
-                          <span>Allocated:</span>
-                          <span className="font-medium text-green-600">
-                            {formatCurrency(Object.values(receiptAllocations).reduce((a, b) => a + b, 0), recordingLine.currency)}
-                          </span>
-                        </div>
-                      </div>
-                    )}
+                      )}
                     {receiptType === 'customer_payment' && receiptCustomerId && loadingInvoices && (
-                      <div className="text-xs text-gray-500 text-center py-2">Loading invoices...</div>
+                      <div className="text-xs text-gray-500 text-center py-2">
+                        Loading invoices...
+                      </div>
                     )}
 
                     {receiptType !== 'director_related_party' && (
                       <>
                         <SapRow>
-                          <FloatingField label="Description" span={12} filled={!!recordingLine.description}>
+                          <FloatingField
+                            label="Description"
+                            span={12}
+                            filled={!!recordingLine.description}
+                          >
                             <input
                               type="text"
                               name="description"
@@ -6568,38 +7842,111 @@ export function BankReconciliationEnhanced({
       <Modal
         isOpen={!!pendingExpenseAllocation}
         onClose={() => setPendingExpenseAllocation(null)}
-        title={pendingExpenseAllocation && (pendingExpenseAllocation.bankAfter > 0.01 || pendingExpenseAllocation.documentAfter > 0.01)
-          ? 'Confirm Partial Reconciliation' : 'Confirm Reconciliation'}
+        title={
+          pendingExpenseAllocation &&
+          (pendingExpenseAllocation.bankAfter > 0.01 ||
+            pendingExpenseAllocation.documentAfter > 0.01)
+            ? 'Confirm Partial Reconciliation'
+            : 'Confirm Reconciliation'
+        }
         size="sm"
-        footer={<>
-          <button type="button" onClick={() => setPendingExpenseAllocation(null)} className="px-3 py-2 text-xs border border-gray-300 rounded hover:bg-gray-50">Cancel</button>
-          <button type="button" onClick={() => void confirmExpenseAllocation()} className="px-3 py-2 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">
-            {pendingExpenseAllocation && (pendingExpenseAllocation.bankAfter > 0.01 || pendingExpenseAllocation.documentAfter > 0.01)
-              ? `Yes, Link ${formatCurrency(pendingExpenseAllocation.amount, pendingExpenseAllocation.line.currency)}` : 'Yes, Link'}
-          </button>
-        </>}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setPendingExpenseAllocation(null)}
+              className="px-3 py-2 text-xs border border-gray-300 rounded hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void confirmExpenseAllocation()}
+              className="px-3 py-2 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+            >
+              {pendingExpenseAllocation &&
+              (pendingExpenseAllocation.bankAfter > 0.01 ||
+                pendingExpenseAllocation.documentAfter > 0.01)
+                ? `Yes, Link ${formatCurrency(pendingExpenseAllocation.amount, pendingExpenseAllocation.line.currency)}`
+                : 'Yes, Link'}
+            </button>
+          </>
+        }
       >
-        {pendingExpenseAllocation && <div className="space-y-3 text-sm">
-          {paymentDateGapWarning(
-            pendingExpenseAllocation.line.date,
-            pendingExpenseAllocation.expense.expense_date,
-          ) && <p className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded">
-            {paymentDateGapWarning(pendingExpenseAllocation.line.date, pendingExpenseAllocation.expense.expense_date)}
-          </p>}
-          <div className="grid grid-cols-2 gap-x-4 gap-y-2 p-3 bg-gray-50 border rounded">
-            <span className="text-gray-500">Bank transaction</span><span className="text-right font-semibold">{formatCurrency(pendingExpenseAllocation.line.debit || pendingExpenseAllocation.line.credit, pendingExpenseAllocation.line.currency)}</span>
-            <span className="text-gray-500">Already allocated</span><span className="text-right">{formatCurrency(pendingExpenseAllocation.line.allocatedAmount, pendingExpenseAllocation.line.currency)}</span>
-            <span className="text-gray-500">Document outstanding</span><span className="text-right">{formatCurrency(pendingExpenseAllocation.amount + pendingExpenseAllocation.documentAfter, pendingExpenseAllocation.line.currency)}</span>
-            <span className="font-medium">Amount to link</span><span className="text-right font-bold text-blue-700">{formatCurrency(pendingExpenseAllocation.amount, pendingExpenseAllocation.line.currency)}</span>
-            <span className="text-gray-500">Remaining bank balance</span><span className="text-right">{formatCurrency(pendingExpenseAllocation.bankAfter, pendingExpenseAllocation.line.currency)}</span>
-            <span className="text-gray-500">Document remaining</span><span className="text-right">{formatCurrency(pendingExpenseAllocation.documentAfter, pendingExpenseAllocation.line.currency)}</span>
+        {pendingExpenseAllocation && (
+          <div className="space-y-3 text-sm">
+            {paymentDateGapWarning(
+              pendingExpenseAllocation.line.date,
+              pendingExpenseAllocation.expense.expense_date
+            ) && (
+              <p className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded">
+                {paymentDateGapWarning(
+                  pendingExpenseAllocation.line.date,
+                  pendingExpenseAllocation.expense.expense_date
+                )}
+              </p>
+            )}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 p-3 bg-gray-50 border rounded">
+              <span className="text-gray-500">Bank transaction</span>
+              <span className="text-right font-semibold">
+                {formatCurrency(
+                  pendingExpenseAllocation.line.debit || pendingExpenseAllocation.line.credit,
+                  pendingExpenseAllocation.line.currency
+                )}
+              </span>
+              <span className="text-gray-500">Already allocated</span>
+              <span className="text-right">
+                {formatCurrency(
+                  pendingExpenseAllocation.line.allocatedAmount,
+                  pendingExpenseAllocation.line.currency
+                )}
+              </span>
+              <span className="text-gray-500">Document outstanding</span>
+              <span className="text-right">
+                {formatCurrency(
+                  pendingExpenseAllocation.amount + pendingExpenseAllocation.documentAfter,
+                  pendingExpenseAllocation.line.currency
+                )}
+              </span>
+              <span className="font-medium">Amount to link</span>
+              <span className="text-right font-bold text-blue-700">
+                {formatCurrency(
+                  pendingExpenseAllocation.amount,
+                  pendingExpenseAllocation.line.currency
+                )}
+              </span>
+              <span className="text-gray-500">Remaining bank balance</span>
+              <span className="text-right">
+                {formatCurrency(
+                  pendingExpenseAllocation.bankAfter,
+                  pendingExpenseAllocation.line.currency
+                )}
+              </span>
+              <span className="text-gray-500">Document remaining</span>
+              <span className="text-right">
+                {formatCurrency(
+                  pendingExpenseAllocation.documentAfter,
+                  pendingExpenseAllocation.line.currency
+                )}
+              </span>
+            </div>
+            {(pendingExpenseAllocation.bankAfter > 0.01 ||
+              pendingExpenseAllocation.documentAfter > 0.01) && (
+              <p className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded">
+                You are linking{' '}
+                {formatCurrency(
+                  pendingExpenseAllocation.amount,
+                  pendingExpenseAllocation.line.currency
+                )}{' '}
+                to this document.
+                {pendingExpenseAllocation.bankAfter > 0.01 &&
+                  ` ${formatCurrency(pendingExpenseAllocation.bankAfter, pendingExpenseAllocation.line.currency)} will remain unreconciled and available for another document.`}
+                {pendingExpenseAllocation.documentAfter > 0.01 &&
+                  ` ${formatCurrency(pendingExpenseAllocation.documentAfter, pendingExpenseAllocation.line.currency)} will remain outstanding on the document.`}
+              </p>
+            )}
           </div>
-          {(pendingExpenseAllocation.bankAfter > 0.01 || pendingExpenseAllocation.documentAfter > 0.01) && <p className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded">
-            You are linking {formatCurrency(pendingExpenseAllocation.amount, pendingExpenseAllocation.line.currency)} to this document.
-            {pendingExpenseAllocation.bankAfter > 0.01 && ` ${formatCurrency(pendingExpenseAllocation.bankAfter, pendingExpenseAllocation.line.currency)} will remain unreconciled and available for another document.`}
-            {pendingExpenseAllocation.documentAfter > 0.01 && ` ${formatCurrency(pendingExpenseAllocation.documentAfter, pendingExpenseAllocation.line.currency)} will remain outstanding on the document.`}
-          </p>}
-        </div>}
+        )}
       </Modal>
 
       {ocrError && (
@@ -6626,11 +7973,13 @@ export function BankReconciliationEnhanced({
 
             {ocrError.canUseOCR && (
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <p className="text-blue-800 text-sm font-medium mb-2">Advanced Option: OCR Processing</p>
+                <p className="text-blue-800 text-sm font-medium mb-2">
+                  Advanced Option: OCR Processing
+                </p>
                 <p className="text-blue-700 text-xs mb-3">
-                  Optical Character Recognition (OCR) can extract text from image-based or encrypted PDFs.
-                  This process takes 30-60 seconds and requires Google Vision API configuration.
-                  You'll be able to preview the results before saving.
+                  Optical Character Recognition (OCR) can extract text from image-based or encrypted
+                  PDFs. This process takes 30-60 seconds and requires Google Vision API
+                  configuration. You'll be able to preview the results before saving.
                 </p>
                 <div className="flex gap-2">
                   <button
@@ -6686,13 +8035,17 @@ export function BankReconciliationEnhanced({
                 </div>
                 <div>
                   <span className="text-gray-600">Transactions:</span>
-                  <span className="ml-2 font-medium text-gray-900">{ocrPreview.transactionCount}</span>
+                  <span className="ml-2 font-medium text-gray-900">
+                    {ocrPreview.transactionCount}
+                  </span>
                 </div>
               </div>
             </div>
 
             <div>
-              <h4 className="text-sm font-medium text-gray-900 mb-2">Sample Transactions (First 10):</h4>
+              <h4 className="text-sm font-medium text-gray-900 mb-2">
+                Sample Transactions (First 10):
+              </h4>
               <div className="border rounded-lg overflow-hidden">
                 <table className="w-full text-xs">
                   <thead className="bg-gray-50">
@@ -6704,11 +8057,17 @@ export function BankReconciliationEnhanced({
                   </thead>
                   <tbody>
                     {ocrPreview.transactions.map((txn: any, idx: number) => (
-                      <tr key={`${txn.date}-${txn.description}-${txn.debitAmount ?? ''}-${txn.creditAmount ?? ''}-${idx}`} className="border-t">
+                      <tr
+                        key={`${txn.date}-${txn.description}-${txn.debitAmount ?? ''}-${txn.creditAmount ?? ''}-${idx}`}
+                        className="border-t"
+                      >
                         <td className="px-2 py-1">{txn.date}</td>
                         <td className="px-2 py-1 truncate max-w-xs">{txn.description}</td>
                         <td className="px-2 py-1 text-right">
-                          {formatCurrency(txn.debitAmount || txn.creditAmount, selectedAccount?.currency)}
+                          {formatCurrency(
+                            txn.debitAmount || txn.creditAmount,
+                            selectedAccount?.currency
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -6719,8 +8078,8 @@ export function BankReconciliationEnhanced({
 
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
               <p className="text-yellow-800 text-xs">
-                ⚠️ Please verify the extracted data looks correct before confirming.
-                OCR may have minor errors in dates, amounts, or descriptions.
+                ⚠️ Please verify the extracted data looks correct before confirming. OCR may have
+                minor errors in dates, amounts, or descriptions.
               </p>
             </div>
 
@@ -6776,22 +8135,22 @@ export function BankReconciliationEnhanced({
                 <div>
                   <div className="text-xs text-gray-600 mb-1">Date Range</div>
                   <div className="text-sm font-medium text-gray-900">
-                    {new Date(deletePreview.start_date).toLocaleDateString('id-ID')} -
-                    {' '}{new Date(deletePreview.end_date).toLocaleDateString('id-ID')}
+                    {new Date(deletePreview.start_date).toLocaleDateString('id-ID')} -{' '}
+                    {new Date(deletePreview.end_date).toLocaleDateString('id-ID')}
                   </div>
                 </div>
 
                 <div>
                   <div className="text-xs text-gray-600 mb-1">Total Transactions</div>
-                  <div className="text-sm font-bold text-gray-900">
-                    {deletePreview.total_count}
-                  </div>
+                  <div className="text-sm font-bold text-gray-900">{deletePreview.total_count}</div>
                 </div>
               </div>
 
               <div className="border-t pt-3 grid grid-cols-2 gap-4">
                 <div>
-                  <div className="text-xs text-red-600 font-medium mb-1">Reconciled (Protected)</div>
+                  <div className="text-xs text-red-600 font-medium mb-1">
+                    Reconciled (Protected)
+                  </div>
                   <div className="text-lg font-bold text-red-600">
                     {deletePreview.reconciled_count}
                   </div>
@@ -6799,7 +8158,9 @@ export function BankReconciliationEnhanced({
                 </div>
 
                 <div>
-                  <div className="text-xs text-gray-600 font-medium mb-1">Unmatched (Deletable)</div>
+                  <div className="text-xs text-gray-600 font-medium mb-1">
+                    Unmatched (Deletable)
+                  </div>
                   <div className="text-lg font-bold text-gray-900">
                     {deletePreview.unmatched_count}
                   </div>
@@ -6810,9 +8171,7 @@ export function BankReconciliationEnhanced({
 
             {deletePreview.warning && (
               <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <p className="text-sm text-red-800 font-medium">
-                  {deletePreview.warning}
-                </p>
+                <p className="text-sm text-red-800 font-medium">{deletePreview.warning}</p>
               </div>
             )}
 
@@ -6833,7 +8192,9 @@ export function BankReconciliationEnhanced({
                 disabled={!deletePreview.can_delete}
                 className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {deletePreview.can_delete ? `Delete ${deletePreview.unmatched_count} Transaction(s)` : 'Cannot Delete'}
+                {deletePreview.can_delete
+                  ? `Delete ${deletePreview.unmatched_count} Transaction(s)`
+                  : 'Cannot Delete'}
               </button>
             </div>
           </div>
@@ -6853,7 +8214,9 @@ export function BankReconciliationEnhanced({
           <form onSubmit={handleUpdateLine} className="space-y-2">
             <div className="p-3 bg-gray-50 rounded-lg">
               <div className="text-sm text-gray-600 mb-1">Date:</div>
-              <div className="font-medium">{new Date(editingLine.date).toLocaleDateString('id-ID')}</div>
+              <div className="font-medium">
+                {new Date(editingLine.date).toLocaleDateString('id-ID')}
+              </div>
               {editingLine.reference && (
                 <>
                   <div className="text-sm text-gray-600 mt-2 mb-1">Reference:</div>
@@ -6883,7 +8246,11 @@ export function BankReconciliationEnhanced({
               </div>
             </div>
 
-            {(editingLine.allocations.length > 0 || editingLine.matchedExpense || editingLine.matchedReceipt || editingLine.matchedPayment || editingLine.matchedFundTransfer) && (
+            {(editingLine.allocations.length > 0 ||
+              editingLine.matchedExpense ||
+              editingLine.matchedReceipt ||
+              editingLine.matchedPayment ||
+              editingLine.matchedFundTransfer) && (
               <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex items-center gap-2">
@@ -6903,10 +8270,13 @@ export function BankReconciliationEnhanced({
 
                 {editingLine.allocations.length > 0 && (
                   <div className="space-y-1 text-sm mb-3">
-                    {editingLine.allocations.map(allocation => (
+                    {editingLine.allocations.map((allocation) => (
                       <div key={allocation.id} className="flex justify-between gap-2">
                         <span className="text-gray-600">
-                          {allocation.document_type === 'expense' ? 'Expense' : allocation.document_type.replace('_', ' ')} {allocation.label}
+                          {allocation.document_type === 'expense'
+                            ? 'Expense'
+                            : allocation.document_type.replace('_', ' ')}{' '}
+                          {allocation.label}
                         </span>
                         <span className="font-medium text-gray-900 font-mono">
                           {formatCurrency(allocation.allocation_amount, editingLine.currency)}
@@ -6925,31 +8295,42 @@ export function BankReconciliationEnhanced({
                     <div className="flex justify-between">
                       <span className="text-gray-600">Category:</span>
                       <span className="font-medium text-gray-900">
-                        {expenseCategories.find(c => c.value === editingLine.matchedExpense?.expense_category)?.label || editingLine.matchedExpense.expense_category}
+                        {expenseCategories.find(
+                          (c) => c.value === editingLine.matchedExpense?.expense_category
+                        )?.label || editingLine.matchedExpense.expense_category}
                       </span>
                     </div>
                     {editingLine.matchedExpense.voucher_number && (
                       <div className="flex justify-between">
                         <span className="text-gray-600">Voucher:</span>
-                        <span className="font-medium text-gray-900 font-mono">{editingLine.matchedExpense.voucher_number}</span>
+                        <span className="font-medium text-gray-900 font-mono">
+                          {editingLine.matchedExpense.voucher_number}
+                        </span>
                       </div>
                     )}
                     <div className="flex justify-between">
                       <span className="text-gray-600">Amount:</span>
                       <span className="font-medium text-gray-900">
-                        {formatCurrency(calculateCanonicalCashPayable(editingLine.matchedExpense), editingLine.currency)}
+                        {formatCurrency(
+                          calculateCanonicalCashPayable(editingLine.matchedExpense),
+                          editingLine.currency
+                        )}
                       </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Date:</span>
                       <span className="font-medium text-gray-900">
-                        {new Date(editingLine.matchedExpense.expense_date).toLocaleDateString('id-ID')}
+                        {new Date(editingLine.matchedExpense.expense_date).toLocaleDateString(
+                          'id-ID'
+                        )}
                       </span>
                     </div>
                     {editingLine.matchedExpense.description && (
                       <div className="pt-2 border-t border-blue-200">
                         <div className="text-gray-600 mb-1">Description:</div>
-                        <div className="text-gray-900">{editingLine.matchedExpense.description}</div>
+                        <div className="text-gray-900">
+                          {editingLine.matchedExpense.description}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -6963,12 +8344,16 @@ export function BankReconciliationEnhanced({
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Payment Number:</span>
-                      <span className="font-medium text-gray-900 font-mono">{editingLine.matchedReceipt.payment_number}</span>
+                      <span className="font-medium text-gray-900 font-mono">
+                        {editingLine.matchedReceipt.payment_number}
+                      </span>
                     </div>
                     {editingLine.matchedReceipt.customer_name && (
                       <div className="flex justify-between">
                         <span className="text-gray-600">Customer:</span>
-                        <span className="font-medium text-gray-900">{editingLine.matchedReceipt.customer_name}</span>
+                        <span className="font-medium text-gray-900">
+                          {editingLine.matchedReceipt.customer_name}
+                        </span>
                       </div>
                     )}
                     <div className="flex justify-between">
@@ -6980,7 +8365,9 @@ export function BankReconciliationEnhanced({
                     <div className="flex justify-between">
                       <span className="text-gray-600">Date:</span>
                       <span className="font-medium text-gray-900">
-                        {new Date(editingLine.matchedReceipt.payment_date).toLocaleDateString('id-ID')}
+                        {new Date(editingLine.matchedReceipt.payment_date).toLocaleDateString(
+                          'id-ID'
+                        )}
                       </span>
                     </div>
                   </div>
@@ -6994,21 +8381,33 @@ export function BankReconciliationEnhanced({
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Voucher:</span>
-                      <span className="font-medium text-gray-900 font-mono">{editingLine.matchedPayment.voucher_number}</span>
+                      <span className="font-medium text-gray-900 font-mono">
+                        {editingLine.matchedPayment.voucher_number}
+                      </span>
                     </div>
-                    {(editingLine.matchedPayment.supplier_name || editingLine.matchedPayment.staff_name) && (
+                    {(editingLine.matchedPayment.supplier_name ||
+                      editingLine.matchedPayment.staff_name) && (
                       <div className="flex justify-between">
                         <span className="text-gray-600">Payee:</span>
-                        <span className="font-medium text-gray-900">{editingLine.matchedPayment.supplier_name || editingLine.matchedPayment.staff_name}</span>
+                        <span className="font-medium text-gray-900">
+                          {editingLine.matchedPayment.supplier_name ||
+                            editingLine.matchedPayment.staff_name}
+                        </span>
                       </div>
                     )}
                     <div className="flex justify-between">
                       <span className="text-gray-600">Amount:</span>
-                      <span className="font-medium text-gray-900">{formatCurrency(editingLine.matchedPayment.amount, editingLine.currency)}</span>
+                      <span className="font-medium text-gray-900">
+                        {formatCurrency(editingLine.matchedPayment.amount, editingLine.currency)}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Date:</span>
-                      <span className="font-medium text-gray-900">{new Date(editingLine.matchedPayment.voucher_date).toLocaleDateString('id-ID')}</span>
+                      <span className="font-medium text-gray-900">
+                        {new Date(editingLine.matchedPayment.voucher_date).toLocaleDateString(
+                          'id-ID'
+                        )}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -7021,32 +8420,45 @@ export function BankReconciliationEnhanced({
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Transfer No:</span>
-                      <span className="font-medium text-gray-900 font-mono">{editingLine.matchedFundTransfer.transfer_number}</span>
+                      <span className="font-medium text-gray-900 font-mono">
+                        {editingLine.matchedFundTransfer.transfer_number}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">From:</span>
-                      <span className="font-medium text-gray-900">{editingLine.matchedFundTransfer.from_account_type}</span>
+                      <span className="font-medium text-gray-900">
+                        {editingLine.matchedFundTransfer.from_account_type}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">To:</span>
-                      <span className="font-medium text-gray-900">{editingLine.matchedFundTransfer.to_account_type}</span>
+                      <span className="font-medium text-gray-900">
+                        {editingLine.matchedFundTransfer.to_account_type}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Amount:</span>
                       <span className="font-medium text-gray-900">
-                        {formatCurrency(editingLine.matchedFundTransfer.amount, editingLine.currency)}
+                        {formatCurrency(
+                          editingLine.matchedFundTransfer.amount,
+                          editingLine.currency
+                        )}
                       </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Date:</span>
                       <span className="font-medium text-gray-900">
-                        {new Date(editingLine.matchedFundTransfer.transfer_date).toLocaleDateString('id-ID')}
+                        {new Date(editingLine.matchedFundTransfer.transfer_date).toLocaleDateString(
+                          'id-ID'
+                        )}
                       </span>
                     </div>
                     {editingLine.matchedFundTransfer.description && (
                       <div className="pt-2 border-t border-blue-200">
                         <div className="text-gray-600 mb-1">Description:</div>
-                        <div className="text-gray-900">{editingLine.matchedFundTransfer.description}</div>
+                        <div className="text-gray-900">
+                          {editingLine.matchedFundTransfer.description}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -7062,10 +8474,19 @@ export function BankReconciliationEnhanced({
             )}
 
             <SapRow>
-              <FloatingField label="Description" span={12} textarea filled={!!editFormData.description}>
-                <textarea name="description" aria-label="Description"
+              <FloatingField
+                label="Description"
+                span={12}
+                textarea
+                filled={!!editFormData.description}
+              >
+                <textarea
+                  name="description"
+                  aria-label="Description"
                   value={editFormData.description}
-                  onChange={(e) => setEditFormData({ ...editFormData, description: e.target.value })}
+                  onChange={(e) =>
+                    setEditFormData({ ...editFormData, description: e.target.value })
+                  }
                   rows={3}
                   className={FLOAT_TEXTAREA}
                 />
@@ -7073,7 +8494,12 @@ export function BankReconciliationEnhanced({
             </SapRow>
 
             <SapRow>
-              <FloatingField label="Debit Amount" span={6} filled={!!editFormData.debit} hint="Money OUT (expenses)">
+              <FloatingField
+                label="Debit Amount"
+                span={6}
+                filled={!!editFormData.debit}
+                hint="Money OUT (expenses)"
+              >
                 <MoneyInput
                   decimal
                   value={editFormData.debit}
@@ -7082,7 +8508,12 @@ export function BankReconciliationEnhanced({
                 />
               </FloatingField>
 
-              <FloatingField label="Credit Amount" span={6} filled={!!editFormData.credit} hint="Money IN (receipts)">
+              <FloatingField
+                label="Credit Amount"
+                span={6}
+                filled={!!editFormData.credit}
+                hint="Money IN (receipts)"
+              >
                 <MoneyInput
                   decimal
                   value={editFormData.credit}
@@ -7094,8 +8525,8 @@ export function BankReconciliationEnhanced({
 
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
               <p className="text-xs text-yellow-800">
-                ⚠️ <strong>Note:</strong> Each transaction should have either a Debit OR a Credit amount, not both.
-                When you enter one, the other will be cleared.
+                ⚠️ <strong>Note:</strong> Each transaction should have either a Debit OR a Credit
+                amount, not both. When you enter one, the other will be cleared.
               </p>
             </div>
 
@@ -7137,14 +8568,21 @@ export function BankReconciliationEnhanced({
                 <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
                 <div className="text-sm text-green-800">
                   <p className="font-semibold">Import successful</p>
-                  <p>Total in file: {importResult.totalInFile} &nbsp;|&nbsp; New entries added: <strong>{importResult.importedCount}</strong></p>
+                  <p>
+                    Total in file: {importResult.totalInFile} &nbsp;|&nbsp; New entries added:{' '}
+                    <strong>{importResult.importedCount}</strong>
+                  </p>
                 </div>
               </div>
             ) : (
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-start gap-3">
                 <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
                 <div className="text-sm text-blue-800">
-                  <p className="font-semibold">All {importResult.totalInFile} {importResult.totalInFile === 1 ? 'entry' : 'entries'} already exist in the database</p>
+                  <p className="font-semibold">
+                    All {importResult.totalInFile}{' '}
+                    {importResult.totalInFile === 1 ? 'entry' : 'entries'} already exist in the
+                    database
+                  </p>
                   <p className="text-blue-600 mt-1">No new entries were imported.</p>
                 </div>
               </div>
@@ -7163,13 +8601,21 @@ export function BankReconciliationEnhanced({
                     const amt = e.debit_amount || e.credit_amount;
                     const isDebit = !!e.debit_amount;
                     return (
-                      <div key={`${e.transaction_date}-${e.description}-${e.debit_amount ?? ''}-${e.credit_amount ?? ''}-${i}`} className="px-1.5 py-1 flex items-center justify-between text-sm">
+                      <div
+                        key={`${e.transaction_date}-${e.description}-${e.debit_amount ?? ''}-${e.credit_amount ?? ''}-${i}`}
+                        className="px-1.5 py-1 flex items-center justify-between text-sm"
+                      >
                         <div>
                           <span className="text-gray-500 text-xs font-mono">{d}</span>
-                          <span className="ml-2 text-gray-800">{String(e.description).substring(0, 55)}</span>
+                          <span className="ml-2 text-gray-800">
+                            {String(e.description).substring(0, 55)}
+                          </span>
                         </div>
-                        <span className={`ml-2 font-medium text-xs whitespace-nowrap ${isDebit ? 'text-red-600' : 'text-green-600'}`}>
-                          {isDebit ? '-' : '+'}{formatCurrency(amt, selectedAccount?.currency, {
+                        <span
+                          className={`ml-2 font-medium text-xs whitespace-nowrap ${isDebit ? 'text-red-600' : 'text-green-600'}`}
+                        >
+                          {isDebit ? '-' : '+'}
+                          {formatCurrency(amt, selectedAccount?.currency, {
                             minimumFractionDigits: selectedAccount?.currency === 'IDR' ? 0 : 2,
                             maximumFractionDigits: selectedAccount?.currency === 'IDR' ? 0 : 2,
                           })}
@@ -7181,8 +8627,9 @@ export function BankReconciliationEnhanced({
 
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
                   <p className="text-xs text-amber-800">
-                    <strong>These entries appear to already exist.</strong> If you believe they are new legitimate transactions
-                    (e.g. same amount to the same party on the same day), you can force import them anyway.
+                    <strong>These entries appear to already exist.</strong> If you believe they are
+                    new legitimate transactions (e.g. same amount to the same party on the same
+                    day), you can force import them anyway.
                   </p>
                 </div>
               </div>
@@ -7220,342 +8667,392 @@ export function BankReconciliationEnhanced({
       )}
 
       {/* Suggested Match Review Modal / Drawer */}
-      {selectedSuggestedLine && selectedSuggestedLine.matchedExpense && (() => {
-        const line = selectedSuggestedLine;
-        const exp = line.matchedExpense;
-        if (!exp) return null;
-        const bankAmount = Number(line.debit) || Number(line.credit) || 0;
-        const expAmount = Number(exp.amount) || 0;
-        const amountDiff = Math.abs(bankAmount - expAmount);
-        const isAmountExact = amountDiff <= 0.01;
+      {selectedSuggestedLine &&
+        selectedSuggestedLine.matchedExpense &&
+        (() => {
+          const line = selectedSuggestedLine;
+          const exp = line.matchedExpense;
+          if (!exp) return null;
+          const bankAmount = Number(line.debit) || Number(line.credit) || 0;
+          const expAmount = Number(exp.amount) || 0;
+          const amountDiff = Math.abs(bankAmount - expAmount);
+          const isAmountExact = amountDiff <= 0.01;
 
-        const bankDateObj = new Date(line.date);
-        const expDateObj = new Date(exp.expense_date);
-        const daysDiff = Math.round(Math.abs((bankDateObj.getTime() - expDateObj.getTime()) / (1000 * 60 * 60 * 24)));
-        const isDateExact = daysDiff === 0;
+          const bankDateObj = new Date(line.date);
+          const expDateObj = new Date(exp.expense_date);
+          const daysDiff = Math.round(
+            Math.abs((bankDateObj.getTime() - expDateObj.getTime()) / (1000 * 60 * 60 * 24))
+          );
+          const isDateExact = daysDiff === 0;
 
-        const direction = line.debit > 0 ? 'Debit' : 'Credit';
+          const direction = line.debit > 0 ? 'Debit' : 'Credit';
 
-        const tierMatch = line.notes?.match(/Tier\s*(\d+)/i);
-        const tierStr = tierMatch ? tierMatch[1] : (isAmountExact && isDateExact ? '1' : '2');
-        const textScoreMatch = line.notes?.match(/text score\s*(\d+)/i);
-        const textScoreStr = textScoreMatch ? textScoreMatch[1] : (exp.voucher_number && line.description.includes(exp.voucher_number) ? '8' : '4');
+          const tierMatch = line.notes?.match(/Tier\s*(\d+)/i);
+          const tierStr = tierMatch ? tierMatch[1] : isAmountExact && isDateExact ? '1' : '2';
+          const textScoreMatch = line.notes?.match(/text score\s*(\d+)/i);
+          const textScoreStr = textScoreMatch
+            ? textScoreMatch[1]
+            : exp.voucher_number && line.description.includes(exp.voucher_number)
+              ? '8'
+              : '4';
 
-        const isPending = exp.approval_status === 'pending_approval';
-        const isRejected = exp.approval_status === 'rejected' || exp.approval_status === 'cancelled';
-        const cannotConfirm = isRejected;
+          const isPending = exp.approval_status === 'pending_approval';
+          const isRejected =
+            exp.approval_status === 'rejected' || exp.approval_status === 'cancelled';
+          const cannotConfirm = isRejected;
 
-        return (
-          <Modal
-            isOpen={true}
-            onClose={() => setSelectedSuggestedLine(null)}
-            title={`Suggested Match: ${exp.voucher_number || 'Expense'}`}
-            maxWidth="max-w-4xl"
-          >
-            <div className="space-y-4 text-sm">
-              {/* Pending Approval Banner */}
-              {isPending && (
-                <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
-                  <div>
-                    <p className="font-semibold text-amber-900">
-                      Pending Accounting Approval
-                    </p>
-                    <p className="text-xs text-amber-800 mt-0.5">
-                      Confirming this match records this bank transaction as payment evidence. When the expense is approved in Finance Expenses, ledger reconciliation will complete automatically without asking for another bank match approval.
-                    </p>
+          return (
+            <Modal
+              isOpen={true}
+              onClose={() => setSelectedSuggestedLine(null)}
+              title={`Suggested Match: ${exp.voucher_number || 'Expense'}`}
+              maxWidth="max-w-4xl"
+            >
+              <div className="space-y-4 text-sm">
+                {/* Pending Approval Banner */}
+                {isPending && (
+                  <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                    <div>
+                      <p className="font-semibold text-amber-900">Pending Accounting Approval</p>
+                      <p className="text-xs text-amber-800 mt-0.5">
+                        Confirming this match records this bank transaction as payment evidence.
+                        When the expense is approved in Finance Expenses, ledger reconciliation will
+                        complete automatically without asking for another bank match approval.
+                      </p>
+                    </div>
                   </div>
-                </div>
-              )}
-
-              {/* Rejected / Cancelled Banner */}
-              {isRejected && (
-                <div className="bg-red-50 border border-red-300 rounded-lg p-3 flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
-                  <div>
-                    <p className="font-semibold text-red-900">
-                      Expense {exp.approval_status === 'rejected' ? 'Rejected' : 'Cancelled'} — Confirm Match Disabled
-                    </p>
-                    <p className="text-xs text-red-800 mt-0.5">
-                      This expense has been {exp.approval_status}. Reject this suggestion to unlink the bank transaction or record a new expense.
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Side-by-Side Sections */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Column 1: Bank Transaction */}
-                <div className="border border-gray-200 rounded-lg p-3.5 bg-gray-50/50 space-y-2.5">
-                  <div className="flex items-center justify-between border-b pb-2 border-gray-200">
-                    <h4 className="font-semibold text-gray-900 flex items-center gap-1.5 text-xs uppercase tracking-wide">
-                      <Landmark className="w-4 h-4 text-blue-600" />
-                      Bank Transaction
-                    </h4>
-                    <span className={`px-2 py-0.5 rounded text-xs font-semibold ${line.debit > 0 ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
-                      {direction}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-1.5 text-xs">
-                    <span className="text-gray-500">Date:</span>
-                    <span className="col-span-2 font-medium text-gray-800">
-                      {new Date(line.date).toLocaleDateString('id-ID', { year: 'numeric', month: 'long', day: 'numeric' })}
-                    </span>
-
-                    <span className="text-gray-500">Amount:</span>
-                    <span className={`col-span-2 font-bold ${line.debit > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {formatCurrency(bankAmount, line.currency)}
-                    </span>
-
-                    <span className="text-gray-500">Description:</span>
-                    <span className="col-span-2 text-gray-800 break-words whitespace-pre-wrap font-mono text-[11px] bg-white p-1.5 rounded border border-gray-200 max-h-24 overflow-y-auto">
-                      {line.description}
-                    </span>
-
-                    <span className="text-gray-500">Reference:</span>
-                    <span className="col-span-2 text-gray-800 font-mono">
-                      {line.reference || '—'}
-                    </span>
-
-                    <span className="text-gray-500">Branch:</span>
-                    <span className="col-span-2 text-gray-800">
-                      {line.reference || '—'}
-                    </span>
-
-                    <span className="text-gray-500">Recon Status:</span>
-                    <span className="col-span-2">
-                      <span className="px-1.5 py-0.5 rounded text-[11px] bg-purple-100 text-purple-700 font-medium">
-                        Needs Review
-                      </span>
-                    </span>
-
-                    <span className="text-gray-500">Match Status:</span>
-                    <span className="col-span-2 font-medium text-purple-700">
-                      Suggested
-                    </span>
-                  </div>
-                </div>
-
-                {/* Column 2: Suggested Expense */}
-                <div className="border border-gray-200 rounded-lg p-3.5 bg-gray-50/50 space-y-2.5">
-                  <div className="flex items-center justify-between border-b pb-2 border-gray-200">
-                    <h4 className="font-semibold text-gray-900 flex items-center gap-1.5 text-xs uppercase tracking-wide">
-                      <FileText className="w-4 h-4 text-purple-600" />
-                      Suggested Expense
-                    </h4>
-                    <span className={`px-2 py-0.5 rounded text-xs font-semibold ${isPending ? 'bg-amber-100 text-amber-800' : isRejected ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
-                      {isPending ? 'Pending Approval' : isRejected ? (exp.approval_status === 'rejected' ? 'Rejected' : 'Cancelled') : 'Approved'}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-1.5 text-xs">
-                    <span className="text-gray-500">Voucher #:</span>
-                    <span className="col-span-2 font-bold text-gray-900 font-mono">
-                      {exp.voucher_number || '—'}
-                    </span>
-
-                    <span className="text-gray-500">Expense Date:</span>
-                    <span className="col-span-2 font-medium text-gray-800">
-                      {new Date(exp.expense_date).toLocaleDateString('id-ID', { year: 'numeric', month: 'long', day: 'numeric' })}
-                    </span>
-
-                    <span className="text-gray-500">Amount:</span>
-                    <span className="col-span-2 font-bold text-gray-900">
-                      {formatCurrency(expAmount, exp.currency_code || 'IDR')}
-                    </span>
-
-                    <span className="text-gray-500">Category:</span>
-                    <span className="col-span-2 text-gray-800">
-                      {exp.expense_category || '—'}
-                    </span>
-
-                    <span className="text-gray-500">Supplier:</span>
-                    <span className="col-span-2 font-medium text-gray-800">
-                      {exp.suppliers?.company_name || '—'}
-                    </span>
-
-                    <span className="text-gray-500">Payee / Staff:</span>
-                    <span className="col-span-2 text-gray-800">
-                      {exp.finance_staff_master?.full_name || exp.finance_payees?.full_name || '—'}
-                    </span>
-
-                    <span className="text-gray-500">Invoice #:</span>
-                    <span className="col-span-2 text-gray-800 font-mono">
-                      {exp.invoice_number || '—'}
-                    </span>
-
-                    <span className="text-gray-500">Payment Ref:</span>
-                    <span className="col-span-2 text-gray-800 font-mono">
-                      {exp.payment_reference || '—'}
-                    </span>
-
-                    <span className="text-gray-500">Container:</span>
-                    <span className="col-span-2 text-gray-800">
-                      {exp.import_containers?.container_ref || '—'}
-                    </span>
-
-                    <span className="text-gray-500">Description:</span>
-                    <span className="col-span-2 text-gray-800 break-words whitespace-pre-wrap text-[11px] bg-white p-1.5 rounded border border-gray-200 max-h-24 overflow-y-auto">
-                      {exp.description || '—'}
-                    </span>
-
-                    <span className="text-gray-500">PPN / PPh:</span>
-                    <span className="col-span-2 text-gray-700">
-                      PPN: {Number(exp.ppn_amount) > 0 ? formatCurrency(exp.ppn_amount, exp.currency_code || 'IDR') : 'None'}
-                      {' · '}
-                      PPh: {Number(exp.pph_amount) > 0 ? formatCurrency(exp.pph_amount, exp.currency_code || 'IDR') : 'None'}
-                    </span>
-
-                    <span className="text-gray-500">Payment Method:</span>
-                    <span className="col-span-2 text-gray-800">
-                      {exp.payment_method ? exp.payment_method.replace('_', ' ') : 'Unspecified'}
-                    </span>
-
-                    <span className="text-gray-500">Bank Account:</span>
-                    <span className="col-span-2 text-gray-800">
-                      {exp.bank_accounts?.account_name ? `${exp.bank_accounts.account_name} (${exp.bank_accounts.account_number})` : '—'}
-                    </span>
-
-                    <span className="text-gray-500">Paid Amount:</span>
-                    <span className="col-span-2 text-gray-800">
-                      {formatCurrency(exp.paid_amount || 0, exp.currency_code || 'IDR')}
-                    </span>
-
-                    <span className="text-gray-500">Currency / Rate:</span>
-                    <span className="col-span-2 text-gray-800">
-                      {exp.currency_code || 'IDR'} {exp.exchange_rate && exp.exchange_rate !== 1 ? `· Rate: ${exp.exchange_rate}` : ''}
-                    </span>
-
-                    <span className="text-gray-500">Created By:</span>
-                    <span className="col-span-2 text-gray-700">
-                      {exp.created_by_profile?.full_name || '—'}
-                    </span>
-
-                    {exp.document_urls && exp.document_urls.length > 0 && (
-                      <>
-                        <span className="text-gray-500">Attachments:</span>
-                        <div className="col-span-2 flex flex-col gap-1">
-                          {exp.document_urls.map((url: string, idx: number) => {
-                            const filename = url.split('/').pop() || `Document ${idx + 1}`;
-                            return (
-                              <a
-                                key={url}
-                                href={url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-600 hover:underline text-[11px] truncate flex items-center gap-1"
-                              >
-                                📎 {filename.substring(0, 35)}
-                              </a>
-                            );
-                          })}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Match Analysis Section */}
-              <div className="bg-purple-50 border border-purple-200 rounded-lg p-3.5 space-y-2">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-semibold text-purple-900 text-xs uppercase tracking-wider">
-                    Match Analysis
-                  </h4>
-                  <span className="text-xs text-purple-700 font-medium">
-                    Tier {tierStr} · Text Score: {textScoreStr}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-                  <div className="bg-white p-2 rounded border border-purple-100">
-                    <span className="text-gray-500 block text-[11px]">Amount</span>
-                    <span className={`font-semibold ${isAmountExact ? 'text-green-700' : 'text-amber-700'}`}>
-                      {isAmountExact ? 'Exact ✓' : `Diff: ${formatCurrency(amountDiff, line.currency)}`}
-                    </span>
-                  </div>
-
-                  <div className="bg-white p-2 rounded border border-purple-100">
-                    <span className="text-gray-500 block text-[11px]">Date</span>
-                    <span className={`font-semibold ${isDateExact ? 'text-green-700' : 'text-blue-700'}`}>
-                      {isDateExact ? 'Exact ✓' : `${daysDiff} day${daysDiff === 1 ? '' : 's'} diff`}
-                    </span>
-                  </div>
-
-                  <div className="bg-white p-2 rounded border border-purple-100">
-                    <span className="text-gray-500 block text-[11px]">Direction</span>
-                    <span className="font-semibold text-green-700">
-                      Debit = Debit ✓
-                    </span>
-                  </div>
-
-                  <div className="bg-white p-2 rounded border border-purple-100">
-                    <span className="text-gray-500 block text-[11px]">Match Confidence</span>
-                    <span className="font-semibold text-purple-700">
-                      Tier {tierStr} (High)
-                    </span>
-                  </div>
-                </div>
-
-                {line.notes && (
-                  <p className="text-xs text-purple-800 bg-white/70 p-2 rounded border border-purple-100">
-                    <strong>Suggestion reason:</strong> {line.notes}
-                  </p>
                 )}
-              </div>
 
-              {/* Actions */}
-              <div className="flex items-center justify-between pt-2 border-t border-gray-200">
-                <div className="flex items-center gap-2">
-                  {exp.document_urls && exp.document_urls.length > 0 && (
-                    <a
-                      href={exp.document_urls[0]}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-1.5 border border-gray-300 rounded text-xs font-medium hover:bg-gray-50 text-gray-700 flex items-center gap-1"
-                    >
-                      View Attachment
-                    </a>
+                {/* Rejected / Cancelled Banner */}
+                {isRejected && (
+                  <div className="bg-red-50 border border-red-300 rounded-lg p-3 flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
+                    <div>
+                      <p className="font-semibold text-red-900">
+                        Expense {exp.approval_status === 'rejected' ? 'Rejected' : 'Cancelled'} —
+                        Confirm Match Disabled
+                      </p>
+                      <p className="text-xs text-red-800 mt-0.5">
+                        This expense has been {exp.approval_status}. Reject this suggestion to
+                        unlink the bank transaction or record a new expense.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Side-by-Side Sections */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Column 1: Bank Transaction */}
+                  <div className="border border-gray-200 rounded-lg p-3.5 bg-gray-50/50 space-y-2.5">
+                    <div className="flex items-center justify-between border-b pb-2 border-gray-200">
+                      <h4 className="font-semibold text-gray-900 flex items-center gap-1.5 text-xs uppercase tracking-wide">
+                        <Landmark className="w-4 h-4 text-blue-600" />
+                        Bank Transaction
+                      </h4>
+                      <span
+                        className={`px-2 py-0.5 rounded text-xs font-semibold ${line.debit > 0 ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}
+                      >
+                        {direction}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1.5 text-xs">
+                      <span className="text-gray-500">Date:</span>
+                      <span className="col-span-2 font-medium text-gray-800">
+                        {new Date(line.date).toLocaleDateString('id-ID', {
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric',
+                        })}
+                      </span>
+
+                      <span className="text-gray-500">Amount:</span>
+                      <span
+                        className={`col-span-2 font-bold ${line.debit > 0 ? 'text-red-600' : 'text-green-600'}`}
+                      >
+                        {formatCurrency(bankAmount, line.currency)}
+                      </span>
+
+                      <span className="text-gray-500">Description:</span>
+                      <span className="col-span-2 text-gray-800 break-words whitespace-pre-wrap font-mono text-[11px] bg-white p-1.5 rounded border border-gray-200 max-h-24 overflow-y-auto">
+                        {line.description}
+                      </span>
+
+                      <span className="text-gray-500">Reference:</span>
+                      <span className="col-span-2 text-gray-800 font-mono">
+                        {line.reference || '—'}
+                      </span>
+
+                      <span className="text-gray-500">Branch:</span>
+                      <span className="col-span-2 text-gray-800">{line.reference || '—'}</span>
+
+                      <span className="text-gray-500">Recon Status:</span>
+                      <span className="col-span-2">
+                        <span className="px-1.5 py-0.5 rounded text-[11px] bg-purple-100 text-purple-700 font-medium">
+                          Needs Review
+                        </span>
+                      </span>
+
+                      <span className="text-gray-500">Match Status:</span>
+                      <span className="col-span-2 font-medium text-purple-700">Suggested</span>
+                    </div>
+                  </div>
+
+                  {/* Column 2: Suggested Expense */}
+                  <div className="border border-gray-200 rounded-lg p-3.5 bg-gray-50/50 space-y-2.5">
+                    <div className="flex items-center justify-between border-b pb-2 border-gray-200">
+                      <h4 className="font-semibold text-gray-900 flex items-center gap-1.5 text-xs uppercase tracking-wide">
+                        <FileText className="w-4 h-4 text-purple-600" />
+                        Suggested Expense
+                      </h4>
+                      <span
+                        className={`px-2 py-0.5 rounded text-xs font-semibold ${isPending ? 'bg-amber-100 text-amber-800' : isRejected ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}
+                      >
+                        {isPending
+                          ? 'Pending Approval'
+                          : isRejected
+                            ? exp.approval_status === 'rejected'
+                              ? 'Rejected'
+                              : 'Cancelled'
+                            : 'Approved'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1.5 text-xs">
+                      <span className="text-gray-500">Voucher #:</span>
+                      <span className="col-span-2 font-bold text-gray-900 font-mono">
+                        {exp.voucher_number || '—'}
+                      </span>
+
+                      <span className="text-gray-500">Expense Date:</span>
+                      <span className="col-span-2 font-medium text-gray-800">
+                        {new Date(exp.expense_date).toLocaleDateString('id-ID', {
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric',
+                        })}
+                      </span>
+
+                      <span className="text-gray-500">Amount:</span>
+                      <span className="col-span-2 font-bold text-gray-900">
+                        {formatCurrency(expAmount, exp.currency_code || 'IDR')}
+                      </span>
+
+                      <span className="text-gray-500">Category:</span>
+                      <span className="col-span-2 text-gray-800">
+                        {exp.expense_category || '—'}
+                      </span>
+
+                      <span className="text-gray-500">Supplier:</span>
+                      <span className="col-span-2 font-medium text-gray-800">
+                        {exp.suppliers?.company_name || '—'}
+                      </span>
+
+                      <span className="text-gray-500">Payee / Staff:</span>
+                      <span className="col-span-2 text-gray-800">
+                        {exp.finance_staff_master?.full_name ||
+                          exp.finance_payees?.full_name ||
+                          '—'}
+                      </span>
+
+                      <span className="text-gray-500">Invoice #:</span>
+                      <span className="col-span-2 text-gray-800 font-mono">
+                        {exp.invoice_number || '—'}
+                      </span>
+
+                      <span className="text-gray-500">Payment Ref:</span>
+                      <span className="col-span-2 text-gray-800 font-mono">
+                        {exp.payment_reference || '—'}
+                      </span>
+
+                      <span className="text-gray-500">Container:</span>
+                      <span className="col-span-2 text-gray-800">
+                        {exp.import_containers?.container_ref || '—'}
+                      </span>
+
+                      <span className="text-gray-500">Description:</span>
+                      <span className="col-span-2 text-gray-800 break-words whitespace-pre-wrap text-[11px] bg-white p-1.5 rounded border border-gray-200 max-h-24 overflow-y-auto">
+                        {exp.description || '—'}
+                      </span>
+
+                      <span className="text-gray-500">PPN / PPh:</span>
+                      <span className="col-span-2 text-gray-700">
+                        PPN:{' '}
+                        {Number(exp.ppn_amount) > 0
+                          ? formatCurrency(exp.ppn_amount, exp.currency_code || 'IDR')
+                          : 'None'}
+                        {' · '}
+                        PPh:{' '}
+                        {Number(exp.pph_amount) > 0
+                          ? formatCurrency(exp.pph_amount, exp.currency_code || 'IDR')
+                          : 'None'}
+                      </span>
+
+                      <span className="text-gray-500">Payment Method:</span>
+                      <span className="col-span-2 text-gray-800">
+                        {exp.payment_method ? exp.payment_method.replace('_', ' ') : 'Unspecified'}
+                      </span>
+
+                      <span className="text-gray-500">Bank Account:</span>
+                      <span className="col-span-2 text-gray-800">
+                        {exp.bank_accounts?.account_name
+                          ? `${exp.bank_accounts.account_name} (${exp.bank_accounts.account_number})`
+                          : '—'}
+                      </span>
+
+                      <span className="text-gray-500">Paid Amount:</span>
+                      <span className="col-span-2 text-gray-800">
+                        {formatCurrency(exp.paid_amount || 0, exp.currency_code || 'IDR')}
+                      </span>
+
+                      <span className="text-gray-500">Currency / Rate:</span>
+                      <span className="col-span-2 text-gray-800">
+                        {exp.currency_code || 'IDR'}{' '}
+                        {exp.exchange_rate && exp.exchange_rate !== 1
+                          ? `· Rate: ${exp.exchange_rate}`
+                          : ''}
+                      </span>
+
+                      <span className="text-gray-500">Created By:</span>
+                      <span className="col-span-2 text-gray-700">
+                        {exp.created_by_profile?.full_name || '—'}
+                      </span>
+
+                      {exp.document_urls && exp.document_urls.length > 0 && (
+                        <>
+                          <span className="text-gray-500">Attachments:</span>
+                          <div className="col-span-2 flex flex-col gap-1">
+                            {exp.document_urls.map((url: string, idx: number) => {
+                              const filename = url.split('/').pop() || `Document ${idx + 1}`;
+                              return (
+                                <a
+                                  key={url}
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-600 hover:underline text-[11px] truncate flex items-center gap-1"
+                                >
+                                  📎 {filename.substring(0, 35)}
+                                </a>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Match Analysis Section */}
+                <div className="bg-purple-50 border border-purple-200 rounded-lg p-3.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-semibold text-purple-900 text-xs uppercase tracking-wider">
+                      Match Analysis
+                    </h4>
+                    <span className="text-xs text-purple-700 font-medium">
+                      Tier {tierStr} · Text Score: {textScoreStr}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                    <div className="bg-white p-2 rounded border border-purple-100">
+                      <span className="text-gray-500 block text-[11px]">Amount</span>
+                      <span
+                        className={`font-semibold ${isAmountExact ? 'text-green-700' : 'text-amber-700'}`}
+                      >
+                        {isAmountExact
+                          ? 'Exact ✓'
+                          : `Diff: ${formatCurrency(amountDiff, line.currency)}`}
+                      </span>
+                    </div>
+
+                    <div className="bg-white p-2 rounded border border-purple-100">
+                      <span className="text-gray-500 block text-[11px]">Date</span>
+                      <span
+                        className={`font-semibold ${isDateExact ? 'text-green-700' : 'text-blue-700'}`}
+                      >
+                        {isDateExact
+                          ? 'Exact ✓'
+                          : `${daysDiff} day${daysDiff === 1 ? '' : 's'} diff`}
+                      </span>
+                    </div>
+
+                    <div className="bg-white p-2 rounded border border-purple-100">
+                      <span className="text-gray-500 block text-[11px]">Direction</span>
+                      <span className="font-semibold text-green-700">Debit = Debit ✓</span>
+                    </div>
+
+                    <div className="bg-white p-2 rounded border border-purple-100">
+                      <span className="text-gray-500 block text-[11px]">Match Confidence</span>
+                      <span className="font-semibold text-purple-700">Tier {tierStr} (High)</span>
+                    </div>
+                  </div>
+
+                  {line.notes && (
+                    <p className="text-xs text-purple-800 bg-white/70 p-2 rounded border border-purple-100">
+                      <strong>Suggestion reason:</strong> {line.notes}
+                    </p>
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSuggestedLine(null)}
-                    className="px-3 py-1.5 border border-gray-300 rounded text-xs font-medium hover:bg-gray-50 text-gray-700"
-                  >
-                    Close
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      await rejectMatch(line.id);
-                      setSelectedSuggestedLine(null);
-                    }}
-                    className="px-3 py-1.5 border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 rounded text-xs font-medium"
-                  >
-                    Reject Suggestion
-                  </button>
-                  <button
-                    type="button"
-                    disabled={cannotConfirm}
-                    onClick={async () => {
-                      await confirmMatch(line.id);
-                      setSelectedSuggestedLine(null);
-                    }}
-                    className={`px-4 py-1.5 rounded text-xs font-semibold text-white ${cannotConfirm ? 'bg-gray-300 cursor-not-allowed opacity-60' : 'bg-green-600 hover:bg-green-700 shadow-sm'}`}
-                    title={isPending ? 'Approve this expense in Finance before confirming' : isRejected ? 'Cannot confirm match for a rejected or cancelled expense' : 'Confirm and reconcile'}
-                  >
-                    Confirm Match
-                  </button>
+                {/* Actions */}
+                <div className="flex items-center justify-between pt-2 border-t border-gray-200">
+                  <div className="flex items-center gap-2">
+                    {exp.document_urls && exp.document_urls.length > 0 && (
+                      <a
+                        href={exp.document_urls[0]}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 border border-gray-300 rounded text-xs font-medium hover:bg-gray-50 text-gray-700 flex items-center gap-1"
+                      >
+                        View Attachment
+                      </a>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSuggestedLine(null)}
+                      className="px-3 py-1.5 border border-gray-300 rounded text-xs font-medium hover:bg-gray-50 text-gray-700"
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await rejectMatch(line.id);
+                        setSelectedSuggestedLine(null);
+                      }}
+                      className="px-3 py-1.5 border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 rounded text-xs font-medium"
+                    >
+                      Reject Suggestion
+                    </button>
+                    <button
+                      type="button"
+                      disabled={cannotConfirm}
+                      onClick={async () => {
+                        await confirmMatch(line.id);
+                        setSelectedSuggestedLine(null);
+                      }}
+                      className={`px-4 py-1.5 rounded text-xs font-semibold text-white ${cannotConfirm ? 'bg-gray-300 cursor-not-allowed opacity-60' : 'bg-green-600 hover:bg-green-700 shadow-sm'}`}
+                      title={
+                        isPending
+                          ? 'Approve this expense in Finance before confirming'
+                          : isRejected
+                            ? 'Cannot confirm match for a rejected or cancelled expense'
+                            : 'Confirm and reconcile'
+                      }
+                    >
+                      Confirm Match
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </Modal>
-        );
-      })()}
+            </Modal>
+          );
+        })()}
 
       {embeddedExpensePrefill && (
         <ExpenseManager
@@ -7587,10 +9084,19 @@ export function BankReconciliationEnhanced({
                 : 'Expense created and linked to statement line. An authorized approver must approve it before posting.',
               details: [
                 { label: 'Voucher Number', value: displayVoucher },
-                { label: 'Amount', value: formatCurrency(savedExpense.amount, savedExpense.transaction_currency) },
+                {
+                  label: 'Amount',
+                  value: formatCurrency(savedExpense.amount, savedExpense.transaction_currency),
+                },
                 { label: 'Category', value: savedExpense.expense_category },
-                { label: 'Date', value: new Date(savedExpense.expense_date).toLocaleDateString('id-ID') },
-                { label: 'Status', value: isApproved ? 'Approved & Reconciled' : 'Pending Approval' },
+                {
+                  label: 'Date',
+                  value: new Date(savedExpense.expense_date).toLocaleDateString('id-ID'),
+                },
+                {
+                  label: 'Status',
+                  value: isApproved ? 'Approved & Reconciled' : 'Pending Approval',
+                },
               ],
               timestamp: Date.now(),
             });
@@ -7636,12 +9142,18 @@ export function BankReconciliationEnhanced({
           <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1 text-xs">
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between">
               <div>
-                <span className="font-bold text-slate-900 block">{selectedAccount?.bank_name} - {selectedAccount?.account_name}</span>
-                <span className="text-slate-500 font-mono text-[11px]">{selectedAccount?.account_number} ({selectedAccount?.currency})</span>
+                <span className="font-bold text-slate-900 block">
+                  {selectedAccount?.bank_name} - {selectedAccount?.account_name}
+                </span>
+                <span className="text-slate-500 font-mono text-[11px]">
+                  {selectedAccount?.account_number} ({selectedAccount?.currency})
+                </span>
               </div>
               <button
                 type="button"
-                onClick={() => { void loadUploadsAudit(); }}
+                onClick={() => {
+                  void loadUploadsAudit();
+                }}
                 className="px-2.5 py-1 text-xs bg-white border border-slate-300 rounded hover:bg-slate-50 flex items-center gap-1 text-slate-700 font-medium"
               >
                 <RefreshCw className={`w-3 h-3 ${loadingUploadsAudit ? 'animate-spin' : ''}`} />
@@ -7670,25 +9182,43 @@ export function BankReconciliationEnhanced({
                   const isBalanced = diff <= 0.05;
 
                   return (
-                    <div key={up.id} className="border border-slate-200 rounded-xl p-3 bg-white space-y-2.5 shadow-xs">
+                    <div
+                      key={up.id}
+                      className="border border-slate-200 rounded-xl p-3 bg-white space-y-2.5 shadow-xs"
+                    >
                       <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                         <div className="flex items-center gap-2">
-                          <span className="font-bold text-slate-900">{up.statement_period || 'Period N/A'}</span>
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                            up.status === 'completed' ? 'bg-emerald-100 text-emerald-800' :
-                            up.status === 'pending' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
-                          }`}>
+                          <span className="font-bold text-slate-900">
+                            {up.statement_period || 'Period N/A'}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              up.status === 'completed'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : up.status === 'pending'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
                             {up.status}
                           </span>
                         </div>
                         <span className="text-[11px] text-slate-500 font-mono">
-                          {new Date(up.created_at).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          {new Date(up.created_at).toLocaleDateString('id-ID', {
+                            day: '2-digit',
+                            month: 'short',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
                         </span>
                       </div>
 
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono text-[11px]">
                         <div className="bg-slate-50 p-2 rounded border border-slate-100">
-                          <span className="text-[10px] text-slate-500 font-sans block">Opening Balance</span>
+                          <span className="text-[10px] text-slate-500 font-sans block">
+                            Opening Balance
+                          </span>
                           <span className="font-semibold">{formatCurrency(open, up.currency)}</span>
                         </div>
                         <div className="bg-emerald-50/50 p-2 rounded border border-emerald-100 text-emerald-800">
@@ -7700,16 +9230,27 @@ export function BankReconciliationEnhanced({
                           <span className="font-semibold">-{formatCurrency(dr, up.currency)}</span>
                         </div>
                         <div className="bg-slate-50 p-2 rounded border border-slate-100">
-                          <span className="text-[10px] text-slate-500 font-sans block">Closing Balance</span>
-                          <span className="font-semibold">{formatCurrency(close, up.currency)}</span>
+                          <span className="text-[10px] text-slate-500 font-sans block">
+                            Closing Balance
+                          </span>
+                          <span className="font-semibold">
+                            {formatCurrency(close, up.currency)}
+                          </span>
                         </div>
                       </div>
 
                       <div className="flex items-center justify-between pt-1 text-[11px]">
                         <div className="flex items-center gap-2">
-                          <span className="text-slate-600">Transactions: <strong>{up.transaction_count ?? '—'}</strong></span>
+                          <span className="text-slate-600">
+                            Transactions: <strong>{up.transaction_count ?? '—'}</strong>
+                          </span>
                           {up.file_url && (
-                            <a href={up.file_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline inline-flex items-center gap-0.5">
+                            <a
+                              href={up.file_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-blue-600 hover:underline inline-flex items-center gap-0.5"
+                            >
                               View File <ExternalLink className="w-2.5 h-2.5" />
                             </a>
                           )}
@@ -7717,11 +9258,13 @@ export function BankReconciliationEnhanced({
                         <div className="flex items-center gap-1.5">
                           {isBalanced ? (
                             <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Equation Verified: $Opening + Cr - Dr = Close$
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Equation
+                              Verified: $Opening + Cr - Dr = Close$
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 text-rose-700 font-semibold bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
-                              <AlertCircle className="w-3 h-3 text-rose-600" /> Equation Discrepancy: {diff.toFixed(2)}
+                              <AlertCircle className="w-3 h-3 text-rose-600" /> Equation
+                              Discrepancy: {diff.toFixed(2)}
                             </span>
                           )}
                         </div>
@@ -7759,7 +9302,8 @@ export function BankReconciliationEnhanced({
               <div>
                 <h3 className="font-bold text-slate-900 text-sm">Unmatched Transactions Drawer</h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Actionable view for unlinked and suggested transactions ({stats.unmatched + stats.suggested} items)
+                  Actionable view for unlinked and suggested transactions (
+                  {stats.unmatched + stats.suggested} items)
                 </p>
               </div>
               <button
@@ -7772,34 +9316,51 @@ export function BankReconciliationEnhanced({
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
-              {statementLines.filter(l => l.status === 'unmatched' || l.status === 'suggested').length === 0 ? (
+              {statementLines.filter((l) => l.status === 'unmatched' || l.status === 'suggested')
+                .length === 0 ? (
                 <div className="text-center py-16 text-slate-500">
                   <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2 opacity-80" />
                   <p className="font-semibold text-slate-700">All transactions reconciled!</p>
-                  <p className="text-[11px] text-slate-400 mt-1">There are no pending unmatched or conflict transactions in the current range.</p>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    There are no pending unmatched or conflict transactions in the current range.
+                  </p>
                 </div>
               ) : (
                 statementLines
-                  .filter(l => l.status === 'unmatched' || l.status === 'suggested')
+                  .filter((l) => l.status === 'unmatched' || l.status === 'suggested')
                   .map((line) => {
                     const isDebit = line.debit > 0;
                     const amt = isDebit ? line.debit : line.credit;
                     return (
-                      <div key={line.id} className="border border-slate-200 rounded-xl p-3 bg-white space-y-2 hover:border-slate-300 shadow-2xs">
+                      <div
+                        key={line.id}
+                        className="border border-slate-200 rounded-xl p-3 bg-white space-y-2 hover:border-slate-300 shadow-2xs"
+                      >
                         <div className="flex items-start justify-between gap-2">
                           <div>
-                            <span className="font-mono text-slate-500 text-[11px] block">{formatDate(line.date)}</span>
-                            <span className="font-semibold text-slate-900 text-xs">{line.description}</span>
+                            <span className="font-mono text-slate-500 text-[11px] block">
+                              {formatDate(line.date)}
+                            </span>
+                            <span className="font-semibold text-slate-900 text-xs">
+                              {line.description}
+                            </span>
                           </div>
-                          <span className={`font-bold tabular-nums text-xs whitespace-nowrap px-2 py-0.5 rounded ${isDebit ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                            {isDebit ? '-' : '+'}{formatCurrency(amt, line.currency)}
+                          <span
+                            className={`font-bold tabular-nums text-xs whitespace-nowrap px-2 py-0.5 rounded ${isDebit ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}
+                          >
+                            {isDebit ? '-' : '+'}
+                            {formatCurrency(amt, line.currency)}
                           </span>
                         </div>
 
                         <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-[11px]">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                            line.status === 'suggested' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
-                          }`}>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              line.status === 'suggested'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
                             {line.status}
                           </span>
 
@@ -7860,7 +9421,9 @@ export function BankReconciliationEnhanced({
             <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => { void autoMatchTransactions(); }}
+                onClick={() => {
+                  void autoMatchTransactions();
+                }}
                 disabled={autoMatching}
                 className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg font-semibold text-xs flex items-center gap-1.5"
               >
@@ -7880,204 +9443,227 @@ export function BankReconciliationEnhanced({
       )}
 
       {/* Interactive Match Review Modal */}
-      {isInteractiveModalOpen && interactiveQueue[queueIndex] && (() => {
-        const item = interactiveQueue[queueIndex];
-        const line = item.line;
-        const candidates = item.candidates;
-        const selectedCandidate = candidates.find(c => c.id === selectedCandidateId) || null;
-        const remainingCount = interactiveQueue.length - queueIndex;
+      {isInteractiveModalOpen &&
+        interactiveQueue[queueIndex] &&
+        (() => {
+          const item = interactiveQueue[queueIndex];
+          const line = item.line;
+          const candidates = item.candidates;
+          const selectedCandidate = candidates.find((c) => c.id === selectedCandidateId) || null;
+          const remainingCount = interactiveQueue.length - queueIndex;
 
-        return (
-          <Modal
-            isOpen={true}
-            onClose={() => setIsInteractiveModalOpen(false)}
-            title="Interactive Bank Reconciliation Match"
-            maxWidth="max-w-2xl"
-          >
-            <div className="space-y-4 text-xs">
-              {/* Queue Header / Decision Banner */}
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-center justify-between">
-                <div>
-                  <span className="font-bold text-amber-900 text-sm block">
-                    {remainingCount} transaction{remainingCount === 1 ? '' : 's'} need your decision
-                  </span>
-                  <span className="text-amber-700 text-xs">
-                    Transaction {queueIndex + 1} of {interactiveQueue.length}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleSkipAllCandidates}
-                  className="px-2.5 py-1 text-xs text-amber-800 hover:text-amber-950 font-medium bg-amber-100 hover:bg-amber-200 rounded transition-colors"
-                >
-                  Skip All
-                </button>
-              </div>
-
-              {/* Bank Transaction Summary Card */}
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5">
-                <div className="font-semibold text-slate-700 flex items-center gap-1.5 uppercase tracking-wide text-[11px]">
-                  <Landmark className="w-3.5 h-3.5 text-blue-600" />
-                  <span>Bank Statement Transaction</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-200">
+          return (
+            <Modal
+              isOpen={true}
+              onClose={() => setIsInteractiveModalOpen(false)}
+              title="Interactive Bank Reconciliation Match"
+              maxWidth="max-w-2xl"
+            >
+              <div className="space-y-4 text-xs">
+                {/* Queue Header / Decision Banner */}
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-center justify-between">
                   <div>
-                    <span className="text-slate-500 block text-[10px]">Date</span>
-                    <span className="font-medium text-slate-800">{new Date(line.date).toLocaleDateString('id-ID')}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block text-[10px]">Amount</span>
-                    <span className="font-bold text-red-600">{formatCurrency(line.debit || line.credit, line.currency)}</span>
-                  </div>
-                  <div className="col-span-2">
-                    <span className="text-slate-500 block text-[10px]">Description</span>
-                    <span className="font-medium text-slate-800 block break-words">{line.description}</span>
-                  </div>
-                  {line.reference && (
-                    <div className="col-span-2">
-                      <span className="text-slate-500 block text-[10px]">Reference</span>
-                      <span className="font-mono text-slate-700">{line.reference}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Core Question & Prompt */}
-              <div className="space-y-1">
-                <h4 className="font-bold text-sm text-slate-900">Which expense should this bank transaction link to?</h4>
-                <p className="text-slate-500 text-xs">
-                  {candidates.length >= 2
-                    ? `${candidates.length} candidate expenses matched this transaction. Select which expense to link, or skip to leave it untouched.`
-                    : 'Select a candidate expense to link, or skip.'}
-                </p>
-              </div>
-
-              {/* Dropdown with Candidates (Default Selection EMPTY) */}
-              <div className="space-y-1.5">
-                <label className="block font-semibold text-slate-700 text-xs">
-                  Candidate Expense Options
-                </label>
-                <select
-                  value={selectedCandidateId}
-                  onChange={(e) => setSelectedCandidateId(e.target.value)}
-                  className="w-full text-xs border border-slate-300 rounded-lg p-2.5 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="">Choose an expense...</option>
-                  {candidates.map(cand => (
-                    <option key={cand.id} value={cand.id}>
-                      {cand.voucherNumber} — {new Date(cand.expenseDate).toLocaleDateString('id-ID')} — {formatCurrency(cand.outstandingAmount, line.currency)} — {cand.supplierPayee} ({cand.approvalStatus === 'approved' ? 'Approved' : 'Pending'}) [{cand.matchReason}]
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Candidate Detail Card */}
-              {selectedCandidate && (
-                <div className="bg-blue-50/60 border border-blue-200 rounded-lg p-3 space-y-2">
-                  <div className="flex items-center justify-between border-b border-blue-200 pb-1.5">
-                    <span className="font-bold text-blue-950 text-xs flex items-center gap-1.5">
-                      <FileText className="w-3.5 h-3.5 text-blue-600" />
-                      {selectedCandidate.voucherNumber}
+                    <span className="font-bold text-amber-900 text-sm block">
+                      {remainingCount} transaction{remainingCount === 1 ? '' : 's'} need your
+                      decision
                     </span>
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                      selectedCandidate.approvalStatus === 'approved'
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-amber-100 text-amber-800'
-                    }`}>
-                      {selectedCandidate.approvalStatus === 'approved' ? 'Approved' : 'Pending Approval'}
+                    <span className="text-amber-700 text-xs">
+                      Transaction {queueIndex + 1} of {interactiveQueue.length}
                     </span>
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleSkipAllCandidates}
+                    className="px-2.5 py-1 text-xs text-amber-800 hover:text-amber-950 font-medium bg-amber-100 hover:bg-amber-200 rounded transition-colors"
+                  >
+                    Skip All
+                  </button>
+                </div>
 
-                  <div className="grid grid-cols-2 gap-2 text-xs">
+                {/* Bank Transaction Summary Card */}
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1.5">
+                  <div className="font-semibold text-slate-700 flex items-center gap-1.5 uppercase tracking-wide text-[11px]">
+                    <Landmark className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Bank Statement Transaction</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-200">
                     <div>
-                      <span className="text-slate-500 block text-[10px]">Expense Date</span>
+                      <span className="text-slate-500 block text-[10px]">Date</span>
                       <span className="font-medium text-slate-800">
-                        {new Date(selectedCandidate.expenseDate).toLocaleDateString('id-ID')}
+                        {new Date(line.date).toLocaleDateString('id-ID')}
                       </span>
                     </div>
                     <div>
-                      <span className="text-slate-500 block text-[10px]">Category</span>
-                      <span className="font-medium text-slate-800 capitalize">
-                        {selectedCandidate.category.replace(/_/g, ' ')}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block text-[10px]">Supplier / Payee</span>
-                      <span className="font-medium text-slate-800">
-                        {selectedCandidate.supplierPayee}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block text-[10px]">Outstanding Amount</span>
-                      <span className="font-bold text-slate-900">
-                        {formatCurrency(selectedCandidate.outstandingAmount, line.currency)}
+                      <span className="text-slate-500 block text-[10px]">Amount</span>
+                      <span className="font-bold text-red-600">
+                        {formatCurrency(line.debit || line.credit, line.currency)}
                       </span>
                     </div>
                     <div className="col-span-2">
                       <span className="text-slate-500 block text-[10px]">Description</span>
                       <span className="font-medium text-slate-800 block break-words">
-                        {selectedCandidate.description || '(No description)'}
+                        {line.description}
                       </span>
                     </div>
-                    <div className="col-span-2 bg-white/80 p-1.5 rounded border border-blue-100">
-                      <span className="text-slate-500 block text-[10px]">Match Reason</span>
-                      <span className="font-semibold text-blue-900">
-                        {selectedCandidate.matchReason}
-                      </span>
-                    </div>
+                    {line.reference && (
+                      <div className="col-span-2">
+                        <span className="text-slate-500 block text-[10px]">Reference</span>
+                        <span className="font-mono text-slate-700">{line.reference}</span>
+                      </div>
+                    )}
                   </div>
+                </div>
 
-                  {selectedCandidate.approvalStatus === 'pending_approval' && (
-                    <div className="bg-amber-100/70 border border-amber-300 rounded p-2 text-amber-900 text-[11px] leading-tight flex items-start gap-1.5">
-                      <Info className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                {/* Core Question & Prompt */}
+                <div className="space-y-1">
+                  <h4 className="font-bold text-sm text-slate-900">
+                    Which expense should this bank transaction link to?
+                  </h4>
+                  <p className="text-slate-500 text-xs">
+                    {candidates.length >= 2
+                      ? `${candidates.length} candidate expenses matched this transaction. Select which expense to link, or skip to leave it untouched.`
+                      : 'Select a candidate expense to link, or skip.'}
+                  </p>
+                </div>
+
+                {/* Dropdown with Candidates (Default Selection EMPTY) */}
+                <div className="space-y-1.5">
+                  <label className="block font-semibold text-slate-700 text-xs">
+                    Candidate Expense Options
+                  </label>
+                  <select
+                    value={selectedCandidateId}
+                    onChange={(e) => setSelectedCandidateId(e.target.value)}
+                    className="w-full text-xs border border-slate-300 rounded-lg p-2.5 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">Choose an expense...</option>
+                    {candidates.map((cand) => (
+                      <option key={cand.id} value={cand.id}>
+                        {cand.voucherNumber} —{' '}
+                        {new Date(cand.expenseDate).toLocaleDateString('id-ID')} —{' '}
+                        {formatCurrency(cand.outstandingAmount, line.currency)} —{' '}
+                        {cand.supplierPayee} (
+                        {cand.approvalStatus === 'approved' ? 'Approved' : 'Pending'}) [
+                        {cand.matchReason}]
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Candidate Detail Card */}
+                {selectedCandidate && (
+                  <div className="bg-blue-50/60 border border-blue-200 rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between border-b border-blue-200 pb-1.5">
+                      <span className="font-bold text-blue-950 text-xs flex items-center gap-1.5">
+                        <FileText className="w-3.5 h-3.5 text-blue-600" />
+                        {selectedCandidate.voucherNumber}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                          selectedCandidate.approvalStatus === 'approved'
+                            ? 'bg-green-100 text-green-800'
+                            : 'bg-amber-100 text-amber-800'
+                        }`}
+                      >
+                        {selectedCandidate.approvalStatus === 'approved'
+                          ? 'Approved'
+                          : 'Pending Approval'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-xs">
                       <div>
-                        <strong>Awaiting Accounting Approval:</strong> Linking now records this bank payment as the source transaction. When approved in Finance Expenses, ledger reconciliation will complete automatically without asking for another bank match approval.
+                        <span className="text-slate-500 block text-[10px]">Expense Date</span>
+                        <span className="font-medium text-slate-800">
+                          {new Date(selectedCandidate.expenseDate).toLocaleDateString('id-ID')}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px]">Category</span>
+                        <span className="font-medium text-slate-800 capitalize">
+                          {selectedCandidate.category.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px]">Supplier / Payee</span>
+                        <span className="font-medium text-slate-800">
+                          {selectedCandidate.supplierPayee}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px]">Outstanding Amount</span>
+                        <span className="font-bold text-slate-900">
+                          {formatCurrency(selectedCandidate.outstandingAmount, line.currency)}
+                        </span>
+                      </div>
+                      <div className="col-span-2">
+                        <span className="text-slate-500 block text-[10px]">Description</span>
+                        <span className="font-medium text-slate-800 block break-words">
+                          {selectedCandidate.description || '(No description)'}
+                        </span>
+                      </div>
+                      <div className="col-span-2 bg-white/80 p-1.5 rounded border border-blue-100">
+                        <span className="text-slate-500 block text-[10px]">Match Reason</span>
+                        <span className="font-semibold text-blue-900">
+                          {selectedCandidate.matchReason}
+                        </span>
                       </div>
                     </div>
-                  )}
-                </div>
-              )}
 
-              {/* Actions */}
-              <div className="flex items-center justify-between pt-3 border-t border-slate-200">
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleSkipCurrentCandidate}
-                    className="px-3 py-1.5 text-xs text-slate-700 bg-slate-100 hover:bg-slate-200 rounded font-medium transition-colors"
-                  >
-                    Skip
-                  </button>
-                  {selectedCandidate && (
+                    {selectedCandidate.approvalStatus === 'pending_approval' && (
+                      <div className="bg-amber-100/70 border border-amber-300 rounded p-2 text-amber-900 text-[11px] leading-tight flex items-start gap-1.5">
+                        <Info className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <strong>Awaiting Accounting Approval:</strong> Linking now records this
+                          bank payment as the source transaction. When approved in Finance Expenses,
+                          ledger reconciliation will complete automatically without asking for
+                          another bank match approval.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setInspectingExpense(selectedCandidate.expense)}
-                      className="px-3 py-1.5 text-xs text-blue-700 bg-blue-50 hover:bg-blue-100 rounded font-medium transition-colors"
+                      onClick={handleSkipCurrentCandidate}
+                      className="px-3 py-1.5 text-xs text-slate-700 bg-slate-100 hover:bg-slate-200 rounded font-medium transition-colors"
                     >
-                      View Expense
+                      Skip
                     </button>
-                  )}
+                    {selectedCandidate && (
+                      <button
+                        type="button"
+                        onClick={() => setInspectingExpense(selectedCandidate.expense)}
+                        className="px-3 py-1.5 text-xs text-blue-700 bg-blue-50 hover:bg-blue-100 rounded font-medium transition-colors"
+                      >
+                        View Expense
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!selectedCandidateId || isLinkingCandidate}
+                    onClick={handleLinkSelectedCandidate}
+                    className="px-4 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded shadow-sm flex items-center gap-1.5 transition-colors"
+                  >
+                    {isLinkingCandidate ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        Linking…
+                      </>
+                    ) : (
+                      'Link Selected'
+                    )}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  disabled={!selectedCandidateId || isLinkingCandidate}
-                  onClick={handleLinkSelectedCandidate}
-                  className="px-4 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded shadow-sm flex items-center gap-1.5 transition-colors"
-                >
-                  {isLinkingCandidate ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      Linking…
-                    </>
-                  ) : (
-                    'Link Selected'
-                  )}
-                </button>
               </div>
-            </div>
-          </Modal>
-        );
-      })()}
+            </Modal>
+          );
+        })()}
 
       {/* No Match Found Modal */}
       {noMatchModalOpen && noMatchLine && (
@@ -8091,7 +9677,8 @@ export function BankReconciliationEnhanced({
             <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1">
               <div className="font-semibold text-slate-800">{noMatchLine.description}</div>
               <div className="text-slate-500">
-                {new Date(noMatchLine.date).toLocaleDateString('id-ID')} · {formatCurrency(noMatchLine.debit || noMatchLine.credit, noMatchLine.currency)}
+                {new Date(noMatchLine.date).toLocaleDateString('id-ID')} ·{' '}
+                {formatCurrency(noMatchLine.debit || noMatchLine.credit, noMatchLine.currency)}
               </div>
               {noMatchLine.reference && (
                 <div className="text-slate-500 font-mono text-[10px]">
@@ -8154,28 +9741,43 @@ export function BankReconciliationEnhanced({
             <div className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
               <div>
                 <span className="text-slate-500 block text-[10px]">Voucher</span>
-                <span className="font-bold text-slate-900">{inspectingExpense.voucher_number || '—'}</span>
+                <span className="font-bold text-slate-900">
+                  {inspectingExpense.voucher_number || '—'}
+                </span>
               </div>
               <div>
                 <span className="text-slate-500 block text-[10px]">Date</span>
-                <span className="font-medium text-slate-800">{new Date(inspectingExpense.expense_date).toLocaleDateString('id-ID')}</span>
+                <span className="font-medium text-slate-800">
+                  {new Date(inspectingExpense.expense_date).toLocaleDateString('id-ID')}
+                </span>
               </div>
               <div>
                 <span className="text-slate-500 block text-[10px]">Amount</span>
-                <span className="font-bold text-slate-900">{formatCurrency(inspectingExpense.amount, inspectingExpense.currency_code || 'IDR')}</span>
+                <span className="font-bold text-slate-900">
+                  {formatCurrency(
+                    inspectingExpense.amount,
+                    inspectingExpense.currency_code || 'IDR'
+                  )}
+                </span>
               </div>
               <div>
                 <span className="text-slate-500 block text-[10px]">Approval Status</span>
-                <span className="font-semibold text-slate-800 capitalize">{inspectingExpense.approval_status}</span>
+                <span className="font-semibold text-slate-800 capitalize">
+                  {inspectingExpense.approval_status}
+                </span>
               </div>
               <div className="col-span-2">
                 <span className="text-slate-500 block text-[10px]">Description</span>
-                <span className="font-medium text-slate-800">{inspectingExpense.description || '(No description)'}</span>
+                <span className="font-medium text-slate-800">
+                  {inspectingExpense.description || '(No description)'}
+                </span>
               </div>
               {inspectingExpense.suppliers?.company_name && (
                 <div className="col-span-2">
                   <span className="text-slate-500 block text-[10px]">Supplier / Payee</span>
-                  <span className="font-medium text-slate-800">{inspectingExpense.suppliers.company_name}</span>
+                  <span className="font-medium text-slate-800">
+                    {inspectingExpense.suppliers.company_name}
+                  </span>
                 </div>
               )}
             </div>

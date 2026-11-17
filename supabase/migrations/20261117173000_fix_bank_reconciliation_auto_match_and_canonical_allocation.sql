@@ -212,11 +212,27 @@ BEGIN
     RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
   END IF;
 
-  -- Normalize payment_kind: preserve pph23 for genuine withholding, normalize empty/null/unclassified to supplier
-  v_kind := CASE
-    WHEN p_payment_kind = 'pph23' THEN 'pph23'
-    ELSE 'supplier'
-  END;
+  -- Normalize payment_kind:
+  -- For expenses: preserve pph23, normalize NULL/empty/unclassified/operational to 'supplier'
+  -- For other document types: preserve supplied payment_kind, use document default on NULL/empty, never force to 'supplier'
+  IF p_document_type = 'expense' THEN
+    v_kind := CASE
+      WHEN p_payment_kind = 'pph23' THEN 'pph23'
+      WHEN p_payment_kind IS NULL OR btrim(p_payment_kind) = '' OR p_payment_kind = 'unclassified' THEN 'supplier'
+      ELSE 'supplier'
+    END;
+  ELSE
+    v_kind := CASE
+      WHEN p_payment_kind IS NOT NULL AND btrim(p_payment_kind) <> '' THEN p_payment_kind
+      WHEN p_document_type = 'fund_transfer' THEN 'fund_transfer'
+      WHEN p_document_type = 'receipt' THEN 'customer_receipt'
+      WHEN p_document_type = 'payment' THEN 'supplier'
+      WHEN p_document_type = 'tax_payment' THEN 'tax'
+      WHEN p_document_type = 'petty_cash' THEN 'petty_cash'
+      WHEN p_document_type = 'journal' THEN 'journal'
+      ELSE 'supplier'
+    END;
+  END IF;
 
   SELECT * INTO v_line FROM public.bank_statement_lines WHERE id = p_bank_line_id FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'Bank statement line not found'; END IF;
@@ -759,7 +775,14 @@ BEGIN
           v_line.id,
           v_candidate->>'document_type',
           (v_candidate->>'document_id')::uuid,
-          'supplier',
+          CASE v_candidate->>'document_type'
+            WHEN 'fund_transfer' THEN 'fund_transfer'
+            WHEN 'receipt' THEN 'customer_receipt'
+            WHEN 'tax_payment' THEN 'tax'
+            WHEN 'petty_cash' THEN 'petty_cash'
+            WHEN 'journal' THEN 'journal'
+            ELSE 'supplier'
+          END,
           v_bank_amount
         );
 

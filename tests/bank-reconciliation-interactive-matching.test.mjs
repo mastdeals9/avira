@@ -170,7 +170,7 @@ test('4. Skip leaves both candidate expenses and bank transaction untouched', ()
   // handleSkipCurrentCandidate adds line ID to skippedSessionLineIds and does not call linkBankStatementLine
   assert.match(
     ui,
-    /const handleSkipCurrentCandidate = \(\) => \{[\s\S]*?setSkippedSessionLineIds\(prev => new Set\(prev\)\.add\(currentItem\.line\.id\)\);/
+    /const handleSkipCurrentCandidate = \(\) => \{[\s\S]*?setSkippedSessionLineIds\(\(?prev\)? => new Set\(prev\)\.add\(currentItem\.line\.id\)\);/
   );
 
   // handleSkipAllCandidates closes modal without mutating documents
@@ -321,12 +321,31 @@ test('11. Actual allocation is verified before matched_count is incremented', ()
   );
 });
 
-test('12. PPh23 remains distinct from ordinary supplier payment', () => {
-  assert.equal(normalizePaymentKind('pph23'), 'pph23');
+// ============================================================================
+// Payment Kind Safety & Document-Specific Preservation Regression Tests
+// ============================================================================
+
+test('12. Regression 1: Expense NULL / empty / unclassified becomes supplier', () => {
+  assert.equal(normalizePaymentKind('expense', null), 'supplier');
+  assert.equal(normalizePaymentKind('expense', ''), 'supplier');
+  assert.equal(normalizePaymentKind('expense', '   '), 'supplier');
+  assert.equal(normalizePaymentKind('expense', 'unclassified'), 'supplier');
+  assert.equal(normalizePaymentKind('expense', 'supplier'), 'supplier');
+  assert.equal(normalizePaymentKind('expense', 'operational'), 'supplier');
   assert.equal(normalizePaymentKind(null), 'supplier');
   assert.equal(normalizePaymentKind(''), 'supplier');
   assert.equal(normalizePaymentKind('unclassified'), 'supplier');
-  assert.equal(normalizePaymentKind('supplier'), 'supplier');
+
+  const migration = readFileSync(migrationPath, 'utf8');
+  assert.match(
+    migration,
+    /IF p_document_type = 'expense' THEN[\s\S]*?WHEN p_payment_kind = 'pph23' THEN 'pph23'[\s\S]*?WHEN p_payment_kind IS NULL OR btrim\(p_payment_kind\) = '' OR p_payment_kind = 'unclassified' THEN 'supplier'[\s\S]*?ELSE 'supplier'/
+  );
+});
+
+test('13. Regression 2: Genuine PPh23 remains pph23', () => {
+  assert.equal(normalizePaymentKind('expense', 'pph23'), 'pph23');
+  assert.equal(normalizePaymentKind('pph23'), 'pph23');
 
   const expWithPph = {
     amount: 10000000,
@@ -344,10 +363,96 @@ test('12. PPh23 remains distinct from ordinary supplier payment', () => {
   const migration = readFileSync(migrationPath, 'utf8');
   assert.match(
     migration,
-    /v_kind := CASE\s*WHEN p_payment_kind = 'pph23' THEN 'pph23'\s*ELSE 'supplier'\s*END;/
+    /ELSIF v_kind = 'pph23' THEN[\s\S]*?v_doc_total := COALESCE\(v_expense\.pph_amount, 0\);[\s\S]*?SELECT id INTO v_settlement_coa FROM public\.chart_of_accounts WHERE code = '2132' LIMIT 1;/
   );
   assert.match(
     migration,
-    /ELSIF v_kind = 'pph23' THEN\s*v_doc_total := COALESCE\(v_expense\.pph_amount, 0\);/
+    /bsa\.payment_kind='pph23'/
+  );
+});
+
+test('14. Regression 3: Fund Transfer remains fund_transfer (never converted to supplier)', () => {
+  assert.equal(normalizePaymentKind('fund_transfer', null), 'fund_transfer');
+  assert.equal(normalizePaymentKind('fund_transfer', ''), 'fund_transfer');
+  assert.equal(normalizePaymentKind('fund_transfer', 'fund_transfer'), 'fund_transfer');
+  assert.equal(normalizePaymentKind('fund_transfer'), 'fund_transfer');
+
+  const migration = readFileSync(migrationPath, 'utf8');
+
+  // Verify link_bank_statement_line defaults fund_transfer to 'fund_transfer' and preserves custom kind
+  assert.match(
+    migration,
+    /WHEN p_document_type = 'fund_transfer' THEN 'fund_transfer'/
+  );
+
+  // Negative assertion: Verify link_bank_statement_line does NOT indiscriminately convert non-PPh23 documents to supplier
+  assert.doesNotMatch(
+    migration,
+    /v_kind := CASE\s*WHEN p_payment_kind = 'pph23' THEN 'pph23'\s*ELSE 'supplier'\s*END;/,
+    'Must NOT contain unconditional non-pph23 to supplier conversion'
+  );
+
+  // Verify auto_match_smart Section 1 passes 'fund_transfer' for fund_transfer candidates
+  assert.match(
+    migration,
+    /WHEN 'fund_transfer' THEN 'fund_transfer'/
+  );
+});
+
+test('15. Regression 4: Receipt and Payment Voucher payment kinds remain unchanged', () => {
+  // Receipt vouchers
+  assert.equal(normalizePaymentKind('receipt', null), 'customer_receipt');
+  assert.equal(normalizePaymentKind('receipt', ''), 'customer_receipt');
+  assert.equal(normalizePaymentKind('receipt', 'customer_receipt'), 'customer_receipt');
+  assert.equal(normalizePaymentKind('receipt'), 'customer_receipt');
+
+  // Payment vouchers
+  assert.equal(normalizePaymentKind('payment', null), 'supplier');
+  assert.equal(normalizePaymentKind('payment', ''), 'supplier');
+  assert.equal(normalizePaymentKind('payment', 'supplier'), 'supplier');
+  assert.equal(normalizePaymentKind('payment', 'salary_advance'), 'salary_advance', 'Specialized payment kinds must be preserved');
+
+  // Tax payments and petty cash
+  assert.equal(normalizePaymentKind('tax_payment', null), 'tax');
+  assert.equal(normalizePaymentKind('tax_payment', 'pph21'), 'pph21');
+  assert.equal(normalizePaymentKind('petty_cash', null), 'petty_cash');
+  assert.equal(normalizePaymentKind('journal', null), 'journal');
+
+  const migration = readFileSync(migrationPath, 'utf8');
+  assert.match(
+    migration,
+    /WHEN p_payment_kind IS NOT NULL AND btrim\(p_payment_kind\) <> '' THEN p_payment_kind[\s\S]*?WHEN p_document_type = 'receipt' THEN 'customer_receipt'[\s\S]*?WHEN p_document_type = 'payment' THEN 'supplier'[\s\S]*?WHEN p_document_type = 'tax_payment' THEN 'tax'[\s\S]*?WHEN p_document_type = 'petty_cash' THEN 'petty_cash'/
+  );
+});
+
+test('16. Regression 5: Existing allocations are not duplicated (Universal Idempotency & Recalculation)', () => {
+  const migration = readFileSync(migrationPath, 'utf8');
+
+  // Idempotency in link_bank_statement_line
+  assert.match(
+    migration,
+    /IF EXISTS \(\s*SELECT 1 FROM public\.bank_statement_allocations a\s*WHERE a\.bank_statement_line_id = p_bank_line_id\s*AND a\.document_type = p_document_type\s*AND a\.document_id = p_document_id\s*AND a\.payment_kind = v_kind\s*\) THEN[\s\S]*?'status', 'already_linked'/
+  );
+
+  // Recalculation avoids double-counting allocations that already match posted voucher allocations
+  assert.match(
+    migration,
+    /NOT EXISTS \(\s*SELECT 1\s*FROM public\.voucher_allocations va\s*JOIN public\.payment_vouchers pv ON pv\.id = va\.payment_voucher_id\s*WHERE va\.finance_expense_id = p_expense_id\s*AND pv\.is_posted = true\s*AND pv\.journal_entry_id = bsa\.journal_entry_id\s*\)/
+  );
+});
+
+test('17. Regression 6: Contra linking continues working correctly', () => {
+  const migration = readFileSync(migrationPath, 'utf8');
+
+  // link_bank_statement_line handles fund_transfer document type and extracts journal_entry_id
+  assert.match(
+    migration,
+    /ELSIF p_document_type = 'fund_transfer' THEN\s*SELECT journal_entry_id INTO v_je FROM public\.fund_transfers WHERE id = p_document_id;/
+  );
+
+  // auto_match_smart Section 1 includes fund_transfer descriptions and documents
+  assert.match(
+    migration,
+    /WHEN 'fund_transfer' THEN \(\s*SELECT ft\.description\s*FROM public\.fund_transfers ft\s*WHERE ft\.id = s\.document_id\s*\)/
   );
 });

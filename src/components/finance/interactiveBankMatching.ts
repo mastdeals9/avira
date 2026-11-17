@@ -51,13 +51,62 @@ export function getExpenseOutstandingAmount(
 
 /**
  * Normalizes payment_kind to ensure operational expenses default to 'supplier'
- * while genuine PPh23 allocations remain distinct.
+ * while genuine PPh23 allocations remain distinct, and other document types
+ * (fund transfers, receipts, etc.) preserve their document-specific kinds.
  */
-export function normalizePaymentKind(paymentKind?: string | null): 'supplier' | 'pph23' {
-  if (paymentKind === 'pph23') {
-    return 'pph23';
+export function normalizePaymentKind(
+  documentTypeOrKind?: string | null,
+  paymentKind?: string | null
+): string {
+  let docType = 'expense';
+  let kind = paymentKind;
+
+  if (paymentKind === undefined) {
+    // Single argument passed: could be paymentKind for an expense, or documentType
+    if (
+      documentTypeOrKind === 'fund_transfer' ||
+      documentTypeOrKind === 'receipt' ||
+      documentTypeOrKind === 'tax_payment' ||
+      documentTypeOrKind === 'petty_cash'
+    ) {
+      docType = documentTypeOrKind;
+      kind = undefined;
+    } else {
+      docType = 'expense';
+      kind = documentTypeOrKind;
+    }
+  } else {
+    docType = documentTypeOrKind || 'expense';
+    kind = paymentKind;
   }
-  return 'supplier';
+
+  if (docType === 'expense') {
+    if (kind === 'pph23') {
+      return 'pph23';
+    }
+    return 'supplier';
+  }
+
+  if (kind && kind.trim() !== '') {
+    return kind;
+  }
+
+  switch (docType) {
+    case 'fund_transfer':
+      return 'fund_transfer';
+    case 'receipt':
+      return 'customer_receipt';
+    case 'payment':
+      return 'supplier';
+    case 'tax_payment':
+      return 'tax';
+    case 'petty_cash':
+      return 'petty_cash';
+    case 'journal':
+      return 'journal';
+    default:
+      return 'supplier';
+  }
 }
 
 /**
