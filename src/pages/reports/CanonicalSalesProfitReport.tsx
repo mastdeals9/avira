@@ -20,7 +20,11 @@ import {
 import { supabase } from '../../lib/supabase';
 import { formatCurrency, formatNumber } from '../../utils/currency';
 import { ExportSalesProfitModal } from '../../components/ExportSalesProfitModal';
-import { resolveAuthoritativeInvoiceItemCOGS } from '../../services/salesProfitabilityEngine';
+import {
+  resolveAuthoritativeInvoiceItemCOGS,
+  normalizeProductProfitabilityRow,
+  normalizeBatchProfitabilityRow,
+} from '../../services/salesProfitabilityEngine';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -297,24 +301,15 @@ export function CanonicalSalesProfitReport() {
         });
       });
 
-      const rawSummary = res as ProfitabilitySummaryResponse;
+      const rawSummary = res as any;
       if (rawSummary?.products) {
-        rawSummary.products = rawSummary.products.map(p => {
+        rawSummary.products = rawSummary.products.map((p: any) => {
           const canonical = stockMap.get(p.product_id);
-          const safeAvgCost = (p.avg_landed_cost != null && p.avg_landed_cost < 0) ? null : p.avg_landed_cost;
-          const safeProductCost = (p.product_cost != null && p.product_cost < 0) ? null : p.product_cost;
-          return {
-            ...p,
-            avg_landed_cost: safeAvgCost,
-            product_cost: safeProductCost,
-            current_stock: canonical ? canonical.current : Number(p.current_stock || 0),
-            reserved_stock: canonical ? canonical.reserved : 0,
-            available_stock: canonical ? canonical.available : Number(p.current_stock || 0),
-          };
+          return normalizeProductProfitabilityRow(p, canonical);
         });
       }
 
-      setData(rawSummary);
+      setData(rawSummary as ProfitabilitySummaryResponse);
     } catch (err: any) {
       console.error('Error loading sales profitability summary:', err);
       setError(err.message || 'Failed to load profitability summary');
@@ -355,7 +350,8 @@ export function CanonicalSalesProfitReport() {
         p_end_date: endDate,
       });
       if (rpcErr) throw rpcErr;
-      const bList = res?.batches || [];
+      const rawBatches = Array.isArray(res) ? res : (res?.batches || []);
+      const bList = rawBatches.map(normalizeBatchProfitabilityRow);
       setBatchesCache(prev => ({ ...prev, [productId]: bList }));
       return bList;
     } catch (err: any) {
@@ -376,7 +372,7 @@ export function CanonicalSalesProfitReport() {
         p_end_date: endDate,
       });
       if (rpcErr) throw rpcErr;
-      const rawOrders = (res?.orders || []) as OrderSaleRow[];
+      const rawOrders = (Array.isArray(res) ? res : (res?.orders || [])) as any[];
 
       // Resolve authoritative cost layer allocations
       const lineIds = rawOrders.map(o => o.line_id).filter(Boolean);
@@ -391,24 +387,39 @@ export function CanonicalSalesProfitReport() {
 
       const oList: OrderSaleRow[] = rawOrders.map(ord => {
         const sii = siiMap.get(ord.line_id);
-        const costResolution = resolveAuthoritativeInvoiceItemCOGS(ord, sii, ord.unit_cost);
-        const grossSales = Number(ord.gross_sales || 0);
+        const grossSales = Number(ord.gross_sales ?? ((Number(ord.quantity) || 0) * (Number(ord.selling_price) || 0)));
+        const fallbackUnitCost = ord.unit_cost != null ? Number(ord.unit_cost) : null;
+        const costResolution = resolveAuthoritativeInvoiceItemCOGS(ord, sii, fallbackUnitCost);
         const lineCost = costResolution.lineCost;
         const unitCost = costResolution.unitCost;
-        const salesExp = Number(ord.line_sales_expense || 0);
+        const salesExp = Number(ord.line_sales_expense ?? ord.sales_expense ?? 0);
         const netRealization = Math.round((grossSales - salesExp) * 100) / 100;
-        const grossProfit = Math.round((grossSales - lineCost) * 100) / 100;
-        const netProfit = Math.round((grossProfit - salesExp) * 100) / 100;
-        const marginPct = grossSales > 0 ? (netProfit / grossSales) * 100 : null;
+        const grossProfit = lineCost != null ? Math.round((grossSales - lineCost) * 100) / 100 : null;
+        const netProfit = grossProfit != null ? Math.round((grossProfit - salesExp) * 100) / 100 : null;
+        const marginPct = (grossSales > 0 && netProfit != null) ? (netProfit / grossSales) * 100 : null;
 
         return {
-          ...ord,
+          line_id: ord.line_id,
+          invoice_id: ord.invoice_id,
+          invoice_number: ord.invoice_number,
+          invoice_date: ord.invoice_date,
+          customer_id: ord.customer_id,
+          customer_name: ord.customer_name || 'Unknown Customer',
+          sales_order_id: ord.sales_order_id || null,
+          so_number: ord.so_number || null,
+          dc_id: ord.dc_id || null,
+          dc_number: ord.dc_number || null,
+          quantity: Number(ord.quantity || 0),
+          selling_price: Number(ord.selling_price || 0),
+          gross_sales: grossSales,
           unit_cost: unitCost,
           line_cost: lineCost,
+          line_sales_expense: salesExp,
           net_selling_realization: netRealization,
           gross_profit: grossProfit,
           profit: netProfit,
           profit_margin_pct: marginPct != null ? Math.round(marginPct * 100) / 100 : null,
+          expenses: Array.isArray(ord.expenses) ? ord.expenses : [],
         };
       });
 
@@ -454,15 +465,8 @@ export function CanonicalSalesProfitReport() {
     setModalExpandedBatchId(null);
     setLoadingModalBatches(true);
     try {
-      const { data: res, error: rpcErr } = await supabase.rpc('get_sales_profitability_product_batches', {
-        p_product_id: prod.product_id,
-        p_start_date: startDate,
-        p_end_date: endDate,
-      });
-      if (rpcErr) throw rpcErr;
-      const bList = res?.batches || [];
+      const bList = await fetchProductBatches(prod.product_id);
       setModalProductBatches(bList);
-      setBatchesCache(prev => ({ ...prev, [prod.product_id]: bList }));
     } catch (err: any) {
       console.error('Error loading product batches:', err);
     } finally {

@@ -636,3 +636,8 @@ export async function fetchCanonicalSalesProfitability(options: {
     batchOrdersMap,
   };
 }
+
+export {
+  normalizeProductProfitabilityRow,
+  normalizeBatchProfitabilityRow,
+} from '../utils/salesProfitReportNormalizers';

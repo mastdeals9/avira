@@ -193,13 +193,22 @@ export const editApprovedFinanceExpense = (
   bankStatementLineId?: string | null,
   allocationAmount?: number,
 ) => {
-  const validation = validateExpenseMandatoryTaxLinkage(payload as any);
+  const effectivePayload = {
+    ...payload,
+    selected_bank_transaction_id: bankStatementLineId || (payload as any).selected_bank_transaction_id || (payload as any).originating_bank_statement_line_id,
+    originating_bank_statement_line_id: bankStatementLineId || (payload as any).originating_bank_statement_line_id,
+    payment_method: payload.payment_method && payload.payment_method !== 'outstanding'
+      ? payload.payment_method
+      : (bankStatementLineId ? 'bank_transfer' : payload.payment_method),
+    paid_amount: allocationAmount && allocationAmount > 0.01 ? allocationAmount : payload.paid_amount,
+  };
+  const validation = validateExpenseMandatoryTaxLinkage(effectivePayload as any);
   if (!validation.isValid) {
     throw new Error(validation.firstErrorMessage || 'Please select a Supplier/Payee and complete the required payment details before saving this tax expense.');
   }
   return rpc<string>('edit_approved_finance_expense_atomic', {
     p_expense_id: expenseId,
-    p_payload: payload,
+    p_payload: effectivePayload,
     p_bank_statement_line_id: bankStatementLineId || null,
     p_allocation_amount: allocationAmount && allocationAmount > 0.01 ? allocationAmount : null,
   });

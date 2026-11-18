@@ -65,19 +65,24 @@ export function validateExpenseMandatoryTaxLinkage(
       !!(expense.selected_bank_transaction_id && expense.selected_bank_transaction_id.trim() !== '') ||
       (Array.isArray(expense.bank_statement_allocations) && expense.bank_statement_allocations.length > 0);
 
+    const effectivePaymentMethod =
+      expense.payment_method && expense.payment_method !== 'outstanding'
+        ? expense.payment_method
+        : (hasAuthoritativePaymentLink ? 'bank_transfer' : expense.payment_method);
+
     const isExplicitlyPaid =
-      expense.payment_method !== null &&
-      expense.payment_method !== undefined &&
-      expense.payment_method !== 'outstanding';
+      effectivePaymentMethod !== null &&
+      effectivePaymentMethod !== undefined &&
+      effectivePaymentMethod !== 'outstanding';
     const hasPaidAmount = Number(expense.paid_amount || 0) > 0.01;
 
     // If an authoritative linked payment record already provides payment evidence,
     // do not require duplicate payment_method / bank_account_id on the expense header.
     if ((isExplicitlyPaid || hasPaidAmount) && !hasAuthoritativePaymentLink) {
-      if (!expense.payment_method || expense.payment_method === 'outstanding') {
+      if (!effectivePaymentMethod || effectivePaymentMethod === 'outstanding') {
         errors.payment_method =
           'Please select a valid payment method for this paid expense.';
-      } else if (expense.payment_method === 'bank_transfer') {
+      } else if (effectivePaymentMethod === 'bank_transfer') {
         const hasBankLink =
           !!(expense.bank_account_id && expense.bank_account_id.trim() !== '');
 
@@ -89,11 +94,16 @@ export function validateExpenseMandatoryTaxLinkage(
     }
   } else {
     // For non-tax expenses, if marked as paid via bank transfer, bank_account_id is required
-    if (expense.payment_method === 'bank_transfer') {
+    const hasAuthoritativePaymentLink =
+      !!(expense.originating_bank_statement_line_id && expense.originating_bank_statement_line_id.trim() !== '') ||
+      !!(expense.selected_bank_transaction_id && expense.selected_bank_transaction_id.trim() !== '') ||
+      (Array.isArray(expense.bank_statement_allocations) && expense.bank_statement_allocations.length > 0);
+
+    const effectiveMethod = expense.payment_method || (hasAuthoritativePaymentLink ? 'bank_transfer' : null);
+    if (effectiveMethod === 'bank_transfer') {
       const hasBankLink =
         !!(expense.bank_account_id && expense.bank_account_id.trim() !== '') ||
-        !!expense.originating_bank_statement_line_id ||
-        !!expense.selected_bank_transaction_id;
+        hasAuthoritativePaymentLink;
 
       if (!hasBankLink) {
         errors.bank_account_id =

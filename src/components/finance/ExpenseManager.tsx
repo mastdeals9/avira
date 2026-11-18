@@ -1627,6 +1627,12 @@ export function ExpenseManager({
         : null;
       const resolvedStaffId = preRules.staff === 'show' ? (selectedStaffId || null) : null;
 
+      const currentExpenseBank = bankAccounts.find(bank => bank.id === formData.bank_account_id);
+      const effectivePaymentMethod = formData.payment_method && formData.payment_method !== 'outstanding'
+        ? formData.payment_method
+        : (selectedBankTransactionId ? 'bank_transfer' : formData.payment_method);
+      const effectiveBankAccountId = formData.bank_account_id || (selectedBankTransactionId ? currentExpenseBank?.id : null);
+
       const taxValidation = validateExpenseMandatoryTaxLinkage({
         expense_category: formData.expense_category,
         amount: formData.amount,
@@ -1635,10 +1641,10 @@ export function ExpenseManager({
         supplier_id: resolvedSupplierId,
         payee_id: resolvedPayeeId,
         staff_id: resolvedStaffId,
-        payment_method: formData.payment_method,
-        bank_account_id: formData.bank_account_id,
+        payment_method: effectivePaymentMethod,
+        bank_account_id: effectiveBankAccountId,
         selected_bank_transaction_id: selectedBankTransactionId,
-        paid_amount: editingExpense?.paid_amount,
+        paid_amount: selectedBankAllocationAmount || editingExpense?.paid_amount,
       });
 
       if (!taxValidation.isValid) {
@@ -1824,10 +1830,11 @@ export function ExpenseManager({
         batch_id: formData.batch_id || null,
         import_container_id: formData.import_container_id || null,
         delivery_challan_id: formData.delivery_challan_id || null,
-        payment_method: formData.payment_method || null,
-        bank_account_id: formData.payment_method && formData.payment_method !== 'outstanding' ? (formData.bank_account_id || null) : null,
+        payment_method: effectivePaymentMethod || null,
+        bank_account_id: effectivePaymentMethod && effectivePaymentMethod !== 'outstanding' ? (effectiveBankAccountId || formData.bank_account_id || null) : null,
         payment_reference: formData.payment_reference || null,
-        paid_by: selectedBankTransactionId ? 'bank' : null,
+        paid_by: (selectedBankTransactionId || effectivePaymentMethod === 'bank_transfer') ? 'bank' : (effectivePaymentMethod === 'cash' || effectivePaymentMethod === 'petty_cash' ? 'cash' : null),
+        selected_bank_transaction_id: selectedBankTransactionId || null,
         // save_finance_expense expects document_urls to always be a JSON array;
         // null causes jsonb_array_elements_text to fail in the RPC.
         document_urls: allDocumentUrls,
@@ -5342,6 +5349,11 @@ export function ExpenseManager({
                         return;
                       }
                       setSelectedBankTransactionId(transaction.id);
+                      setFormData(prev => ({
+                        ...prev,
+                        payment_method: 'bank_transfer',
+                        bank_account_id: prev.bank_account_id || (transaction as any).bank_account_id || formData.bank_account_id,
+                      }));
                       if (confirmedAmount !== undefined && confirmedAmount > 0.01) {
                         setSelectedBankAllocationAmount(confirmedAmount);
                       } else {
