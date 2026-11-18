@@ -31,6 +31,7 @@ import {
   findExpenseCandidatesForBankLine,
   isCandidateAmbiguous,
   getExpenseOutstandingAmount,
+  filterLinesByScope,
   type CandidateExpense,
 } from './interactiveBankMatching';
 import { SearchableSelect } from '../SearchableSelect';
@@ -122,6 +123,7 @@ interface DirectorOwnerLoanOption {
 
 interface StatementLine {
   id: string;
+  bank_account_id?: string;
   date: string;
   description: string;
   reference: string;
@@ -1446,6 +1448,7 @@ export function BankReconciliationEnhanced({
           (isDirectRecorded ? row.matched_entry_id : null);
         return {
           id: row.id,
+          bank_account_id: row.bank_account_id || selectedBank,
           date: row.transaction_date,
           description: row.description || '',
           reference: row.reference || '',
@@ -1843,7 +1846,11 @@ export function BankReconciliationEnhanced({
 
           if (insertedCount > 0) {
             try {
-              await autoMatchTransactions();
+              await autoMatchTransactions({
+                bankAccountId: selectedBank,
+                dateFrom: startDate,
+                dateTo: endDate,
+              });
             } catch (matchError: any) {
               if (matchError?.name === 'AbortError' || matchError?.message?.includes('aborted')) {
                 console.warn('autoMatchTransactions request was aborted.');
@@ -1981,7 +1988,11 @@ export function BankReconciliationEnhanced({
       const insertedCount = result.insertedCount || result.transactionCount || 0;
       if (insertedCount > 0) {
         try {
-          await autoMatchTransactions();
+          await autoMatchTransactions({
+            bankAccountId: selectedBank,
+            dateFrom: result.startDate || result.statement_start_date || dateRange.start,
+            dateTo: result.endDate || result.statement_end_date || dateRange.end,
+          });
         } catch (matchError) {
           console.error('Auto-match error:', matchError);
         }
@@ -2204,7 +2215,11 @@ export function BankReconciliationEnhanced({
 
           if (insertedCount > 0) {
             try {
-              await autoMatchTransactions();
+              await autoMatchTransactions({
+                bankAccountId: selectedBank,
+                dateFrom: startDate,
+                dateTo: endDate,
+              });
             } catch (matchError) {
               console.error('Auto-match error:', matchError);
             }
@@ -2607,14 +2622,40 @@ export function BankReconciliationEnhanced({
   const findAmbiguousLines = (
     lines: StatementLine[],
     expenseList: any[],
-    skippedSet: Set<string>
+    skippedSet: Set<string>,
+    bankId?: string,
+    rangeFrom?: string,
+    rangeTo?: string
   ) => {
+    const effectiveBank = bankId || selectedBank;
+    const effectiveFrom = rangeFrom || dateRange.start;
+    const effectiveTo = rangeTo || dateRange.end;
+
+    const scopedLines = filterLinesByScope(
+      lines.map((l) => ({
+        id: l.id,
+        date: l.date,
+        debit: l.debit,
+        credit: l.credit,
+        amount: Number(l.debit || l.credit || 0),
+        description: l.description,
+        reference: l.reference,
+        bank_account_id: l.bank_account_id || effectiveBank,
+        manually_unlinked: l.manually_unlinked,
+      })),
+      effectiveBank,
+      effectiveFrom,
+      effectiveTo
+    );
+    const scopedLineIdSet = new Set(scopedLines.map((l) => l.id));
+
     const items: Array<{ line: StatementLine; candidates: CandidateExpense[] }> = [];
     for (const line of lines) {
       if (line.status === 'matched') continue;
       if (line.manually_unlinked) continue;
       if (skippedSet.has(line.id)) continue;
-      const candidates = findExpenseCandidatesForBankLine(line, expenseList, selectedBank);
+      if (!scopedLineIdSet.has(line.id)) continue;
+      const candidates = findExpenseCandidatesForBankLine(line, expenseList, effectiveBank);
       if (isCandidateAmbiguous(candidates)) {
         items.push({ line, candidates });
       }
@@ -2623,8 +2664,15 @@ export function BankReconciliationEnhanced({
   };
 
   const ambiguousLines = useMemo(() => {
-    return findAmbiguousLines(statementLines, expenses, skippedSessionLineIds);
-  }, [statementLines, expenses, selectedBank, skippedSessionLineIds]);
+    return findAmbiguousLines(
+      statementLines,
+      expenses,
+      skippedSessionLineIds,
+      selectedBank,
+      dateRange.start,
+      dateRange.end
+    );
+  }, [statementLines, expenses, selectedBank, dateRange.start, dateRange.end, skippedSessionLineIds]);
   const ambiguousCount = ambiguousLines.length;
 
   const openInteractiveMatchForLine = (line: StatementLine) => {
@@ -2775,14 +2823,26 @@ export function BankReconciliationEnhanced({
     setSelectedCandidateId('');
   };
 
-  const autoMatchTransactions = async () => {
-    if (!selectedBank || autoMatching) return;
+  const autoMatchTransactions = async (overrideScope?: {
+    bankAccountId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+  }) => {
+    const bankId = overrideScope?.bankAccountId || selectedBank;
+    const fromDate = overrideScope?.dateFrom || dateRange.start;
+    const toDate = overrideScope?.dateTo || dateRange.end;
+
+    if (!bankId || !fromDate || !toDate || autoMatching) return;
 
     setAutoMatching(true);
     selfActionTimestampRef.current = Date.now();
     try {
-      // Use the database function that enforces 7-day date tolerance
-      const { data, error } = await supabase.rpc('auto_match_smart');
+      // Use the database function scoped to bank account and date range
+      const { data, error } = await supabase.rpc('auto_match_smart', {
+        p_bank_account_id: bankId,
+        p_date_from: fromDate,
+        p_date_to: toDate,
+      });
 
       if (error) throw error;
 
@@ -2794,8 +2854,15 @@ export function BankReconciliationEnhanced({
       await loadStatementLines();
       await loadExpenses();
 
-      // Detect ambiguous transactions with >= 2 candidates that need user decision
-      const freshAmbiguous = findAmbiguousLines(statementLines, expenses, skippedSessionLineIds);
+      // Detect ambiguous transactions with >= 2 candidates that need user decision within scope
+      const freshAmbiguous = findAmbiguousLines(
+        statementLines,
+        expenses,
+        skippedSessionLineIds,
+        bankId,
+        fromDate,
+        toDate
+      );
 
       if (freshAmbiguous.length > 0) {
         setInteractiveQueue(freshAmbiguous);
@@ -3055,7 +3122,12 @@ export function BankReconciliationEnhanced({
       }
       if (inserted?.length) {
         try {
-          await autoMatchTransactions();
+          const dates = inserted.map((e: any) => e.transaction_date).filter(Boolean).sort();
+          await autoMatchTransactions({
+            bankAccountId: selectedBank,
+            dateFrom: dates[0] || dateRange.start,
+            dateTo: dates[dates.length - 1] || dateRange.end,
+          });
         } catch {
           /* Auto-match failure does not invalidate import. */
         }

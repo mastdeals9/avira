@@ -270,11 +270,20 @@ export function BankReconciliation({ canManage }: BankReconciliationProps) {
   };
 
   const autoMatchTransactions = async () => {
+    if (!selectedBank || !dateRange.start || !dateRange.end) {
+      alert('Please select a bank account and date range first.');
+      return;
+    }
+
     try {
       setLoading(true);
 
-      // Use the database function that enforces 7-day date tolerance
-      const { data, error } = await supabase.rpc('auto_match_smart');
+      // Use the database function scoped to bank account and date range
+      const { data, error } = await supabase.rpc('auto_match_smart', {
+        p_bank_account_id: selectedBank,
+        p_date_from: dateRange.start,
+        p_date_to: dateRange.end,
+      });
 
       if (error) throw error;
 

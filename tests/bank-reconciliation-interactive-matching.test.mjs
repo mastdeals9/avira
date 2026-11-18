@@ -8,6 +8,7 @@ import {
   getExpenseOutstandingAmount,
   validateMatchPrerequisites,
   normalizePaymentKind,
+  filterLinesByScope,
 } from '../src/components/finance/interactiveBankMatching.ts';
 
 const projectRoot = resolve(process.cwd());
@@ -454,5 +455,206 @@ test('17. Regression 6: Contra linking continues working correctly', () => {
   assert.match(
     migration,
     /WHEN 'fund_transfer' THEN \(\s*SELECT ft\.description\s*FROM public\.fund_transfers ft\s*WHERE ft\.id = s\.document_id\s*\)/
+  );
+});
+
+// ============================================================================
+// Scoped Auto-Match (Bank Account and Date Range) Regression Tests
+// ============================================================================
+
+test('18. Missing parameters safely return zero processed records (no global match fallback)', () => {
+  const migration = readFileSync(migrationPath, 'utf8');
+
+  // Verify function signature accepts bank account and date range parameters with null defaults
+  assert.match(
+    migration,
+    /CREATE OR REPLACE FUNCTION public\.auto_match_smart\(\s*p_bank_account_id uuid DEFAULT NULL::uuid,\s*p_date_from date DEFAULT NULL::date,\s*p_date_to date DEFAULT NULL::date\s*\)/
+  );
+
+  // Verify missing parameters guard: returns 0, 0, 0 safely without executing match loop
+  assert.match(
+    migration,
+    /IF p_bank_account_id IS NULL OR p_date_from IS NULL OR p_date_to IS NULL THEN\s*RETURN QUERY SELECT 0, 0, 0;\s*RETURN;\s*END IF;/
+  );
+
+  // Pure helper: missing scope returns empty array
+  assert.deepEqual(filterLinesByScope([], '', '2026-11-01', '2026-11-30'), []);
+  assert.deepEqual(filterLinesByScope([], 'bca-1', '', '2026-11-30'), []);
+  assert.deepEqual(filterLinesByScope([], 'bca-1', '2026-11-01', ''), []);
+});
+
+test('19. Selected BCA account only is processed; other bank accounts remain untouched', () => {
+  const migration = readFileSync(migrationPath, 'utf8');
+
+  // Query strictly filters by p_bank_account_id
+  assert.match(
+    migration,
+    /WHERE b\.bank_account_id = p_bank_account_id/
+  );
+
+  const bcaAccountId = 'bca-main-uuid';
+  const mandiriAccountId = 'mandiri-other-uuid';
+
+  const mixedLines = [
+    { id: 'l-bca-1', bank_account_id: bcaAccountId, date: '2026-11-10', debit: 500000, description: 'BCA Line' },
+    { id: 'l-mandiri-1', bank_account_id: mandiriAccountId, date: '2026-11-10', debit: 500000, description: 'Mandiri Line' },
+    { id: 'l-bca-2', bank_account_id: bcaAccountId, date: '2026-11-15', debit: 200000, description: 'BCA Line 2' },
+  ];
+
+  const scoped = filterLinesByScope(mixedLines, bcaAccountId, '2026-11-01', '2026-11-30');
+  assert.equal(scoped.length, 2);
+  assert.ok(scoped.every(l => l.bank_account_id === bcaAccountId), 'Only BCA lines must be retained');
+  assert.ok(!scoped.some(l => l.bank_account_id === mandiriAccountId), 'Mandiri lines must be untouched');
+});
+
+test('20. Transactions outside selected dates remain unchanged', () => {
+  const migration = readFileSync(migrationPath, 'utf8');
+
+  // Query strictly filters by date boundaries
+  assert.match(
+    migration,
+    /AND b\.transaction_date >= p_date_from\s*AND b\.transaction_date <= p_date_to/
+  );
+
+  const bcaAccountId = 'bca-main-uuid';
+  const lines = [
+    { id: 'l-past', bank_account_id: bcaAccountId, date: '2026-10-31', debit: 100000 },
+    { id: 'l-in-1', bank_account_id: bcaAccountId, date: '2026-11-01', debit: 200000 },
+    { id: 'l-in-2', bank_account_id: bcaAccountId, date: '2026-11-15', debit: 300000 },
+    { id: 'l-in-3', bank_account_id: bcaAccountId, date: '2026-11-30', debit: 400000 },
+    { id: 'l-future', bank_account_id: bcaAccountId, date: '2026-12-01', debit: 500000 },
+  ];
+
+  const scoped = filterLinesByScope(lines, bcaAccountId, '2026-11-01', '2026-11-30');
+  assert.equal(scoped.length, 3);
+  assert.deepEqual(scoped.map(l => l.id), ['l-in-1', 'l-in-2', 'l-in-3']);
+});
+
+test('21. Unique matches within scope work and candidate expenses respect scope', () => {
+  const bcaAccountId = 'bca-main-uuid';
+  const otherAccountId = 'other-bank-uuid';
+
+  const bankLine = {
+    id: 'bsl-bca-unique',
+    bank_account_id: bcaAccountId,
+    date: '2026-11-15',
+    debit: 1500000,
+    credit: 0,
+    amount: 1500000,
+    description: 'Payment for office supplies INV-888',
+    reference: 'EXP/26/888',
+  };
+
+  const expenses = [
+    {
+      id: 'exp-bca-match',
+      voucher_number: 'EXP/26/888',
+      expense_date: '2026-11-14',
+      amount: 1500000,
+      paid_amount: 0,
+      bank_account_id: bcaAccountId,
+      approval_status: 'approved',
+      description: 'Office supplies',
+    },
+    {
+      id: 'exp-other-bank',
+      voucher_number: 'EXP/26/888',
+      expense_date: '2026-11-14',
+      amount: 1500000,
+      paid_amount: 0,
+      bank_account_id: otherAccountId,
+      approval_status: 'approved',
+      description: 'Office supplies on wrong bank',
+    },
+  ];
+
+  const candidates = findExpenseCandidatesForBankLine(bankLine, expenses, bcaAccountId);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].id, 'exp-bca-match');
+  assert.equal(isCandidateAmbiguous(candidates), false);
+});
+
+test('22. Ambiguous candidates within scope open user-selection queue', () => {
+  const bcaAccountId = 'bca-main-uuid';
+  const bankLine = {
+    id: 'bsl-ambig-scoped',
+    bank_account_id: bcaAccountId,
+    date: '2026-11-15',
+    debit: 2500000,
+    credit: 0,
+    amount: 2500000,
+    description: 'Maintenance fee contractor',
+    reference: '',
+  };
+
+  const expenses = [
+    {
+      id: 'exp-contractor-a',
+      voucher_number: 'EXP/26/101',
+      expense_date: '2026-11-14',
+      amount: 2500000,
+      paid_amount: 0,
+      bank_account_id: bcaAccountId,
+      approval_status: 'approved',
+      description: 'Maintenance fee',
+    },
+    {
+      id: 'exp-contractor-b',
+      voucher_number: 'EXP/26/102',
+      expense_date: '2026-11-15',
+      amount: 2500000,
+      paid_amount: 0,
+      bank_account_id: bcaAccountId,
+      approval_status: 'approved',
+      description: 'Contractor fee',
+    },
+  ];
+
+  const candidates = findExpenseCandidatesForBankLine(bankLine, expenses, bcaAccountId);
+  assert.equal(candidates.length, 2);
+  assert.equal(isCandidateAmbiguous(candidates), true, 'Two matching candidates within scope must be ambiguous');
+});
+
+test('23. Skipped transactions and manual unlinks remain protected within scoped flow', () => {
+  const bcaAccountId = 'bca-main-uuid';
+  const lines = [
+    { id: 'l-normal', bank_account_id: bcaAccountId, date: '2026-11-10', debit: 500000 },
+    { id: 'l-unlinked', bank_account_id: bcaAccountId, date: '2026-11-11', debit: 500000, manually_unlinked: true },
+  ];
+
+  const scoped = filterLinesByScope(lines, bcaAccountId, '2026-11-01', '2026-11-30');
+  assert.equal(scoped.length, 1);
+  assert.equal(scoped[0].id, 'l-normal');
+
+  const migration = readFileSync(migrationPath, 'utf8');
+  assert.match(
+    migration,
+    /AND NOT COALESCE\(b\.manually_unlinked, false\)/
+  );
+});
+
+test('24. Frontend calls and upload workflows pass explicit scope to auto_match_smart', () => {
+  const ui = readFileSync(bankReconUiPath, 'utf8');
+
+  // autoMatchTransactions passes p_bank_account_id, p_date_from, and p_date_to
+  assert.match(
+    ui,
+    /const \{ data, error \} = await supabase\.rpc\('auto_match_smart', \{\s*p_bank_account_id: bankId,\s*p_date_from: fromDate,\s*p_date_to: toDate,\s*\}\);/
+  );
+
+  // Upload call sites invoke autoMatchTransactions with scope
+  assert.match(
+    ui,
+    /await autoMatchTransactions\(\{\s*bankAccountId: selectedBank,\s*dateFrom: startDate,\s*dateTo: endDate,\s*\}\);/
+  );
+
+  // BankReconciliation.tsx also passes explicit scope
+  const altUi = readFileSync(
+    resolve(projectRoot, 'src/components/finance/BankReconciliation.tsx'),
+    'utf8'
+  );
+  assert.match(
+    altUi,
+    /const \{ data, error \} = await supabase\.rpc\('auto_match_smart', \{\s*p_bank_account_id: selectedBank,\s*p_date_from: dateRange\.start,\s*p_date_to: dateRange\.end,\s*\}\);/
   );
 });

@@ -110,6 +110,25 @@ export function normalizePaymentKind(
 }
 
 /**
+ * Filters statement lines strictly to the selected bank account and date range.
+ * Preserves manually unlinked protection.
+ */
+export function filterLinesByScope<T extends BankStatementLineLike>(
+  lines: T[],
+  bankAccountId: string,
+  dateFrom: string,
+  dateTo: string
+): T[] {
+  if (!bankAccountId || !dateFrom || !dateTo) return [];
+  return lines.filter((line) => {
+    if (line.manually_unlinked) return false;
+    if (line.bank_account_id && line.bank_account_id !== bankAccountId) return false;
+    if (line.date < dateFrom || line.date > dateTo) return false;
+    return true;
+  });
+}
+
+/**
  * Discovers and ranks candidate expenses for a given bank statement line.
  */
 export function findExpenseCandidatesForBankLine(

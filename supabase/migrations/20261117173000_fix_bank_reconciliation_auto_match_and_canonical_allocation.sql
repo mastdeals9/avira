@@ -607,8 +607,16 @@ GRANT EXECUTE ON FUNCTION public.recalculate_expense_payment_state(uuid) TO auth
 
 -- ============================================================================
 -- 5. Auto match smart: strict single-candidate auto-matching & allocation verification
+-- Scoped to selected bank account and date range
 -- ============================================================================
-CREATE OR REPLACE FUNCTION public.auto_match_smart()
+DROP FUNCTION IF EXISTS public.auto_match_smart();
+DROP FUNCTION IF EXISTS public.auto_match_smart(uuid, date, date);
+
+CREATE OR REPLACE FUNCTION public.auto_match_smart(
+  p_bank_account_id uuid DEFAULT NULL::uuid,
+  p_date_from date DEFAULT NULL::date,
+  p_date_to date DEFAULT NULL::date
+)
 RETURNS TABLE(matched_count integer, suggested_count integer, skipped_count integer)
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -631,10 +639,20 @@ DECLARE
 BEGIN
   PERFORM public._sec_check_finance_role();
 
+  -- Strict Scope Requirement: If bank account or date range boundaries are missing,
+  -- do NOT fall back to a global match; safely return zero processed records.
+  IF p_bank_account_id IS NULL OR p_date_from IS NULL OR p_date_to IS NULL THEN
+    RETURN QUERY SELECT 0, 0, 0;
+    RETURN;
+  END IF;
+
   FOR v_line IN
     SELECT b.*
     FROM public.bank_statement_lines b
-    WHERE (b.matching_status IS NULL OR b.matching_status IN ('none', 'suggested'))
+    WHERE b.bank_account_id = p_bank_account_id
+      AND b.transaction_date >= p_date_from
+      AND b.transaction_date <= p_date_to
+      AND (b.matching_status IS NULL OR b.matching_status IN ('none', 'suggested'))
       AND b.reconciliation_status IN ('unmatched', 'needs_review')
       AND NOT COALESCE(b.manually_unlinked, false)
       AND NOT EXISTS (
@@ -1046,6 +1064,6 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.auto_match_smart() TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.auto_match_smart(uuid, date, date) TO authenticated, service_role;
 
 COMMIT;
