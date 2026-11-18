@@ -102,6 +102,7 @@ interface PaymentVoucher {
   adjustment_notes?: string | null;
   payment_method: string;
   payment_purpose: string;
+  coa_account_id?: string | null;
   salary_advance_status?: 'not_applicable' | 'outstanding' | 'partially_settled' | 'settled';
   salary_advance_applied_amount?: number;
   bank_account_id: string | null;
@@ -342,7 +343,6 @@ export function PaymentVoucherManager({
       { value: 'employee_reimbursement', label: 'Employee Reimbursement' },
       { value: 'employee_advance', label: 'Employee Advance' },
       { value: 'salary_advance', label: 'Salary Advance' },
-      { value: 'salary_advance_settlement', label: 'Salary Advance Settlement' },
       { value: 'other_employee_payment', label: 'Other Employee Payment' },
     ],
     director: [
@@ -355,6 +355,16 @@ export function PaymentVoucherManager({
     ],
   };
 
+  interface PettyCashBookOption {
+    id: string;
+    name: string;
+    account_id: string;
+    current_balance: number;
+    float_amount: number;
+  }
+
+  const [pettyCashBooks, setPettyCashBooks] = useState<PettyCashBookOption[]>([]);
+
   const [formData, setFormData] = useState({
     voucher_date: new Date().toISOString().split('T')[0],
     party_type: 'supplier' as PartyType,
@@ -364,6 +374,8 @@ export function PaymentVoucherManager({
     staff_id: '',
     other_party_name: '',
     payment_method: 'bank_transfer',
+    cash_source: 'cash_on_hand' as 'cash_on_hand' | 'petty_cash',
+    petty_cash_book_id: '',
     payment_purpose: 'supplier_invoice_payment',
     settlement_against: 'specific_document' as 'outstanding_balance' | 'specific_document' | 'advance' | 'unallocated_credit',
     settlement_discount: 0,
@@ -413,6 +425,7 @@ export function PaymentVoucherManager({
     loadDirectors();
     loadStaff();
     loadBankAccounts();
+    loadPettyCashBooks();
     loadTaxCodes();
     supabase
       .from('app_settings')
@@ -956,6 +969,15 @@ export function PaymentVoucherManager({
     setBankAccounts(data || []);
   };
 
+  const loadPettyCashBooks = async () => {
+    const { data } = await supabase
+      .from('petty_cash_books')
+      .select('id, name, account_id, current_balance, float_amount')
+      .eq('is_active', true)
+      .order('name');
+    setPettyCashBooks(data || []);
+  };
+
   const loadTaxCodes = async () => {
     const { data } = await supabase.from('tax_codes').select('id, code, name, rate').eq('is_withholding', true);
     setTaxCodes(data || []);
@@ -1108,6 +1130,8 @@ export function PaymentVoucherManager({
       staff_id: '',
       other_party_name: '',
       payment_method: 'bank_transfer',
+      cash_source: 'cash_on_hand',
+      petty_cash_book_id: '',
       payment_purpose: 'supplier_invoice_payment',
       settlement_against: 'specific_document',
       settlement_discount: 0,
@@ -1202,6 +1226,11 @@ export function PaymentVoucherManager({
     setEditingVoucher(v);
     const vPartyType: PartyType = resolvePaymentPartyType(v);
     setPartyType(vPartyType);
+    const isPettyCash = v.payment_method === 'petty_cash'
+      || v.coa_account_id === '5b7f4b18-d751-4f47-b49b-117214bf0ba5'
+      || /petty\s*cash/i.test(v.description || '');
+    const matchedBook = pettyCashBooks.find(b => b.account_id === v.coa_account_id) || pettyCashBooks[0];
+
     setFormData({
       voucher_date: v.voucher_date,
       party_type: vPartyType,
@@ -1210,7 +1239,9 @@ export function PaymentVoucherManager({
       customer_id: v.customer_id || '',
       staff_id: v.staff_id || '',
       other_party_name: v.description?.replace(/^Director:\s*/i, '') || '',
-      payment_method: v.payment_method,
+      payment_method: v.payment_method === 'petty_cash' ? 'cash' : v.payment_method,
+      cash_source: isPettyCash ? 'petty_cash' : 'cash_on_hand',
+      petty_cash_book_id: isPettyCash ? (matchedBook?.id || '') : '',
       payment_purpose: v.payment_purpose || (vPartyType === 'customer' ? 'customer_refund' : vPartyType === 'employee' ? 'salary_payroll' : 'supplier_invoice_payment'),
       settlement_against: (v.settlement_against as any) || (vPartyType === 'supplier' ? 'specific_document' : 'outstanding_balance'),
       settlement_discount: Number(v.settlement_discount || 0),
@@ -1587,13 +1618,17 @@ export function PaymentVoucherManager({
       return;
     }
 
-    if (formData.payment_method !== 'cash' && formData.payment_method !== 'advance_adjustment' && !formData.bank_account_id) {
+    if (formData.payment_method === 'bank_transfer' && !formData.bank_account_id) {
       alert('Please select an active bank account for bank transfer payments.');
+      return;
+    }
+    if (formData.payment_method === 'cash' && formData.cash_source === 'petty_cash' && !formData.petty_cash_book_id) {
+      alert('Please select an active petty cash book/fund.');
       return;
     }
 
     if (bankReconStatementLineId) {
-      if (formData.payment_method === 'cash' || formData.payment_method === 'advance_adjustment') {
+      if (formData.payment_method !== 'bank_transfer') {
         alert('A reconciled bank payment must use the bank transfer payment method.');
         return;
       }
@@ -1648,19 +1683,40 @@ export function PaymentVoucherManager({
         ? await uploadFinanceDocuments(uploadingFiles, `payments/${editingVoucher?.id || 'new'}`)
         : [];
 
+      let finalPaymentMethod = formData.payment_method;
+      let finalCoaAccountId: string | null = null;
+      let finalDescription = formData.description || (currentPartyType === 'director' ? `Director: ${formData.other_party_name}` : null);
+
+      if (formData.payment_method === 'cash') {
+        if (formData.cash_source === 'petty_cash') {
+          finalPaymentMethod = 'petty_cash';
+          const chosenBook = pettyCashBooks.find(b => b.id === formData.petty_cash_book_id);
+          finalCoaAccountId = chosenBook?.account_id || '5b7f4b18-d751-4f47-b49b-117214bf0ba5';
+          if (chosenBook && !finalDescription?.includes(chosenBook.name)) {
+            finalDescription = finalDescription
+              ? `${finalDescription} [Petty Cash: ${chosenBook.name}]`
+              : `[Petty Cash: ${chosenBook.name}]`;
+          }
+        } else {
+          finalPaymentMethod = 'cash';
+          finalCoaAccountId = '35e08064-a173-4069-9b47-dd985bb98d15'; // Cash on Hand (1101)
+        }
+      }
+
       const payload = {
         voucher_date: formData.voucher_date,
         party_type: currentPartyType,
         supplier_id: currentPartyType === 'supplier' ? formData.supplier_id : null,
         customer_id: currentPartyType === 'customer' ? formData.customer_id : null,
         staff_id: currentPartyType === 'employee' ? formData.staff_id : null,
-        payment_method: formData.payment_method,
+        payment_method: finalPaymentMethod,
+        coa_account_id: finalCoaAccountId,
         payment_purpose: formData.payment_purpose,
         settlement_against: formData.settlement_against,
         settlement_discount: Number(formData.settlement_discount || 0),
         adjustment_reason: formData.settlement_discount > 0 ? formData.adjustment_reason : undefined,
         adjustment_notes: formData.settlement_discount > 0 ? formData.adjustment_notes : undefined,
-        bank_account_id: formData.bank_account_id || null,
+        bank_account_id: formData.payment_method === 'bank_transfer' ? (formData.bank_account_id || null) : null,
         reference_number: formData.reference_number || null,
         amount: formData.amount,
         invoice_currency: invoiceCurrency as 'IDR' | 'USD',
@@ -1671,7 +1727,7 @@ export function PaymentVoucherManager({
         actual_bank_debit: totalBankDebit,
         pph_amount: formData.pph_amount,
         pph_code_id: formData.pph_code_id || null,
-        description: formData.description || (currentPartyType === 'director' ? `Director: ${formData.other_party_name}` : null),
+        description: finalDescription,
         document_urls: [...formData.document_urls, ...uploadedUrls],
         payment_currency: formData.payment_currency,
         exchange_rate: effectiveExchangeRate,
@@ -2383,24 +2439,25 @@ export function PaymentVoucherManager({
                 required
                 value={formData.payment_method}
                 disabled={isAccountingLocked}
-                onChange={(e) => setFormData({ ...formData, payment_method: e.target.value })}
+                onChange={(e) => {
+                  const m = e.target.value;
+                  setFormData(prev => ({
+                    ...prev,
+                    payment_method: m,
+                    bank_account_id: m === 'cash' ? '' : prev.bank_account_id,
+                  }));
+                }}
                 className={FLOAT_INPUT}
               >
-                <option value="cash">Cash</option>
                 <option value="bank_transfer">Bank Transfer</option>
-                <option value="check">Check</option>
-                <option value="giro">Giro</option>
-                <option value="other">Other</option>
-                {formData.party_type === 'employee' && (
-                  <option value="advance_adjustment">Adjust Against Staff Advance</option>
-                )}
-                {formData.payment_method && !['cash', 'bank_transfer', 'check', 'giro', 'other', ...(formData.party_type === 'employee' ? ['advance_adjustment'] : [])].includes(formData.payment_method) && (
+                <option value="cash">Cash</option>
+                {formData.payment_method && !['bank_transfer', 'cash'].includes(formData.payment_method) && (
                   <option value={formData.payment_method}>{formData.payment_method.replace(/_/g, ' ')}</option>
                 )}
               </select>
             </FloatingField>
 
-            {!['cash', 'advance_adjustment'].includes(formData.payment_method) && (
+            {formData.payment_method === 'bank_transfer' && (
               <>
                 <FloatingField
                   label="Bank Account"
@@ -2417,6 +2474,7 @@ export function PaymentVoucherManager({
                   <select
                     name="bank_account_id"
                     aria-label="Bank Account Id"
+                    required
                     value={formData.bank_account_id}
                     disabled={isAccountingLocked}
                     onChange={(e) => setFormData({ ...formData, bank_account_id: e.target.value })}
@@ -2453,7 +2511,7 @@ export function PaymentVoucherManager({
                     )}
                   </select>
                 </FloatingField>
-                <FloatingField label="Reference No" span={3} filled={!!formData.reference_number}>
+                <FloatingField label="Bank Reference / Cheque #" span={3} filled={!!formData.reference_number}>
                   <input
                     name="reference_number"
                     aria-label="Reference Number"
@@ -2467,7 +2525,70 @@ export function PaymentVoucherManager({
               </>
             )}
 
-            {['cash', 'advance_adjustment'].includes(formData.payment_method) && (
+            {formData.payment_method === 'cash' && (
+              <>
+                <FloatingField label="Cash Source" required span={2} filled={!!formData.cash_source}>
+                  <select
+                    name="cash_source"
+                    aria-label="Cash Source"
+                    required
+                    value={formData.cash_source}
+                    disabled={isAccountingLocked}
+                    onChange={(e) => {
+                      const src = e.target.value as 'cash_on_hand' | 'petty_cash';
+                      setFormData(prev => ({
+                        ...prev,
+                        cash_source: src,
+                        petty_cash_book_id: src === 'petty_cash' ? (prev.petty_cash_book_id || (pettyCashBooks[0]?.id || '')) : '',
+                      }));
+                    }}
+                    className={FLOAT_INPUT}
+                  >
+                    <option value="cash_on_hand">Cash in Hand</option>
+                    <option value="petty_cash">Petty Cash</option>
+                  </select>
+                </FloatingField>
+
+                {formData.cash_source === 'petty_cash' ? (
+                  <FloatingField label="Petty Cash Book / Fund" required span={2} filled={!!formData.petty_cash_book_id}>
+                    <select
+                      name="petty_cash_book_id"
+                      aria-label="Petty Cash Book"
+                      required
+                      value={formData.petty_cash_book_id}
+                      disabled={isAccountingLocked}
+                      onChange={(e) => setFormData({ ...formData, petty_cash_book_id: e.target.value })}
+                      className={FLOAT_INPUT}
+                    >
+                      <option value="">Select fund/book</option>
+                      {pettyCashBooks.map(book => (
+                        <option key={book.id} value={book.id}>
+                          {book.name} (Float: Rp {Number(book.float_amount || 0).toLocaleString('id-ID')})
+                        </option>
+                      ))}
+                    </select>
+                  </FloatingField>
+                ) : null}
+
+                <FloatingField
+                  label="Receipt / Voucher Ref #"
+                  span={formData.cash_source === 'petty_cash' ? 2 : 4}
+                  filled={!!formData.reference_number}
+                >
+                  <input
+                    name="reference_number"
+                    aria-label="Reference Number"
+                    type="text"
+                    value={formData.reference_number}
+                    onChange={(e) => setFormData({ ...formData, reference_number: e.target.value })}
+                    className={FLOAT_INPUT}
+                    placeholder="Receipt / Voucher Ref #"
+                  />
+                </FloatingField>
+              </>
+            )}
+
+            {!['bank_transfer', 'cash'].includes(formData.payment_method) && (
               <FloatingField label="Reference / Memo" span={6} filled={!!formData.reference_number}>
                 <input
                   name="reference_number"
@@ -2652,7 +2773,14 @@ export function PaymentVoucherManager({
                 <span>{fmt(formData.amount + (formData.settlement_discount || 0), bankCurrency)}</span>
               </div>
               <div className="flex justify-between text-slate-700 border-t border-slate-200 pt-1">
-                <span>Cr {selectedBank?.alias || (formData.payment_method === 'cash' ? 'Petty Cash (1102)' : 'Bank Account')}</span>
+                <span>
+                  Cr{' '}
+                  {formData.payment_method === 'bank_transfer'
+                    ? (selectedBank?.alias || selectedBank?.bank_name || 'Bank Account')
+                    : formData.cash_source === 'petty_cash'
+                      ? `Petty Cash (1102)${pettyCashBooks.find(b => b.id === formData.petty_cash_book_id) ? ` - ${pettyCashBooks.find(b => b.id === formData.petty_cash_book_id)?.name}` : ''}`
+                      : 'Cash in Hand (1101)'}
+                </span>
                 <span>{fmt(formData.amount, bankCurrency)}</span>
               </div>
               {formData.settlement_discount > 0 && (

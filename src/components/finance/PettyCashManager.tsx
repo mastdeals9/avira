@@ -297,6 +297,7 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
             description,
             payment_method,
             bank_account_id,
+            coa_account_id,
             is_posted,
             party_type,
             supplier_id,
@@ -304,7 +305,7 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
             suppliers (company_name),
             finance_staff_master (full_name)
           `)
-          .eq('payment_method', 'cash')
+          .in('payment_method', ['cash', 'petty_cash'])
           .eq('is_posted', true)
           .gte('voucher_date', startDate)
           .lte('voucher_date', endDate)
@@ -364,7 +365,17 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
         };
       });
 
-      const cashPvActivity: PettyCashTransaction[] = ((pvRes.data || []) as any[]).map((pv) => {
+      const cashPvActivity: PettyCashTransaction[] = ((pvRes.data || []) as any[])
+        .filter((pv) => {
+          // Cash paid from Cash in Hand must reduce Cash in Hand, NOT Petty Cash.
+          // Only include payment vouchers that are funded from Petty Cash (Account 1102).
+          return (
+            pv.payment_method === 'petty_cash' ||
+            pv.coa_account_id === '5b7f4b18-d751-4f47-b49b-117214bf0ba5' ||
+            (pv.description && /petty\s*cash/i.test(pv.description))
+          );
+        })
+        .map((pv) => {
         const party = pv.suppliers?.company_name || pv.finance_staff_master?.full_name || pv.party_type || 'Payee';
         return {
           id: pv.id,
