@@ -364,6 +364,7 @@ export function PaymentVoucherManager({
   }
 
   const [pettyCashBooks, setPettyCashBooks] = useState<PettyCashBookOption[]>([]);
+  const [isCashOnHandActive, setIsCashOnHandActive] = useState<boolean>(false);
 
   const [formData, setFormData] = useState({
     voucher_date: new Date().toISOString().split('T')[0],
@@ -374,7 +375,7 @@ export function PaymentVoucherManager({
     staff_id: '',
     other_party_name: '',
     payment_method: 'bank_transfer',
-    cash_source: 'cash_on_hand' as 'cash_on_hand' | 'petty_cash',
+    cash_source: 'petty_cash' as 'cash_on_hand' | 'petty_cash',
     petty_cash_book_id: '',
     payment_purpose: 'supplier_invoice_payment',
     settlement_against: 'specific_document' as 'outstanding_balance' | 'specific_document' | 'advance' | 'unallocated_credit',
@@ -970,12 +971,29 @@ export function PaymentVoucherManager({
   };
 
   const loadPettyCashBooks = async () => {
-    const { data } = await supabase
-      .from('petty_cash_books')
-      .select('id, name, account_id, current_balance, float_amount')
-      .eq('is_active', true)
-      .order('name');
-    setPettyCashBooks(data || []);
+    const [booksRes, coaRes] = await Promise.all([
+      supabase
+        .from('petty_cash_books')
+        .select('id, name, account_id, current_balance, float_amount')
+        .eq('is_active', true)
+        .order('name'),
+      supabase
+        .from('chart_of_accounts')
+        .select('id, is_active')
+        .eq('code', '1101')
+        .maybeSingle(),
+    ]);
+    const books = booksRes.data || [];
+    setPettyCashBooks(books);
+    const cashActive = Boolean(coaRes.data?.is_active);
+    setIsCashOnHandActive(cashActive);
+    if (!cashActive && books.length > 0) {
+      setFormData(prev => ({
+        ...prev,
+        cash_source: 'petty_cash',
+        petty_cash_book_id: prev.petty_cash_book_id || books[0].id,
+      }));
+    }
   };
 
   const loadTaxCodes = async () => {
@@ -1130,8 +1148,8 @@ export function PaymentVoucherManager({
       staff_id: '',
       other_party_name: '',
       payment_method: 'bank_transfer',
-      cash_source: 'cash_on_hand',
-      petty_cash_book_id: '',
+      cash_source: isCashOnHandActive ? 'cash_on_hand' : 'petty_cash',
+      petty_cash_book_id: isCashOnHandActive ? '' : (pettyCashBooks[0]?.id || ''),
       payment_purpose: 'supplier_invoice_payment',
       settlement_against: 'specific_document',
       settlement_discount: 0,
@@ -1240,8 +1258,8 @@ export function PaymentVoucherManager({
       staff_id: v.staff_id || '',
       other_party_name: v.description?.replace(/^Director:\s*/i, '') || '',
       payment_method: v.payment_method === 'petty_cash' ? 'cash' : v.payment_method,
-      cash_source: isPettyCash ? 'petty_cash' : 'cash_on_hand',
-      petty_cash_book_id: isPettyCash ? (matchedBook?.id || '') : '',
+      cash_source: isPettyCash ? 'petty_cash' : (isCashOnHandActive ? 'cash_on_hand' : 'petty_cash'),
+      petty_cash_book_id: isPettyCash ? (matchedBook?.id || (pettyCashBooks[0]?.id || '')) : (isCashOnHandActive ? '' : (pettyCashBooks[0]?.id || '')),
       payment_purpose: v.payment_purpose || (vPartyType === 'customer' ? 'customer_refund' : vPartyType === 'employee' ? 'salary_payroll' : 'supplier_invoice_payment'),
       settlement_against: (v.settlement_against as any) || (vPartyType === 'supplier' ? 'specific_document' : 'outstanding_balance'),
       settlement_discount: Number(v.settlement_discount || 0),
@@ -1622,9 +1640,15 @@ export function PaymentVoucherManager({
       alert('Please select an active bank account for bank transfer payments.');
       return;
     }
-    if (formData.payment_method === 'cash' && formData.cash_source === 'petty_cash' && !formData.petty_cash_book_id) {
-      alert('Please select an active petty cash book/fund.');
-      return;
+    if (formData.payment_method === 'cash') {
+      if (formData.cash_source === 'cash_on_hand' && !isCashOnHandActive) {
+        alert('Cash in Hand (GL 1101) is currently inactive in Chart of Accounts. Please select Petty Cash instead.');
+        return;
+      }
+      if (formData.cash_source === 'petty_cash' && !formData.petty_cash_book_id) {
+        alert('Please select an active petty cash book/fund.');
+        return;
+      }
     }
 
     if (bankReconStatementLineId) {
@@ -1691,7 +1715,10 @@ export function PaymentVoucherManager({
         if (formData.cash_source === 'petty_cash') {
           finalPaymentMethod = 'petty_cash';
           const chosenBook = pettyCashBooks.find(b => b.id === formData.petty_cash_book_id);
-          finalCoaAccountId = chosenBook?.account_id || '5b7f4b18-d751-4f47-b49b-117214bf0ba5';
+          // coa_account_id on payment_vouchers is strictly reserved for debit control account overrides.
+          // It must NEVER be set to cash/petty cash GL 1101/1102, which would cause post_payment_voucher
+          // to erroneously debit cash instead of Accounts Payable or Supplier Advance.
+          finalCoaAccountId = null;
           if (chosenBook && !finalDescription?.includes(chosenBook.name)) {
             finalDescription = finalDescription
               ? `${finalDescription} [Petty Cash: ${chosenBook.name}]`
@@ -1699,7 +1726,7 @@ export function PaymentVoucherManager({
           }
         } else {
           finalPaymentMethod = 'cash';
-          finalCoaAccountId = '35e08064-a173-4069-9b47-dd985bb98d15'; // Cash on Hand (1101)
+          finalCoaAccountId = null;
         }
       }
 
@@ -2544,8 +2571,10 @@ export function PaymentVoucherManager({
                     }}
                     className={FLOAT_INPUT}
                   >
-                    <option value="cash_on_hand">Cash in Hand</option>
-                    <option value="petty_cash">Petty Cash</option>
+                    <option value="petty_cash">Petty Cash (GL 1102)</option>
+                    <option value="cash_on_hand" disabled={!isCashOnHandActive}>
+                      Cash in Hand {isCashOnHandActive ? '(GL 1101)' : '(Inactive — GL 1101)'}
+                    </option>
                   </select>
                 </FloatingField>
 

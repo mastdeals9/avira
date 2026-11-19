@@ -556,7 +556,11 @@ BEGIN
     END IF;
 
     IF v_bank_coa IS NULL THEN
-      RAISE EXCEPTION 'No active postable Cash/Petty Cash GL account found (GL 1101/1102)';
+      IF v_pv.payment_method = 'cash' THEN
+        RAISE EXCEPTION 'Cash on Hand (GL 1101) is currently inactive in Chart of Accounts. Use active Petty Cash (GL 1102) instead.';
+      ELSE
+        RAISE EXCEPTION 'No active postable Cash/Petty Cash GL account found (GL 1101/1102)';
+      END IF;
     END IF;
   ELSE
     RAISE EXCEPTION 'Unsupported payment method: % for payment voucher %', v_pv.payment_method, v_pv.voucher_number;
@@ -567,15 +571,20 @@ BEGIN
   SELECT id INTO v_fx_gain_coa FROM public.chart_of_accounts WHERE code = '4930' AND is_active = true LIMIT 1;
 
   -- Resolve Debit Control Account
+  -- coa_account_id cannot be used simultaneously as the cash credit account and supplier liability debit account
   IF v_party_type = 'supplier' THEN
     IF v_pv.payment_purpose = 'supplier_advance' OR v_pv.settlement_against = 'advance' THEN
-      IF v_pv.coa_account_id IS NOT NULL THEN
+      IF v_pv.coa_account_id IS NOT NULL
+         AND v_pv.coa_account_id IS DISTINCT FROM v_bank_coa
+         AND NOT EXISTS (SELECT 1 FROM public.chart_of_accounts WHERE id = v_pv.coa_account_id AND code IN ('1101', '1102', '111101')) THEN
         v_debit_coa := v_pv.coa_account_id;
       ELSE
         SELECT id INTO v_debit_coa FROM public.chart_of_accounts WHERE code = '1170' AND is_active = true AND is_header = false LIMIT 1;
       END IF;
     ELSE
-      IF v_pv.coa_account_id IS NOT NULL THEN
+      IF v_pv.coa_account_id IS NOT NULL
+         AND v_pv.coa_account_id IS DISTINCT FROM v_bank_coa
+         AND NOT EXISTS (SELECT 1 FROM public.chart_of_accounts WHERE id = v_pv.coa_account_id AND code IN ('1101', '1102', '111101')) THEN
         v_debit_coa := v_pv.coa_account_id;
       ELSE
         SELECT id INTO v_debit_coa FROM public.chart_of_accounts WHERE code = '2110' AND is_active = true AND is_header = false LIMIT 1;
@@ -635,6 +644,11 @@ BEGIN
 
   IF v_debit_coa IS NULL THEN
     RAISE EXCEPTION 'Could not determine debit control account for party %', v_party_type;
+  END IF;
+
+  IF v_debit_coa = v_bank_coa THEN
+    RAISE EXCEPTION 'Accounting conflict: Debit control account (%) and credit payment account (%) cannot be identical for payment voucher %',
+      v_debit_coa, v_bank_coa, v_pv.voucher_number;
   END IF;
 
   -- Create Journal Entry
@@ -712,7 +726,7 @@ BEGIN
     v_je_id, v_line, v_bank_coa,
     CASE 
       WHEN v_pv.payment_method = 'advance_adjustment' THEN 'Advance Adjustment - '
-      WHEN v_pv.payment_method = 'petty_cash' OR (v_pv.coa_account_id IS NOT NULL AND v_bank_coa = (SELECT id FROM chart_of_accounts WHERE code = '1102')) THEN 'Petty Cash Payment - '
+      WHEN v_pv.payment_method = 'petty_cash' OR v_bank_coa = (SELECT id FROM public.chart_of_accounts WHERE code = '1102' LIMIT 1) THEN 'Petty Cash Payment - '
       WHEN v_pv.payment_method = 'cash' THEN 'Cash in Hand Payment - '
       ELSE 'Bank Payment - ' 
     END || v_pv.voucher_number,

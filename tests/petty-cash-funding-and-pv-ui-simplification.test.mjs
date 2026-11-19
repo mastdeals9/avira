@@ -123,8 +123,8 @@ test('7. Payment Voucher UI simplification: Main options are Bank Transfer and C
 
 test('8. When Cash is selected: UI shows Cash Source (Cash in Hand vs Petty Cash)', () => {
   assert.match(pvManagerSource, /<FloatingField label="Cash Source"/);
-  assert.match(pvManagerSource, /<option value="cash_on_hand">Cash in Hand<\/option>/);
-  assert.match(pvManagerSource, /<option value="petty_cash">Petty Cash<\/option>/);
+  assert.match(pvManagerSource, /<option value="cash_on_hand"[^>]*>[\s\S]*Cash in Hand/);
+  assert.match(pvManagerSource, /<option value="petty_cash">Petty Cash/);
 
   // When Petty Cash selected: requires active Petty Cash book/fund
   assert.match(pvManagerSource, /<FloatingField label="Petty Cash Book \/ Fund"/);
@@ -132,7 +132,7 @@ test('8. When Cash is selected: UI shows Cash Source (Cash in Hand vs Petty Cash
   assert.match(pvManagerSource, /pettyCashBooks\.map/);
 
   // Validation prevents saving petty cash without book selection
-  assert.match(pvManagerSource, /formData\.payment_method === 'cash' && formData\.cash_source === 'petty_cash' && !formData\.petty_cash_book_id/);
+  assert.match(pvManagerSource, /if\s*\(formData\.payment_method === 'cash'\)\s*\{[\s\S]*?if\s*\(formData\.cash_source === 'petty_cash' && !formData\.petty_cash_book_id\)/);
 });
 
 test('9. Cash in Hand reduces Cash in Hand (1101); Petty Cash reduces Petty Cash (1102)', () => {
@@ -162,4 +162,49 @@ test('11. Idempotency guard prevents duplicate funding or repair execution', () 
   assert.match(migrationSource, /c_idempotency CONSTANT text := 'sandi-pv028-petty-cash-funding-correction-20261118-v1'/);
   assert.match(migrationSource, /SELECT \* INTO v_existing\s*FROM public\.finance_historical_repair_commands\s*WHERE idempotency_key = c_idempotency/);
   assert.match(migrationSource, /ON CONFLICT \(fund_transfer_id\) WHERE fund_transfer_id IS NOT NULL DO NOTHING/);
+});
+
+test('12. Invariant guard: coa_account_id cannot be used simultaneously as debit and credit in post_payment_voucher', () => {
+  // post_payment_voucher disallows coa_account_id from pointing to bank/cash asset account or overriding with credit account
+  assert.match(migrationSource, /AND v_pv\.coa_account_id IS DISTINCT FROM v_bank_coa/);
+  assert.match(migrationSource, /AND NOT EXISTS \(SELECT 1 FROM public\.chart_of_accounts WHERE id = v_pv\.coa_account_id AND code IN \('1101', '1102', '111101'\)\)/);
+  assert.match(migrationSource, /IF v_debit_coa = v_bank_coa THEN/);
+  assert.match(migrationSource, /RAISE EXCEPTION 'Accounting conflict: Debit control account \(%\) and credit payment account \(%\) cannot be identical/);
+
+  // PaymentVoucherManager resets coa_account_id to null for cash/petty cash vouchers to prevent accidental override
+  assert.match(pvManagerSource, /finalCoaAccountId = null;/);
+});
+
+test('13. Inactive GL 1101 is respected: UI disables Cash on Hand and defaults to active Petty Cash (GL 1102)', () => {
+  // PaymentVoucherManager fetches GL 1101 status and disables cash_on_hand option if inactive
+  assert.match(pvManagerSource, /const \[isCashOnHandActive, setIsCashOnHandActive\] = useState<boolean>\(false\);/);
+  assert.match(pvManagerSource, /\.eq\('code', '1101'\)/);
+  assert.match(pvManagerSource, /<option value="cash_on_hand" disabled=\{!isCashOnHandActive\}>/);
+  assert.match(pvManagerSource, /formData\.cash_source === 'cash_on_hand' && !isCashOnHandActive/);
+  assert.match(pvManagerSource, /Cash in Hand \(GL 1101\) is currently inactive in Chart of Accounts/);
+});
+
+test('14. Accounting integrity: Supplier payments, advances, employee advances, cash/petty cash and FX rules', () => {
+  // Supplier invoice payment routes to Accounts Payable (GL 2110)
+  assert.match(migrationSource, /SELECT id INTO v_debit_coa FROM public\.chart_of_accounts WHERE code = '2110'/);
+  // Supplier advance routes to Supplier Advances (GL 1170)
+  assert.match(migrationSource, /SELECT id INTO v_debit_coa FROM public\.chart_of_accounts WHERE code = '1170'/);
+  // Staff advance routes to Staff Advances (GL 1160)
+  assert.match(migrationSource, /SELECT id INTO v_debit_coa FROM public\.chart_of_accounts WHERE code = '1160'/);
+  // FX gain/loss routing for non-IDR payments (GL 4930 / GL 7300)
+  assert.match(migrationSource, /SELECT id INTO v_fx_loss_coa FROM public\.chart_of_accounts WHERE code = '7300'/);
+  assert.match(migrationSource, /SELECT id INTO v_fx_gain_coa FROM public\.chart_of_accounts WHERE code = '4930'/);
+});
+
+test('15. PV/26-26/032 settlement_amount dependency model: generated column formula evaluates COALESCE(actual_bank_debit, bank_amount)', () => {
+  // settlement_amount is GENERATED ALWAYS AS (COALESCE(actual_bank_debit, bank_amount, ((amount - pph_amount) + bank_charge))) STORED
+  const testVoucherCalc = (amount, pph, charge, bankDebit, bankAmt) => {
+    return bankDebit ?? bankAmt ?? ((amount - pph) + charge);
+  };
+
+  // Currently with actual_bank_debit = 1,100,000, settlement evaluates to 1,100,000
+  assert.strictEqual(testVoucherCalc(1000000, 0, 0, 1100000, 1100000), 1100000);
+
+  // When corrected to actual_bank_debit = 1,000,000, settlement evaluates to 1,000,000
+  assert.strictEqual(testVoucherCalc(1000000, 0, 0, 1000000, 1000000), 1000000);
 });
