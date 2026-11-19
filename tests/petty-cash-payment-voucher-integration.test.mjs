@@ -18,7 +18,7 @@ const financeCommandsSource = readFileSync(
 );
 
 const migrationSource = readFileSync(
-  new URL('../supabase/migrations/20261119140000_integrate_payment_vouchers_with_petty_cash.sql', import.meta.url),
+  new URL('../supabase/migrations/20261119084158_integrate_payment_vouchers_with_petty_cash.sql', import.meta.url),
   'utf8',
 );
 
@@ -273,5 +273,46 @@ test('10. Do not create duplicate journal entries or duplicate cash movements', 
     pettyCashSource,
     /const linkedPvIds = new Set\(\s*pettyCashTransactions\s*\.map\(\(t\) => t\.payment_voucher_id\)\s*\.filter\(Boolean\)\s*\);[\s\S]*?if \(linkedPvIds\.has\(pv\.id\)\)/,
     'PettyCashManager deduplicates unlinked payment vouchers so transactions are not shown twice',
+  );
+});
+
+test('11. Chain integrity validation: validates against canonical Payment Voucher journal (source_module = payment)', () => {
+  assert.match(
+    migrationSource,
+    /CREATE OR REPLACE FUNCTION public\.validate_petty_cash_chain_integrity\(\)/,
+    'validate_petty_cash_chain_integrity must be defined',
+  );
+
+  // Checks payment voucher reference
+  assert.match(
+    migrationSource,
+    /IF NEW\.payment_voucher_id IS NOT NULL THEN[\s\S]*?SELECT \* INTO v_pv\s*FROM public\.payment_vouchers\s*WHERE id = NEW\.payment_voucher_id/,
+    'Chain integrity must verify linked payment voucher',
+  );
+
+  // Checks that canonical journal is source_module = payment, not petty_cash
+  assert.match(
+    migrationSource,
+    /SELECT \* INTO v_je\s*FROM public\.journal_entries\s*WHERE id = v_pv\.journal_entry_id\s*AND source_module = 'payment'\s*AND reference_id = v_pv\.id\s*AND is_posted = true\s*AND NOT COALESCE\(is_reversed, false\);/,
+    'Chain integrity must validate against active canonical payment journal entry',
+  );
+
+  // Checks that journal credits Petty Cash GL 1102
+  assert.match(
+    migrationSource,
+    /abs\(v_pc_credit - round\(NEW\.amount \* COALESCE\(NULLIF\(v_pv\.exchange_rate, 0\), 1\), 2\)\) > 0\.01[\s\S]*?RAISE EXCEPTION 'Payment Voucher % journal does not credit Petty Cash GL 1102 for the transaction amount'/,
+    'Chain integrity must verify credit to GL 1102 matches transaction amount',
+  );
+
+  // Preserves fund transfer and direct expense integrity checks
+  assert.match(
+    migrationSource,
+    /IF NEW\.fund_transfer_id IS NOT NULL THEN/,
+    'Fund transfer integrity check must remain intact',
+  );
+  assert.match(
+    migrationSource,
+    /WHERE je\.source_module = 'petty_cash'\s*AND je\.reference_id = NEW\.id/,
+    'Direct petty cash expense integrity check must remain intact',
   );
 });
