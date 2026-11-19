@@ -60,6 +60,9 @@ export interface PaymentPayload {
   customer_id?: string | null;
   staff_id?: string | null;
   payment_method: string;
+  cash_source?: 'cash_on_hand' | 'petty_cash';
+  petty_cash_book_id?: string | null;
+  coa_account_id?: string | null;
   payment_purpose?: string;
   settlement_against?: 'outstanding_balance' | 'specific_document' | 'advance' | 'unallocated_credit';
   settlement_discount?: number;

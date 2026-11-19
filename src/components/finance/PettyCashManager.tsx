@@ -75,6 +75,14 @@ interface PettyCashTransaction {
   created_at: string;
   petty_cash_documents?: PettyCashDocument[];
   bank_statement_lines?: BankTransactionLine | null;
+  payment_voucher_id?: string | null;
+  petty_cash_book_id?: string | null;
+  petty_cash_books?: {
+    id: string;
+    name: string;
+    float_amount?: number;
+    current_balance?: number;
+  } | null;
 }
 
 interface ImportContainer {
@@ -170,6 +178,7 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
   const [editingTransaction, setEditingTransaction] = useState<PettyCashTransaction | null>(null);
   const [signedUrlCache, setSignedUrlCache] = useState<Record<string, string>>({});
   const [cashBalance, setCashBalance] = useState(0);
+  const [pettyCashBooks, setPettyCashBooks] = useState<{ id: string; name: string; float_amount: number; current_balance: number }[]>([]);
   const [uploadingFiles, setUploadingFiles] = useState<File[]>([]);
   const [existingDocuments, setExistingDocuments] = useState<PettyCashDocument[]>([]);
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
@@ -205,7 +214,7 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
 
   const loadData = useCallback(async () => {
     try {
-      const [txRes, transfersRes, containersRes, challansRes, bankRes, accountsRes, pvRes, glBalanceRes] = await Promise.all([
+      const [txRes, transfersRes, containersRes, challansRes, bankRes, accountsRes, pvRes, glBalanceRes, booksRes] = await Promise.all([
         supabase
           .from('petty_cash_transactions')
           .select(`
@@ -311,6 +320,11 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
           .lte('voucher_date', endDate)
           .order('voucher_date', { ascending: false }),
         supabase.rpc('get_petty_cash_balance'),
+        supabase
+          .from('petty_cash_books')
+          .select('id, name, float_amount, current_balance')
+          .eq('is_active', true)
+          .order('name'),
       ]);
 
       if (txRes.error) throw txRes.error;
@@ -321,7 +335,15 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
       if (accountsRes.error) throw accountsRes.error;
       if (pvRes.error) console.warn('Could not load cash payment vouchers:', pvRes.error);
 
-      const pettyCashTransactions = (txRes.data || []) as PettyCashTransaction[];
+      const loadedBooks = (booksRes?.data || []) as { id: string; name: string; float_amount: number; current_balance: number }[];
+      setPettyCashBooks(loadedBooks);
+      const bookMap = new Map(loadedBooks.map(b => [b.id, b]));
+
+      const rawTransactions = (txRes.data || []) as any[];
+      const pettyCashTransactions: PettyCashTransaction[] = rawTransactions.map((tx) => ({
+        ...tx,
+        petty_cash_books: tx.petty_cash_book_id ? bookMap.get(tx.petty_cash_book_id) || null : null,
+      }));
 
       const fundTransferActivity: PettyCashTransaction[] = ((transfersRes.data || []) as FundTransferActivityRow[]).map((transfer) => {
         const isInflow = transfer.to_account_type === 'petty_cash';
@@ -365,8 +387,19 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
         };
       });
 
+      const linkedPvIds = new Set(
+        pettyCashTransactions
+          .map((t) => t.payment_voucher_id)
+          .filter(Boolean)
+      );
+
       const cashPvActivity: PettyCashTransaction[] = ((pvRes.data || []) as any[])
         .filter((pv) => {
+          // If this payment voucher already has an authoritative petty_cash_transactions record,
+          // do NOT add a synthetic duplicate row.
+          if (linkedPvIds.has(pv.id)) {
+            return false;
+          }
           // Cash paid from Cash in Hand must reduce Cash in Hand, NOT Petty Cash.
           // Only include payment vouchers that are funded from Petty Cash (Account 1102).
           return (
@@ -1203,11 +1236,21 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
       </div>
 
       {/* KPI strip — same shape as other Finance pages */}
-      <div className="grid gap-1.5" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+      <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${3 + (pettyCashBooks.length > 0 ? 1 : 0)}, minmax(0, 1fr))` }}>
         <div className="border border-gray-200 rounded bg-white px-2 py-1.5">
-          <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">Balance</div>
+          <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">GL 1102 Balance</div>
           <div className="text-xs font-mono font-bold text-green-600">{formatCurrency(cashBalance, 'IDR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
         </div>
+        {pettyCashBooks.length > 0 && (
+          <div className="border border-gray-200 rounded bg-white px-2 py-1.5">
+            <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">
+              Book: {pettyCashBooks[0].name} (Float: {formatCurrency(pettyCashBooks[0].float_amount, 'IDR')})
+            </div>
+            <div className={`text-xs font-mono font-bold ${pettyCashBooks[0].current_balance < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+              {formatCurrency(pettyCashBooks[0].current_balance, 'IDR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+            </div>
+          </div>
+        )}
         <div className="border border-gray-200 rounded bg-white px-2 py-1.5">
           <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">Cash In</div>
           <div className="text-xs font-mono font-bold text-blue-600">{formatCurrency(totalInflow, 'IDR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
@@ -1374,12 +1417,19 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
                       <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
                         tx.transaction_type === 'withdraw'
                           ? 'bg-blue-100 text-blue-800'
-                          : 'bg-red-100 text-red-800'
+                          : tx.payment_voucher_id
+                            ? (tx.expense_category === null ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800')
+                            : 'bg-red-100 text-red-800'
                       }`}>
                         {tx.fund_transfer_id ? (
                           <>
                             <ArrowDownCircle className={`h-3 w-3 ${tx.transaction_type === 'withdraw' ? '' : 'rotate-180'}`} />
                             Contra {tx.transaction_type === 'withdraw' ? 'Inflow' : 'Outflow'}
+                          </>
+                        ) : tx.payment_voucher_id ? (
+                          <>
+                            <ArrowUpCircle className="h-3 w-3" />
+                            {tx.expense_category === null ? 'Staff Advance' : 'Voucher Outflow'}
                           </>
                         ) : tx.transaction_type === 'withdraw' ? (
                           <>
@@ -1395,11 +1445,15 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
                       </span>
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
-                      {categoryInfo && (
+                      {categoryInfo ? (
                         <div className="flex items-center gap-2">
                           <span className="text-sm text-gray-900">{categoryInfo.label}</span>
                         </div>
-                      )}
+                      ) : tx.payment_voucher_id ? (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                          {tx.expense_category ? tx.expense_category : 'Balance Sheet (Advance)'}
+                        </span>
+                      ) : null}
                     </td>
                     <td className="px-2 py-1.5 text-sm text-gray-600">
                       <div className="max-w-xs truncate">
@@ -1422,9 +1476,15 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
                           </div>
                         )}
                         {tx.source && (
-                          <div className={`flex items-center gap-1 ${tx.fund_transfer_id ? 'text-indigo-600' : 'text-gray-600'}`}>
+                          <div className={`flex items-center gap-1 ${tx.fund_transfer_id ? 'text-indigo-600' : tx.payment_voucher_id ? 'text-amber-700' : 'text-gray-600'}`}>
                             {tx.fund_transfer_id ? <ArrowDownCircle className="h-3 w-3" /> : <Building2 className="h-3 w-3" />}
                             <span className="text-xs">{tx.source}</span>
+                          </div>
+                        )}
+                        {tx.petty_cash_books?.name && (
+                          <div className="flex items-center gap-1 text-teal-700 font-medium">
+                            <Building2 className="h-3 w-3" />
+                            <span className="text-xs">Book: {tx.petty_cash_books.name}</span>
                           </div>
                         )}
                         {tx.bank_statement_line_id && (
@@ -2123,6 +2183,20 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
                 <div className="flex items-center gap-1.5">
                   <p className="text-xs text-gray-500">Source:</p>
                   <p className="text-sm font-medium text-gray-900">{viewingTransaction.source}</p>
+                </div>
+              )}
+              {viewingTransaction.petty_cash_books?.name && (
+                <div className="flex items-center gap-1.5 text-teal-700">
+                  <Building2 className="w-3.5 h-3.5" />
+                  <p className="text-xs text-gray-500">Petty Cash Book:</p>
+                  <p className="text-sm font-semibold text-teal-800">{viewingTransaction.petty_cash_books.name}</p>
+                </div>
+              )}
+              {viewingTransaction.payment_voucher_id && (
+                <div className="flex items-center gap-1.5 text-indigo-700">
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <p className="text-xs text-gray-500">Origin Payment Voucher:</p>
+                  <p className="text-sm font-semibold text-indigo-800">{viewingTransaction.voucher_number || viewingTransaction.payment_voucher_id}</p>
                 </div>
               )}
             </div>

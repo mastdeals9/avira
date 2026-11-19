@@ -134,6 +134,8 @@ interface PaymentVoucher {
   customers?: { company_name: string } | null;
   finance_staff_master?: { full_name: string } | null;
   bank_accounts?: { account_name: string; bank_name: string; alias: string | null; currency: string | null };
+  petty_cash_book_id?: string | null;
+  petty_cash_books?: { id: string; name: string } | null;
   // derived
   invoice_currency: string;
   invoice_numbers: { id: string; number: string }[];
@@ -586,12 +588,12 @@ export function PaymentVoucherManager({
       // finance_staff_master and customers embed
       let { data, error } = await supabase
         .from('payment_vouchers')
-        .select('*, suppliers(company_name), customers(company_name), finance_staff_master(full_name), bank_accounts(account_name, bank_name, alias, currency)')
+        .select('*, suppliers(company_name), customers(company_name), finance_staff_master(full_name), bank_accounts(account_name, bank_name, alias, currency), petty_cash_books:petty_cash_book_id(id, name)')
         .gte('voucher_date', dateRange.startDate)
         .lte('voucher_date', dateRange.endDate)
         .order('voucher_date', { ascending: false })
         .order('voucher_number', { ascending: false });
-      if (error && /customers|finance_staff_master|staff_id/i.test(error.message || '')) {
+      if (error && /petty_cash_books|customers|finance_staff_master|staff_id/i.test(error.message || '')) {
         ({ data, error } = await supabase
           .from('payment_vouchers')
           .select('*, suppliers(company_name), bank_accounts(account_name, bank_name, alias, currency)')
@@ -1245,9 +1247,12 @@ export function PaymentVoucherManager({
     const vPartyType: PartyType = resolvePaymentPartyType(v);
     setPartyType(vPartyType);
     const isPettyCash = v.payment_method === 'petty_cash'
+      || Boolean(v.petty_cash_book_id)
       || v.coa_account_id === '5b7f4b18-d751-4f47-b49b-117214bf0ba5'
       || /petty\s*cash/i.test(v.description || '');
-    const matchedBook = pettyCashBooks.find(b => b.account_id === v.coa_account_id) || pettyCashBooks[0];
+    const matchedBook = (v.petty_cash_book_id && pettyCashBooks.find(b => b.id === v.petty_cash_book_id))
+      || pettyCashBooks.find(b => b.account_id === v.coa_account_id)
+      || pettyCashBooks[0];
 
     setFormData({
       voucher_date: v.voucher_date,
@@ -1259,7 +1264,7 @@ export function PaymentVoucherManager({
       other_party_name: v.description?.replace(/^Director:\s*/i, '') || '',
       payment_method: v.payment_method === 'petty_cash' ? 'cash' : v.payment_method,
       cash_source: isPettyCash ? 'petty_cash' : (isCashOnHandActive ? 'cash_on_hand' : 'petty_cash'),
-      petty_cash_book_id: isPettyCash ? (matchedBook?.id || (pettyCashBooks[0]?.id || '')) : (isCashOnHandActive ? '' : (pettyCashBooks[0]?.id || '')),
+      petty_cash_book_id: isPettyCash ? (v.petty_cash_book_id || matchedBook?.id || (pettyCashBooks[0]?.id || '')) : (isCashOnHandActive ? '' : (pettyCashBooks[0]?.id || '')),
       payment_purpose: v.payment_purpose || (vPartyType === 'customer' ? 'customer_refund' : vPartyType === 'employee' ? 'salary_payroll' : 'supplier_invoice_payment'),
       settlement_against: (v.settlement_against as any) || (vPartyType === 'supplier' ? 'specific_document' : 'outstanding_balance'),
       settlement_discount: Number(v.settlement_discount || 0),
@@ -1737,6 +1742,10 @@ export function PaymentVoucherManager({
         customer_id: currentPartyType === 'customer' ? formData.customer_id : null,
         staff_id: currentPartyType === 'employee' ? formData.staff_id : null,
         payment_method: finalPaymentMethod,
+        cash_source: formData.payment_method === 'cash' ? formData.cash_source : undefined,
+        petty_cash_book_id: (finalPaymentMethod === 'petty_cash' || (formData.payment_method === 'cash' && formData.cash_source === 'petty_cash'))
+          ? (formData.petty_cash_book_id || null)
+          : null,
         coa_account_id: finalCoaAccountId,
         payment_purpose: formData.payment_purpose,
         settlement_against: formData.settlement_against,
@@ -3295,7 +3304,11 @@ export function PaymentVoucherManager({
               </div>
               <div>
                 <div className="text-xs text-gray-500 mb-0.5">Payment Method</div>
-                <div className="font-medium text-gray-900 capitalize">{viewingVoucher.payment_method.replace(/_/g, ' ')}</div>
+                <div className="font-medium text-gray-900 capitalize">
+                  {viewingVoucher.petty_cash_books?.name || viewingVoucher.payment_method === 'petty_cash'
+                    ? `Cash (Petty Cash: ${viewingVoucher.petty_cash_books?.name || 'Travel'})`
+                    : viewingVoucher.payment_method.replace(/_/g, ' ')}
+                </div>
               </div>
               {viewingVoucher.settlement_discount && viewingVoucher.settlement_discount > 0 && (
                 <div>
@@ -3313,9 +3326,15 @@ export function PaymentVoucherManager({
                 </div>
               )}
               <div>
-                <div className="text-xs text-gray-500 mb-0.5">Bank Account</div>
+                <div className="text-xs text-gray-500 mb-0.5">
+                  {viewingVoucher.petty_cash_books?.name || viewingVoucher.payment_method === 'petty_cash' ? 'Petty Cash Book' : 'Bank Account'}
+                </div>
                 <div className="font-medium text-gray-900">
-                  {viewingVoucher.bank_accounts
+                  {viewingVoucher.petty_cash_books
+                    ? `Petty Cash Book: ${viewingVoucher.petty_cash_books.name}`
+                    : viewingVoucher.payment_method === 'petty_cash'
+                    ? 'Petty Cash'
+                    : viewingVoucher.bank_accounts
                     ? `${viewingVoucher.bank_accounts.alias || viewingVoucher.bank_accounts.bank_name || viewingVoucher.bank_accounts.account_name} (${viewingVoucher.bank_accounts.currency})`
                     : '—'}
                 </div>
