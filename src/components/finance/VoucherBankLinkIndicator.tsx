@@ -8,6 +8,7 @@ export interface VoucherBankLinkIndicatorProps {
   evaluation?: VoucherBankLinkEvaluation | null;
   bankAccountId?: string | null;
   onOpenBankReconciliation?: (bankAccountId?: string, statementLineId?: string) => void;
+  onDirectLink?: () => void;
   className?: string;
 }
 
@@ -16,6 +17,7 @@ export function VoucherBankLinkIndicator({
   evaluation,
   bankAccountId,
   onOpenBankReconciliation,
+  onDirectLink,
   className = '',
 }: VoucherBankLinkIndicatorProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -226,8 +228,22 @@ export function VoucherBankLinkIndicator({
             )
           )}
 
-          {/* Action button to Bank Reconciliation */}
-          {onOpenBankReconciliation && (
+          {/* Direct Linking Popup or Action button to Bank Reconciliation */}
+          {onDirectLink && status !== 'linked' ? (
+            <div className="pt-1.5 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsOpen(false);
+                  onDirectLink();
+                }}
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded shadow-xs transition-colors"
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                <span>Link to Bank Deposit</span>
+              </button>
+            </div>
+          ) : onOpenBankReconciliation ? (
             <div className="pt-1.5 border-t border-gray-100">
               <button
                 type="button"
@@ -240,7 +256,7 @@ export function VoucherBankLinkIndicator({
                 <ExternalLink className="w-3 h-3" />
               </button>
             </div>
-          )}
+          ) : null}
         </div>
       )}
     </div>

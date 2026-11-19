@@ -119,13 +119,17 @@ test('Receipt Voucher and Bank Reconciliation Workflow Integrity Suite', async (
     assert.match(rvmContent, /Reconciled/, 'Must display Reconciled indicator when linked');
   });
 
-  await t.test('5. Bank Reconciliation Record Transaction - 2-pathway layout & draft voucher linking', () => {
+  await t.test('5. Bank Reconciliation Record Transaction - Customer Receipt primary workflow & draft voucher linking', () => {
     const reconContent = fs.readFileSync(path.join(projectRoot, 'src', 'components', 'finance', 'BankReconciliationEnhanced.tsx'), 'utf8');
 
-    // Check pathways
+    // Check pathways: Customer Receipt primary, Link Existing Receipt alternative
+    assert.match(reconContent, /Customer Receipt/, 'Must provide Customer Receipt tab');
+    assert.match(reconContent, /Primary/, 'Must designate Customer Receipt as primary workflow');
     assert.match(reconContent, /Link Existing Receipt/, 'Must provide Link Existing Receipt tab');
-    assert.match(reconContent, /Create New Receipt/, 'Must provide Create New Receipt tab');
-    assert.match(reconContent, /Recommended/, 'Must recommend Link Existing Receipt');
+
+    // Verify invoice allocation table & customer receipt posting
+    assert.match(reconContent, /receiptAllocations/, 'Must support invoice allocations');
+    assert.match(reconContent, /Post & Link Customer Receipt/, 'Must offer Post & Link Customer Receipt');
 
     // Verify search & exact amount filter
     assert.match(reconContent, /receiptSearchQuery/, 'Must support receipt search filtering');

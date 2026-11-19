@@ -3169,10 +3169,22 @@ export function BankReconciliationEnhanced({
     loadLoanAccounts(initialDir);
 
     if (line.credit > 0) {
-      setLinkExistingReceipt(true);
+      setReceiptType('customer_payment');
+      setLinkExistingReceipt(false);
       setReceiptSearchQuery('');
-      setReceiptFilterMatchingAmount(true);
-      loadExistingReceipts();
+      setReceiptFilterMatchingAmount(false);
+      loadExistingReceipts(line);
+      // Auto-match customer from description if possible
+      if (line.description && customers.length > 0) {
+        const descLower = line.description.toLowerCase();
+        const matched = customers.find(
+          (c) => c.company_name && descLower.includes(c.company_name.toLowerCase())
+        );
+        if (matched) {
+          setReceiptCustomerId(matched.id);
+          loadCustomerInvoices(matched.id);
+        }
+      }
     } else {
       setLinkExistingReceipt(false);
     }
@@ -3357,31 +3369,47 @@ export function BankReconciliationEnhanced({
   const loadCustomerInvoices = async (custId: string) => {
     setLoadingInvoices(true);
     try {
-      const [{ data: invData }, { data: existingAllocs }] = await Promise.all([
-        supabase.rpc('get_invoices_with_balance', {
+      let invData: any[] = [];
+      try {
+        const res = await supabase.rpc('get_invoices_with_balance', {
           customer_uuid: custId,
           exclude_voucher_uuid: null,
-        }),
-        supabase
-          .from('voucher_allocations')
-          .select('sales_invoice_id, allocated_amount, receipt_vouchers!inner(id, voucher_number, is_posted, status)')
-          .eq('voucher_type', 'receipt')
-          .not('sales_invoice_id', 'is', null),
-      ]);
+        });
+        invData = res.data || [];
+      } catch (rpcErr) {
+        console.warn('get_invoices_with_balance failed, falling back to direct query:', rpcErr);
+        const res = await supabase
+          .from('sales_invoices')
+          .select('id, invoice_number, invoice_date, total_amount, paid_amount, balance_amount')
+          .eq('customer_id', custId)
+          .gt('balance_amount', 0)
+          .order('invoice_date', { ascending: false });
+        invData = res.data || [];
+      }
 
       // Calculate any allocations on draft/unposted receipts that the database trigger tracks
       const draftAllocMap = new Map<string, { total: number; voucherNumber: string }>();
-      (existingAllocs || []).forEach((alloc: any) => {
-        const invId = alloc.sales_invoice_id;
-        const rv = alloc.receipt_vouchers;
-        if (rv && !rv.is_posted && rv.status !== 'cancelled') {
-          const current = draftAllocMap.get(invId) || { total: 0, voucherNumber: rv.voucher_number };
-          draftAllocMap.set(invId, {
-            total: current.total + Number(alloc.allocated_amount || 0),
-            voucherNumber: rv.voucher_number || current.voucherNumber,
-          });
-        }
-      });
+      try {
+        const { data: existingAllocs } = await supabase
+          .from('voucher_allocations')
+          .select('sales_invoice_id, allocated_amount, receipt_vouchers(id, voucher_number, is_posted, status)')
+          .eq('voucher_type', 'receipt')
+          .not('sales_invoice_id', 'is', null);
+
+        (existingAllocs || []).forEach((alloc: any) => {
+          const invId = alloc.sales_invoice_id;
+          const rv = alloc.receipt_vouchers;
+          if (rv && !rv.is_posted && rv.status !== 'cancelled') {
+            const current = draftAllocMap.get(invId) || { total: 0, voucherNumber: rv.voucher_number };
+            draftAllocMap.set(invId, {
+              total: current.total + Number(alloc.allocated_amount || 0),
+              voucherNumber: rv.voucher_number || current.voucherNumber,
+            });
+          }
+        });
+      } catch (allocErr) {
+        console.warn('Could not query draft allocations:', allocErr);
+      }
 
       const unpaid = (invData || []).map((inv: any) => {
         const draftInfo = draftAllocMap.get(inv.id);
@@ -3403,37 +3431,65 @@ export function BankReconciliationEnhanced({
     }
   };
 
-  const loadExistingReceipts = async () => {
+  const loadExistingReceipts = async (targetLine?: StatementLine) => {
     try {
+      const activeLine = targetLine || recordingLine;
+      const targetLineId = activeLine?.id;
+
       const [{ data: allReceipts, error }, linked] = await Promise.all([
         supabase
           .from('receipt_vouchers')
           .select(
             `id, voucher_number, voucher_date, amount, status, is_posted, journal_entry_id, customer_id, party_type, bank_account_id, reference_number, description,
-             customers(company_name), suppliers(company_name),
-             voucher_allocations(allocated_amount, sales_invoices(invoice_number, total_amount))`
+             customers(company_name), suppliers(company_name)`
           )
           .order('voucher_date', { ascending: false })
-          .limit(150),
-        loadLinkedDocumentIds(recordingLine?.id),
+          .limit(300),
+        loadLinkedDocumentIds(targetLineId),
       ]);
       if (error) throw error;
 
-      setExistingReceipts(
-        rankBankCandidates(
-          (allReceipts || []).map((receipt: any) => ({
-            ...receipt,
-            _linked:
-              linked.receiptIds.has(receipt.id) ||
-              (receipt.journal_entry_id && linked.journalIds.has(receipt.journal_entry_id)),
-            _linkedReason: 'Already linked to another bank statement line',
-          })),
-          recordingLine!,
-          (receipt) => Number(receipt.amount || 0),
-          (receipt) => receipt.voucher_date,
-          (receipt) => receipt.customers?.company_name || receipt.suppliers?.company_name
-        )
-      );
+      // Safely load voucher allocations
+      const receiptIds = (allReceipts || []).map((r: any) => r.id);
+      const allocMap = new Map<string, any[]>();
+      if (receiptIds.length > 0) {
+        try {
+          const { data: allocData } = await supabase
+            .from('voucher_allocations')
+            .select('receipt_voucher_id, allocated_amount, sales_invoices(invoice_number, total_amount)')
+            .in('receipt_voucher_id', receiptIds);
+          (allocData || []).forEach((a: any) => {
+            const list = allocMap.get(a.receipt_voucher_id) || [];
+            list.push(a);
+            allocMap.set(a.receipt_voucher_id, list);
+          });
+        } catch (allocErr) {
+          console.warn('Could not load receipt allocations:', allocErr);
+        }
+      }
+
+      const mapped = (allReceipts || []).map((receipt: any) => ({
+        ...receipt,
+        voucher_allocations: allocMap.get(receipt.id) || [],
+        _linked:
+          linked.receiptIds.has(receipt.id) ||
+          (receipt.journal_entry_id && linked.journalIds.has(receipt.journal_entry_id)),
+        _linkedReason: 'Already linked to another bank statement line',
+      }));
+
+      if (activeLine) {
+        setExistingReceipts(
+          rankBankCandidates(
+            mapped,
+            activeLine,
+            (receipt) => Number(receipt.amount || 0),
+            (receipt) => receipt.voucher_date,
+            (receipt) => receipt.customers?.company_name || receipt.suppliers?.company_name
+          )
+        );
+      } else {
+        setExistingReceipts(mapped);
+      }
     } catch (err) {
       console.error('Error loading receipts:', err);
     }
@@ -3640,6 +3696,13 @@ export function BankReconciliationEnhanced({
           }
         }
 
+        const totalAllocated = validAllocations.reduce((sum, a) => sum + a.amount, 0);
+        if (totalAllocated > line.credit + 0.01) {
+          throw new Error(
+            `Total invoice allocation (${formatCurrency(totalAllocated, line.currency)}) exceeds bank receipt amount (${formatCurrency(line.credit, line.currency)}).`
+          );
+        }
+
         const receiptId = await saveReceiptVoucher(
           null,
           {
@@ -3654,7 +3717,7 @@ export function BankReconciliationEnhanced({
             currency_code: line.currency as 'IDR' | 'USD',
             transaction_currency: line.currency as 'IDR' | 'USD',
             exchange_rate: line.currency === 'IDR' ? 1 : recordExchangeRate,
-            payment_purpose: 'invoice_payment',
+            payment_purpose: validAllocations.length > 0 ? 'invoice_payment' : 'customer_deposit',
             settlement_against: validAllocations.length > 0 ? 'specific_document' : 'advance',
             created_by: user.id,
           },
@@ -7153,23 +7216,6 @@ export function BankReconciliationEnhanced({
                     <button
                       type="button"
                       onClick={() => {
-                        setLinkExistingReceipt(true);
-                        setLinkJournalEntry(false);
-                        loadExistingReceipts();
-                      }}
-                      className={`py-2 px-3.5 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
-                        linkExistingReceipt && !linkJournalEntry
-                          ? 'border-blue-600 text-blue-700 bg-blue-50/50 rounded-t'
-                          : 'border-transparent text-gray-500 hover:text-gray-700'
-                      }`}
-                    >
-                      <Link2 className="w-3.5 h-3.5" />
-                      <span>Link Existing Receipt</span>
-                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-100 text-blue-800 font-medium">Recommended</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
                         setLinkExistingReceipt(false);
                         setLinkJournalEntry(false);
                       }}
@@ -7180,7 +7226,24 @@ export function BankReconciliationEnhanced({
                       }`}
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Create New Receipt</span>
+                      <span>Customer Receipt</span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-100 text-emerald-800 font-medium">Primary</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLinkExistingReceipt(true);
+                        setLinkJournalEntry(false);
+                        loadExistingReceipts(recordingLine);
+                      }}
+                      className={`py-2 px-3.5 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
+                        linkExistingReceipt && !linkJournalEntry
+                          ? 'border-blue-600 text-blue-700 bg-blue-50/50 rounded-t'
+                          : 'border-transparent text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span>Link Existing Receipt</span>
                     </button>
                     <button
                       type="button"
@@ -7242,8 +7305,8 @@ export function BankReconciliationEnhanced({
 
                     <div className="max-h-60 overflow-y-auto space-y-2 pr-1 divide-y divide-slate-100">
                       {(() => {
+                        const query = receiptSearchQuery.trim().toLowerCase();
                         const candidates = existingReceipts.filter((r) => {
-                          const query = receiptSearchQuery.trim().toLowerCase();
                           const matchesSearch = !query || [
                             r.voucher_number,
                             r.customers?.company_name,
@@ -7256,15 +7319,22 @@ export function BankReconciliationEnhanced({
                           return matchesSearch && matchesAmount;
                         });
 
+                        candidates.sort((a, b) => {
+                          const aExact = Math.abs(Number(a.amount) - Number(recordingLine.credit)) <= 0.01 ? 0 : 1;
+                          const bExact = Math.abs(Number(b.amount) - Number(recordingLine.credit)) <= 0.01 ? 0 : 1;
+                          if (aExact !== bExact) return aExact - bExact;
+                          return Math.abs(Number(a.amount) - Number(recordingLine.credit)) - Math.abs(Number(b.amount) - Number(recordingLine.credit));
+                        });
+
                         if (candidates.length === 0) {
                           return (
-                            <div className="p-6 text-center text-gray-500 text-xs bg-slate-50 rounded-lg">
-                              <p className="font-medium">No matching receipt vouchers found.</p>
+                            <div className="p-6 text-center text-gray-500 text-xs bg-slate-50 rounded-lg space-y-2">
+                              <p className="font-semibold text-slate-700">No matching receipt vouchers found.</p>
                               {receiptFilterMatchingAmount && (
                                 <button
                                   type="button"
                                   onClick={() => setReceiptFilterMatchingAmount(false)}
-                                  className="text-blue-600 text-xs underline mt-1.5 block mx-auto"
+                                  className="text-blue-600 text-xs font-medium hover:underline inline-block mt-1"
                                 >
                                   Show all receipt vouchers regardless of amount
                                 </button>
@@ -7277,6 +7347,7 @@ export function BankReconciliationEnhanced({
                           const party = r.customers?.company_name || r.suppliers?.company_name || r.party_type || 'Customer';
                           const allocs = r.voucher_allocations || [];
                           const isExactAmount = Math.abs(Number(r.amount) - Number(recordingLine.credit)) <= 0.01;
+                          const amountDiff = Math.abs(Number(r.amount) - Number(recordingLine.credit));
 
                           return (
                             <div
@@ -7299,9 +7370,13 @@ export function BankReconciliationEnhanced({
                                   }`}>
                                     {r.is_posted ? 'Posted' : 'Draft'}
                                   </span>
-                                  {isExactAmount && (
+                                  {isExactAmount ? (
                                     <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-100 text-emerald-800 font-medium">
                                       Exact Match
+                                    </span>
+                                  ) : (
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 text-slate-700 font-mono">
+                                      Diff: {formatCurrency(amountDiff, recordingLine.currency)}
                                     </span>
                                   )}
                                   {r._linked && (
@@ -7441,6 +7516,306 @@ export function BankReconciliationEnhanced({
                         </select>
                       </FloatingField>
                     </SapRow>
+
+                    {receiptType === 'customer_payment' && (
+                      <div className="space-y-3 bg-white p-3.5 rounded-lg border border-slate-200 shadow-xs">
+                        {/* Bank Transaction Source Prefilled Info */}
+                        <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          <div>
+                            <span className="text-[10px] text-slate-500 uppercase font-semibold block">Bank Account</span>
+                            <span className="font-medium text-slate-800">
+                              {bankAccounts.find((b) => b.id === selectedBank)?.alias ||
+                                bankAccounts.find((b) => b.id === selectedBank)?.account_name ||
+                                'BCA IDR'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 uppercase font-semibold block">Date</span>
+                            <span className="font-medium text-slate-800">{new Date(recordingLine.date).toLocaleDateString('id-ID')}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 uppercase font-semibold block">Bank Credit</span>
+                            <span className="font-bold text-emerald-700">{formatCurrency(recordingLine.credit, recordingLine.currency)}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 uppercase font-semibold block">Reference</span>
+                            <span className="font-mono text-slate-800 truncate block" title={recordingLine.reference || 'None'}>
+                              {recordingLine.reference || '—'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Customer Search & Select */}
+                        <SapRow>
+                          <FloatingField
+                            label="Customer"
+                            span={12}
+                            required
+                            filled={!!receiptCustomerId}
+                          >
+                            <SearchableSelect
+                              value={receiptCustomerId}
+                              onChange={(val) => {
+                                setReceiptCustomerId(val);
+                                setReceiptAllocations({});
+                                if (val) {
+                                  loadCustomerInvoices(val);
+                                } else {
+                                  setReceiptInvoices([]);
+                                }
+                              }}
+                              options={customers.map((c) => ({ value: c.id, label: c.company_name }))}
+                              placeholder="Search and select customer who made payment..."
+                            />
+                          </FloatingField>
+                        </SapRow>
+
+                        {receiptCustomerId && (
+                          <div className="flex items-center justify-between text-xs text-slate-600 bg-blue-50/50 px-2.5 py-1 rounded border border-blue-200">
+                            <span>
+                              Customer:{' '}
+                              <strong className="text-blue-900">
+                                {customers.find((c) => c.id === receiptCustomerId)?.company_name}
+                              </strong>
+                            </span>
+                            {loadingInvoices ? (
+                              <span className="text-slate-400">Loading invoices...</span>
+                            ) : (
+                              <span className="text-slate-500">
+                                {receiptInvoices.length} outstanding invoice{receiptInvoices.length !== 1 ? 's' : ''}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Invoice Allocations */}
+                        {receiptCustomerId && !loadingInvoices && receiptInvoices.length === 0 && (
+                          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 space-y-1">
+                            <div className="font-semibold flex items-center gap-1.5">
+                              <span>No unpaid sales invoices found for this customer.</span>
+                            </div>
+                            <p className="text-amber-800 text-[11px]">
+                              This bank receipt will be recorded and posted as an <strong>Unallocated Customer Deposit</strong> (credited to <strong>GL 2140 Customer Advances</strong>), and linked directly to this bank statement transaction.
+                            </p>
+                          </div>
+                        )}
+
+                        {receiptCustomerId && !loadingInvoices && receiptInvoices.length > 0 && (
+                          <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-xs">
+                            <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex items-center justify-between">
+                              <span className="text-xs font-semibold text-slate-800">
+                                Allocate to Invoices ({receiptInvoices.length} outstanding)
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                Select invoice(s) or leave unallocated for Customer Deposit
+                              </span>
+                            </div>
+                            <div className="max-h-56 overflow-y-auto divide-y divide-slate-100">
+                              <div className="grid grid-cols-12 gap-2 px-3 py-1.5 bg-slate-100/70 text-[11px] font-semibold text-slate-600">
+                                <div className="col-span-1">Select</div>
+                                <div className="col-span-3">Invoice / Date</div>
+                                <div className="col-span-2 text-right">Total</div>
+                                <div className="col-span-2 text-right">Prev. Paid</div>
+                                <div className="col-span-2 text-right">Balance</div>
+                                <div className="col-span-2 text-right">Allocate Now</div>
+                              </div>
+                              {receiptInvoices.map((inv: any) => {
+                                const isChecked = receiptAllocations[inv.id] !== undefined;
+                                const maxAllowed = inv.actualRemaining !== undefined ? inv.actualRemaining : inv.balance_amount;
+                                const isBlockedByDraft = inv.draftReserved > 0 && maxAllowed <= 0;
+                                const currentAlloc = receiptAllocations[inv.id] || 0;
+
+                                return (
+                                  <div
+                                    key={inv.id}
+                                    className={`grid grid-cols-12 gap-2 items-center px-3 py-2 text-xs transition-colors ${
+                                      isChecked ? 'bg-blue-50/40' : 'hover:bg-slate-50'
+                                    } ${isBlockedByDraft ? 'opacity-60 bg-amber-50/30' : ''}`}
+                                  >
+                                    <div className="col-span-1 flex items-center">
+                                      <input
+                                        type="checkbox"
+                                        disabled={isBlockedByDraft}
+                                        checked={isChecked}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            const otherTotal = Object.entries(receiptAllocations)
+                                              .filter(([k]) => k !== inv.id)
+                                              .reduce((sum, [, amt]) => sum + amt, 0);
+                                            const availableBankAmt = Math.max(0, recordingLine.credit - otherTotal);
+                                            const autoAlloc = Math.min(maxAllowed, availableBankAmt);
+                                            setReceiptAllocations((prev) => ({
+                                              ...prev,
+                                              [inv.id]: autoAlloc,
+                                            }));
+                                          } else {
+                                            const next = { ...receiptAllocations };
+                                            delete next[inv.id];
+                                            setReceiptAllocations(next);
+                                          }
+                                        }}
+                                        className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
+                                      />
+                                    </div>
+                                    <div className="col-span-3 min-w-0">
+                                      <div className="font-mono font-bold text-slate-800 text-[11px] truncate">
+                                        {inv.invoice_number}
+                                      </div>
+                                      <div className="text-[10px] text-slate-400">
+                                        {inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString('id-ID') : '—'}
+                                      </div>
+                                      {inv.draftReserved > 0 && (
+                                        <span className="inline-block mt-0.5 text-[9px] bg-amber-100 text-amber-800 px-1 rounded">
+                                          Rp {inv.draftReserved.toLocaleString()} in {inv.draftVoucherNumber || 'draft'}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="col-span-2 text-right text-slate-600 text-[11px]">
+                                      {formatCurrency(inv.total_amount, 'IDR')}
+                                    </div>
+                                    <div className="col-span-2 text-right text-slate-500 text-[11px]">
+                                      {formatCurrency(inv.paid_amount || 0, 'IDR')}
+                                    </div>
+                                    <div className="col-span-2 text-right font-medium text-slate-800 text-[11px]">
+                                      {formatCurrency(maxAllowed, 'IDR')}
+                                    </div>
+                                    <div className="col-span-2 text-right">
+                                      {isChecked ? (
+                                        <div className="flex items-center gap-1 justify-end">
+                                          <MoneyInput
+                                            decimal
+                                            min={0}
+                                            max={maxAllowed}
+                                            value={currentAlloc}
+                                            onChange={(n) => {
+                                              setReceiptAllocations((prev) => ({
+                                                ...prev,
+                                                [inv.id]: Math.min(n, maxAllowed),
+                                              }));
+                                            }}
+                                            className="w-20 px-1 py-0.5 border border-blue-300 rounded text-right text-[11px] font-medium font-mono focus:ring-1 focus:ring-blue-500"
+                                          />
+                                        </div>
+                                      ) : (
+                                        <span className="text-[11px] text-slate-400">—</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {receiptCustomerId && loadingInvoices && (
+                          <div className="text-xs text-gray-500 text-center py-2">
+                            Loading invoices...
+                          </div>
+                        )}
+
+                        {/* Reconciliation Running Total Panel */}
+                        {(() => {
+                          const totalAlloc = Object.values(receiptAllocations).reduce((a, b) => a + b, 0);
+                          const remainingUnalloc = Math.max(0, recordingLine.credit - totalAlloc);
+                          const isOverAllocated = totalAlloc > recordingLine.credit + 0.01;
+
+                          return (
+                            <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs space-y-2">
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+                                <div className="bg-white p-2 rounded border border-slate-200">
+                                  <span className="block text-[10px] text-slate-500 uppercase font-semibold">Bank Transaction</span>
+                                  <span className="text-xs font-bold text-slate-800">
+                                    {formatCurrency(recordingLine.credit, recordingLine.currency)}
+                                  </span>
+                                </div>
+                                <div className="bg-white p-2 rounded border border-slate-200">
+                                  <span className="block text-[10px] text-slate-500 uppercase font-semibold">Receipt Amount</span>
+                                  <span className="text-xs font-bold text-slate-800">
+                                    {formatCurrency(recordingLine.credit, recordingLine.currency)}
+                                  </span>
+                                </div>
+                                <div className="bg-white p-2 rounded border border-slate-200">
+                                  <span className="block text-[10px] text-slate-500 uppercase font-semibold">Total Allocated</span>
+                                  <span className="text-xs font-bold text-blue-700">
+                                    {formatCurrency(totalAlloc, recordingLine.currency)}
+                                  </span>
+                                </div>
+                                <div className="bg-white p-2 rounded border border-slate-200">
+                                  <span className="block text-[10px] text-slate-500 uppercase font-semibold">Remaining Unallocated</span>
+                                  <span className={`text-xs font-bold ${remainingUnalloc > 0.01 ? 'text-amber-700' : 'text-slate-700'}`}>
+                                    {formatCurrency(remainingUnalloc, recordingLine.currency)}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="text-[11px] text-slate-600 bg-white p-2 rounded border border-slate-200 space-y-0.5">
+                                <div className="font-medium text-slate-700">Accounting Treatment:</div>
+                                {totalAlloc > 0 && remainingUnalloc <= 0.01 && (
+                                  <div className="text-emerald-700">
+                                    ✓ Dr Bank ({bankAccounts.find((b) => b.id === selectedBank)?.alias || 'Bank'}) {formatCurrency(recordingLine.credit, recordingLine.currency)} / Cr Accounts Receivable (1120) {formatCurrency(totalAlloc, recordingLine.currency)}
+                                  </div>
+                                )}
+                                {totalAlloc > 0 && remainingUnalloc > 0.01 && (
+                                  <div className="text-blue-700">
+                                    ✓ Dr Bank {formatCurrency(recordingLine.credit, recordingLine.currency)} / Cr Accounts Receivable (1120) {formatCurrency(totalAlloc, recordingLine.currency)} + Cr Customer Advances (2140) {formatCurrency(remainingUnalloc, recordingLine.currency)}
+                                  </div>
+                                )}
+                                {totalAlloc === 0 && (
+                                  <div className="text-amber-700">
+                                    ✓ Dr Bank {formatCurrency(recordingLine.credit, recordingLine.currency)} / Cr Customer Advances (2140) {formatCurrency(recordingLine.credit, recordingLine.currency)} (Unallocated Customer Deposit)
+                                  </div>
+                                )}
+                                {isOverAllocated && (
+                                  <div className="text-rose-600 font-semibold">
+                                    ⚠️ Total allocated exceeds bank receipt amount by {formatCurrency(totalAlloc - recordingLine.credit, recordingLine.currency)}. Please adjust allocations.
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Description field */}
+                        <SapRow>
+                          <FloatingField
+                            label="Description"
+                            span={12}
+                            filled={!!recordingLine.description}
+                          >
+                            <input
+                              type="text"
+                              name="description"
+                              defaultValue={recordingLine.description}
+                              className={FLOAT_INPUT}
+                              placeholder="Optional: Override description"
+                            />
+                          </FloatingField>
+                        </SapRow>
+
+                        {/* Submit button */}
+                        <button
+                          type="submit"
+                          disabled={
+                            recordingReceipt ||
+                            !receiptCustomerId ||
+                            Object.values(receiptAllocations).reduce((a, b) => a + b, 0) > recordingLine.credit + 0.01
+                          }
+                          className="w-full py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium text-sm shadow-sm flex items-center justify-center gap-2"
+                        >
+                          {recordingReceipt ? (
+                            <>
+                              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              <span>Recording & Linking Customer Receipt...</span>
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>Post & Link Customer Receipt</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
 
                     {receiptType === 'director_related_party' && (
                       <div className="space-y-4 bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
@@ -7621,32 +7996,6 @@ export function BankReconciliationEnhanced({
                         </button>
                       </div>
                     )}
-                    {receiptType === 'customer_payment' && (
-                      <SapRow>
-                        <FloatingField
-                          label="Customer"
-                          span={12}
-                          required
-                          filled={!!receiptCustomerId}
-                        >
-                          <SearchableSelect
-                            value={receiptCustomerId}
-                            onChange={(val) => {
-                              setReceiptCustomerId(val);
-                              setReceiptAllocations({});
-                              if (val) {
-                                loadCustomerInvoices(val);
-                              } else {
-                                setReceiptInvoices([]);
-                              }
-                            }}
-                            options={customers.map((c) => ({ value: c.id, label: c.company_name }))}
-                            placeholder="Select customer..."
-                          />
-                        </FloatingField>
-                      </SapRow>
-                    )}
-
                     {receiptType === 'loan_director_owner' && (
                       <div className="space-y-2">
                         <SapRow>
@@ -7861,114 +8210,7 @@ export function BankReconciliationEnhanced({
                       </div>
                     )}
 
-                    {receiptType === 'customer_payment' &&
-                      receiptCustomerId &&
-                      receiptInvoices.length > 0 && (
-                        <div className="border rounded-lg p-2.5 bg-slate-50/50">
-                          <p className="text-xs font-semibold text-gray-700 mb-2">
-                            Allocate to Invoices (optional)
-                          </p>
-                          <div className="max-h-48 overflow-y-auto space-y-1.5">
-                            {receiptInvoices.map((inv: any) => {
-                              const isChecked = receiptAllocations[inv.id] !== undefined;
-                              const maxAllowed = inv.actualRemaining !== undefined ? inv.actualRemaining : inv.balance_amount;
-                              const isBlockedByDraft = inv.draftReserved > 0 && maxAllowed <= 0;
-
-                              return (
-                                <div
-                                  key={inv.id}
-                                  className={`flex items-center gap-2 text-xs p-2 rounded border bg-white ${
-                                    isBlockedByDraft ? 'border-amber-200 bg-amber-50/40' : 'border-gray-200 hover:bg-gray-50'
-                                  }`}
-                                >
-                                  <input
-                                    name="checkbox"
-                                    aria-label="Checkbox"
-                                    type="checkbox"
-                                    disabled={isBlockedByDraft}
-                                    checked={isChecked}
-                                    onChange={(e) => {
-                                      if (e.target.checked) {
-                                        const remaining =
-                                          recordingLine.credit -
-                                          Object.entries(receiptAllocations)
-                                            .filter(([k]) => k !== inv.id)
-                                            .reduce((a, b) => a + b[1], 0);
-                                        setReceiptAllocations((prev) => ({
-                                          ...prev,
-                                          [inv.id]: Math.min(maxAllowed, Math.max(0, remaining)),
-                                        }));
-                                      } else {
-                                        const next = { ...receiptAllocations };
-                                        delete next[inv.id];
-                                        setReceiptAllocations(next);
-                                      }
-                                    }}
-                                  />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-1.5 flex-wrap">
-                                      <span className="font-mono font-medium">{inv.invoice_number}</span>
-                                      <span className="text-gray-400 text-[10px]">Total: {formatCurrency(inv.total_amount, 'IDR')}</span>
-                                    </div>
-                                    <div className="flex items-center gap-2 mt-0.5 text-[11px] flex-wrap">
-                                      <span className="text-blue-700 font-semibold">
-                                        Allocatable: {formatCurrency(maxAllowed, 'IDR')}
-                                      </span>
-                                      {inv.draftReserved > 0 && (
-                                        <span className="text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded text-[10px]">
-                                          {formatCurrency(inv.draftReserved, 'IDR')} in draft {inv.draftVoucherNumber || 'RV'}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                  {isChecked && (
-                                    <MoneyInput
-                                      decimal
-                                      min={0}
-                                      max={maxAllowed}
-                                      value={receiptAllocations[inv.id] || 0}
-                                      onChange={(n) => {
-                                        setReceiptAllocations((prev) => ({
-                                          ...prev,
-                                          [inv.id]: Math.min(n, maxAllowed),
-                                        }));
-                                      }}
-                                      className="w-24 px-1 py-0.5 border rounded text-right text-xs"
-                                    />
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                          {(() => {
-                            const totalAlloc = Object.values(receiptAllocations).reduce((a, b) => a + b, 0);
-                            const unalloc = Math.max(0, recordingLine.credit - totalAlloc);
-                            return (
-                              <div className="mt-2.5 pt-2 border-t text-xs space-y-1">
-                                <div className="flex justify-between text-slate-600">
-                                  <span>Total Invoice Allocated:</span>
-                                  <span className="font-bold text-blue-700">
-                                    {formatCurrency(totalAlloc, recordingLine.currency)}
-                                  </span>
-                                </div>
-                                <div className="flex justify-between text-slate-600">
-                                  <span>Unallocated Receipt (Customer Deposit GL 2140):</span>
-                                  <span className="font-bold text-amber-700">
-                                    {formatCurrency(unalloc, recordingLine.currency)}
-                                  </span>
-                                </div>
-                              </div>
-                            );
-                          })()}
-                        </div>
-                      )}
-                    {receiptType === 'customer_payment' && receiptCustomerId && loadingInvoices && (
-                      <div className="text-xs text-gray-500 text-center py-2">
-                        Loading invoices...
-                      </div>
-                    )}
-
-                    {receiptType !== 'director_related_party' && (
+                    {receiptType !== 'customer_payment' && receiptType !== 'director_related_party' && (
                       <>
                         <SapRow>
                           <FloatingField

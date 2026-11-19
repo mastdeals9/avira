@@ -207,6 +207,11 @@ export function ReceiptVoucherManager({
   const [selectedReceiptBankLineId, setSelectedReceiptBankLineId] = useState('');
   const [receiptBankLinkLoading, setReceiptBankLinkLoading] = useState(false);
   const [receiptBankCandidatesLoading, setReceiptBankCandidatesLoading] = useState(false);
+  const [directBankLinkVoucher, setDirectBankLinkVoucher] = useState<any | null>(null);
+  const [directBankLines, setDirectBankLines] = useState<any[]>([]);
+  const [directBankLinesLoading, setDirectBankLinesLoading] = useState(false);
+  const [selectedDirectBankLineId, setSelectedDirectBankLineId] = useState('');
+  const [directLinkingLoading, setDirectLinkingLoading] = useState(false);
   const [receiptJournalLines, setReceiptJournalLines] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [allocations, setAllocations] = useState<ReceiptAllocationItem[]>([]);
@@ -1298,6 +1303,67 @@ export function ReceiptVoucherManager({
     }
   };
 
+  const openDirectBankLink = async (voucher: any) => {
+    setDirectBankLinkVoucher(voucher);
+    setSelectedDirectBankLineId('');
+    setDirectBankLines([]);
+    if (!voucher?.bank_account_id) {
+      showToast({ type: 'error', title: 'Bank Account Required', message: 'This receipt voucher has no bank account assigned.' });
+      return;
+    }
+    setDirectBankLinesLoading(true);
+    try {
+      const candidates = await loadUnmatchedDebitBankTransactions({
+        bankAccountId: voucher.bank_account_id,
+        direction: 'credit',
+      });
+      setDirectBankLines(candidates);
+      const exact = candidates.find((line: any) =>
+        Math.abs(Number(line.remainingAmount ?? (line.credit_amount || 0)) - Number(voucher.amount)) <= 0.01
+      );
+      if (exact) setSelectedDirectBankLineId(exact.id);
+      if (!candidates.length) {
+        showToast({ type: 'info', title: 'No Unmatched Transactions', message: 'No unmatched deposit transactions were found for this bank account.' });
+      }
+    } catch (err: any) {
+      showToast({ type: 'error', title: 'Could Not Load Bank Lines', message: supabaseErrorMessage(err) });
+    } finally {
+      setDirectBankLinesLoading(false);
+    }
+  };
+
+  const handleConfirmDirectBankLink = async () => {
+    if (!directBankLinkVoucher || !selectedDirectBankLineId) return;
+    const line = directBankLines.find((item: any) => item.id === selectedDirectBankLineId);
+    if (!line) return;
+    const lineAmount = Number(line.remainingAmount ?? (line.credit_amount || 0));
+    if (Math.abs(lineAmount - Number(directBankLinkVoucher.amount)) > 0.01) {
+      showToast({ type: 'error', title: 'Amount Mismatch', message: 'The selected bank transaction amount must match the receipt amount. Choose the exact matching transaction.' });
+      return;
+    }
+    const confirmed = await showConfirm({
+      title: 'Link Receipt to Bank Statement',
+      message: `Link ${directBankLinkVoucher.voucher_number} to the bank transaction dated ${line.transaction_date}, amount ${formatCurrency(lineAmount, voucherCurrency(directBankLinkVoucher))}? The posted journal will not be changed.`,
+      confirmLabel: 'Link Transaction',
+      cancelLabel: 'Cancel',
+    });
+    if (!confirmed) return;
+    setDirectLinkingLoading(true);
+    try {
+      await linkBankStatementLine(line.id, 'receipt', directBankLinkVoucher.id);
+      showToast({ type: 'success', title: 'Bank Transaction Linked', message: `${directBankLinkVoucher.voucher_number} was linked to the bank statement.` });
+      setDirectBankLinkVoucher(null);
+      setDirectBankLines([]);
+      setSelectedDirectBankLineId('');
+      await loadVouchers();
+      notifyFinanceReconciliationRefresh();
+    } catch (err: any) {
+      showToast({ type: 'error', title: 'Could Not Link Bank Transaction', message: supabaseErrorMessage(err) });
+    } finally {
+      setDirectLinkingLoading(false);
+    }
+  };
+
   const exportExcel = async () => {
     const ids = vouchers.map(voucher => voucher.id);
     const [{ data: allocations }, { data: journalLines }, { data: bankLines }] = await Promise.all([
@@ -1625,7 +1691,18 @@ export function ReceiptVoucherManager({
                       evaluation={voucher.bank_link_evaluation}
                       bankAccountId={voucher.bank_account_id}
                       onOpenBankReconciliation={onOpenBankReconciliation}
+                      onDirectLink={() => openDirectBankLink(voucher)}
                     />
+                    {voucher.is_posted && (!voucher.bank_link_evaluation || voucher.bank_link_evaluation.status === 'unlinked') && (
+                      <button
+                        type="button"
+                        onClick={() => openDirectBankLink(voucher)}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium border border-blue-300 text-blue-700 bg-blue-50/50 hover:bg-blue-100"
+                        title="Directly link this receipt to an unmatched bank deposit"
+                      >
+                        <Link2 className="w-3 h-3" /> Link Bank
+                      </button>
+                    )}
                     <FinanceActionButton action="view" label="View Details" onClick={() => handleView(voucher)} />
                     {canManage && !voucher.is_posted && (
                       <>
@@ -1762,11 +1839,12 @@ export function ReceiptVoucherManager({
                           evaluation={voucher.bank_link_evaluation}
                           bankAccountId={voucher.bank_account_id}
                           onOpenBankReconciliation={onOpenBankReconciliation}
+                          onDirectLink={() => openDirectBankLink(voucher)}
                         />
                         {voucher.is_posted && (!voucher.bank_link_evaluation || voucher.bank_link_evaluation.status === 'unlinked') && (
                           <button
                             type="button"
-                            onClick={() => handleView(voucher)}
+                            onClick={() => openDirectBankLink(voucher)}
                             className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border border-blue-300 text-blue-700 bg-blue-50/50 hover:bg-blue-100"
                             title="Directly link this receipt to a bank deposit"
                           >
@@ -2312,6 +2390,105 @@ export function ReceiptVoucherManager({
 
       {!embeddedModalOnly && (
         <>
+          {/* Direct Bank Link Modal */}
+          {directBankLinkVoucher && (
+            <Modal
+              isOpen={!!directBankLinkVoucher}
+              onClose={() => {
+                setDirectBankLinkVoucher(null);
+                setDirectBankLines([]);
+                setSelectedDirectBankLineId('');
+              }}
+              title={`Link ${directBankLinkVoucher.voucher_number} to Bank Transaction`}
+              size="md"
+            >
+              <div className="space-y-4">
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Receipt Voucher:</span>
+                    <span className="font-mono font-bold text-slate-800">{directBankLinkVoucher.voucher_number}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Customer:</span>
+                    <span className="font-medium text-slate-800">{directBankLinkVoucher.customers?.company_name || '—'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Receipt Amount:</span>
+                    <span className="font-bold text-emerald-700">{formatCurrency(directBankLinkVoucher.amount, voucherCurrency(directBankLinkVoucher))}</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                    Select Unmatched Bank CREDIT Transaction
+                  </label>
+                  {directBankLinesLoading ? (
+                    <div className="text-xs text-slate-500 py-6 text-center">Loading unmatched bank deposits...</div>
+                  ) : directBankLines.length === 0 ? (
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800 text-center">
+                      No unmatched bank credit transactions found for this bank account.
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                      {directBankLines.map((line: any) => {
+                        const lineAmount = Number(line.remainingAmount ?? (line.credit_amount || 0));
+                        const isExact = Math.abs(lineAmount - Number(directBankLinkVoucher.amount)) <= 0.01;
+                        const isSelected = selectedDirectBankLineId === line.id;
+
+                        return (
+                          <div
+                            key={line.id}
+                            onClick={() => setSelectedDirectBankLineId(line.id)}
+                            className={`p-2.5 rounded-lg border text-xs cursor-pointer transition-colors flex items-center justify-between gap-3 ${
+                              isSelected ? 'bg-blue-50 border-blue-400 ring-1 ring-blue-400' : 'bg-white border-slate-200 hover:border-slate-300'
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-medium text-slate-800">{new Date(line.transaction_date).toLocaleDateString('id-ID')}</span>
+                                {isExact && (
+                                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-100 text-emerald-800 font-medium">Exact Match</span>
+                                )}
+                              </div>
+                              <div className="text-slate-600 truncate text-[11px] mt-0.5">{line.description || 'No description'}</div>
+                              {line.reference && <div className="text-[10px] text-slate-400">Ref: {line.reference}</div>}
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className="font-bold text-emerald-700">{formatCurrency(lineAmount, voucherCurrency(directBankLinkVoucher))}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex justify-end gap-2 pt-3 border-t">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDirectBankLinkVoucher(null);
+                      setDirectBankLines([]);
+                      setSelectedDirectBankLineId('');
+                    }}
+                    className="px-3 py-1.5 border border-slate-300 rounded text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!selectedDirectBankLineId || directLinkingLoading}
+                    onClick={handleConfirmDirectBankLink}
+                    className="px-4 py-1.5 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    <Link2 className="w-3.5 h-3.5" />
+                    <span>{directLinkingLoading ? 'Linking...' : 'Link Bank Transaction'}</span>
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+
           {/* View Details Modal */}
           <Modal
             isOpen={viewModalOpen}
