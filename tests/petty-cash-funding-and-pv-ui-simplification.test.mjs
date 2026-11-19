@@ -51,9 +51,18 @@ test('3. Missing bank statement line on 22 Oct leaves reconciliation pending (no
   assert.match(migrationSource, /'pending'/);
 });
 
-test('4. Erroneous advance application 4553f6bd is removed and PV/028 no longer contributes to Sandi salary advance', () => {
-  // Delete erroneous application
+test('4. Erroneous advance application 4553f6bd is preserved in audit before deletion and PV/028 is reclassified', () => {
+  // Precondition checks on erroneous application
+  assert.match(migrationSource, /SELECT \* INTO v_app FROM public\.salary_advance_applications WHERE id = c_app_erroneous_id/);
+  assert.match(migrationSource, /v_app\.applied_amount <> 100000/);
+
+  // Application row preserved in audit record v_before
+  assert.match(migrationSource, /'erroneous_application',\s*row_to_json\(v_app\)/);
+  assert.match(migrationSource, /'application_row',\s*row_to_json\(v_app\)/);
+
+  // Delete erroneous application only after recording
   assert.match(migrationSource, /DELETE FROM public\.salary_advance_applications\s*WHERE id = c_app_erroneous_id/);
+
   // Reclassify PV/028
   assert.match(migrationSource, /salary_advance_applied_amount = 0/);
   assert.match(migrationSource, /salary_advance_status = 'not_applicable'/);
@@ -64,11 +73,22 @@ test('4. Erroneous advance application 4553f6bd is removed and PV/028 no longer 
 test('5. Genuine advance PV/023 is preserved at Rp 1,000,000 and PV/032 settlement is reversed and reissued', () => {
   // Assert PV/023 amount is 1,000,000
   assert.match(migrationSource, /v_pv023\.amount <> 1000000/);
-  // Reversal journal for JE2611-0363
+  assert.match(migrationSource, /v_pv023\.staff_id <> c_sandi_staff_id/);
+
+  // Strict preconditions on PV/032 and JE2611-0363
+  assert.match(migrationSource, /v_pv032\.voucher_number <> 'PV\/26-26\/032'/);
+  assert.match(migrationSource, /v_pv032\.staff_id <> c_sandi_staff_id/);
+  assert.match(migrationSource, /v_pv032\.amount <> 1100000/);
+  assert.match(migrationSource, /v_je0363\.entry_number <> 'JE2611-0363'/);
+  assert.match(migrationSource, /v_je0363\.total_debit <> 1100000/);
+
+  // Reversal journal for JE2611-0363 with staff_id retained
   assert.match(migrationSource, /REV-'\s*\|\|\s*v_je0363\.entry_number/);
   assert.match(migrationSource, /Historical reversal of overstated salary advance settlement PV\/26-26\/032/);
   assert.match(migrationSource, /is_reversed = true/);
-  // Replacement settlement journal for Rp 1,000,000
+  assert.match(migrationSource, /c_sandi_staff_id\);[\s\S]*?UPDATE public\.journal_entries[\s\S]*?is_reversed = true/);
+
+  // Replacement settlement journal for Rp 1,000,000 with staff_id retained
   assert.match(migrationSource, /Corrected salary advance settlement for Sandi Prasetyo \(PV\/26-26\/023 Rp 1,000,000\)/);
   assert.match(migrationSource, /UPDATE public\.payment_vouchers\s*SET amount = 1000000/);
 });

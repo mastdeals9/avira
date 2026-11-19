@@ -32,6 +32,7 @@ DECLARE
   v_exp365 RECORD;
   v_app RECORD;
   v_je0363 RECORD;
+  v_travel_book RECORD;
   v_rev_je_id uuid;
   v_repl_je_id uuid;
   v_ft_id uuid;
@@ -39,6 +40,7 @@ DECLARE
   v_ft_je_id uuid;
   v_actor uuid;
   v_bca_coa_id uuid;
+  v_bca_active boolean;
   v_petty_cash_coa_id uuid;
   v_staff_adv_coa_id uuid;
   v_ap_coa_id uuid;
@@ -74,15 +76,33 @@ BEGIN
   IF v_pv023.amount <> 1000000 THEN
     RAISE EXCEPTION 'Precondition failed: PV/023 amount mismatch (expected 1,000,000, found %)', v_pv023.amount;
   END IF;
+  IF v_pv023.staff_id <> c_sandi_staff_id THEN
+    RAISE EXCEPTION 'Precondition failed: PV/023 staff_id mismatch (expected %, found %)', c_sandi_staff_id, v_pv023.staff_id;
+  END IF;
 
   SELECT * INTO v_pv032 FROM public.payment_vouchers WHERE id = c_pv032_id;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Precondition failed: Settlement voucher PV/26-26/032 not found.';
   END IF;
+  IF v_pv032.voucher_number <> 'PV/26-26/032' THEN
+    RAISE EXCEPTION 'Precondition failed: PV/032 voucher_number mismatch (expected PV/26-26/032, found %)', v_pv032.voucher_number;
+  END IF;
+  IF v_pv032.staff_id <> c_sandi_staff_id THEN
+    RAISE EXCEPTION 'Precondition failed: PV/032 staff_id mismatch (expected %, found %)', c_sandi_staff_id, v_pv032.staff_id;
+  END IF;
+  IF v_pv032.amount <> 1100000 THEN
+    RAISE EXCEPTION 'Precondition failed: PV/032 amount mismatch (expected 1,100,000, found %)', v_pv032.amount;
+  END IF;
+  IF v_pv032.journal_entry_id IS NULL THEN
+    RAISE EXCEPTION 'Precondition failed: Settlement voucher PV/032 has no linked journal entry.';
+  END IF;
 
   SELECT * INTO v_exp365 FROM public.finance_expenses WHERE id = c_exp365_id;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Precondition failed: Salary expense EXP/26/365 not found.';
+  END IF;
+  IF v_exp365.amount <> 2500000 THEN
+    RAISE EXCEPTION 'Precondition failed: EXP/26/365 amount mismatch (expected 2,500,000, found %)', v_exp365.amount;
   END IF;
 
   SELECT id INTO v_petty_cash_coa_id FROM public.chart_of_accounts WHERE code = '1102' AND is_active = true LIMIT 1;
@@ -90,9 +110,26 @@ BEGIN
     RAISE EXCEPTION 'Precondition failed: Petty Cash COA 1102 not found.';
   END IF;
 
-  SELECT coa_id INTO v_bca_coa_id FROM public.bank_accounts WHERE id = c_bca_bank_id;
+  SELECT coa_id, is_active INTO v_bca_coa_id, v_bca_active FROM public.bank_accounts WHERE id = c_bca_bank_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Precondition failed: BCA IDR bank account (%) not found.', c_bca_bank_id;
+  END IF;
   IF v_bca_coa_id IS NULL THEN
-    RAISE EXCEPTION 'Precondition failed: BCA IDR bank account COA not found.';
+    RAISE EXCEPTION 'Precondition failed: BCA IDR bank account has no linked Chart of Accounts.';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.chart_of_accounts WHERE id = v_bca_coa_id AND code = '111101') THEN
+    RAISE EXCEPTION 'Precondition failed: BCA IDR bank account COA (%) is not 111101.', v_bca_coa_id;
+  END IF;
+
+  SELECT * INTO v_travel_book FROM public.petty_cash_books WHERE id = c_travel_book_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Precondition failed: Petty Cash book Travel (%) not found.', c_travel_book_id;
+  END IF;
+  IF NOT COALESCE(v_travel_book.is_active, false) THEN
+    RAISE EXCEPTION 'Precondition failed: Petty Cash book Travel is inactive.';
+  END IF;
+  IF v_travel_book.account_id IS DISTINCT FROM v_petty_cash_coa_id THEN
+    RAISE EXCEPTION 'Precondition failed: Petty Cash book Travel account_id does not match Petty Cash COA 1102.';
   END IF;
 
   SELECT id INTO v_staff_adv_coa_id FROM public.chart_of_accounts WHERE code = '1160' AND is_active = true LIMIT 1;
@@ -105,13 +142,63 @@ BEGIN
     RAISE EXCEPTION 'Precondition failed: Accounts Payable COA 2110 not found.';
   END IF;
 
+  SELECT * INTO v_je0363 FROM public.journal_entries WHERE id = v_pv032.journal_entry_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Precondition failed: Settlement journal entry % not found.', v_pv032.journal_entry_id;
+  END IF;
+  IF v_je0363.entry_number <> 'JE2611-0363' THEN
+    RAISE EXCEPTION 'Precondition failed: Settlement journal entry number mismatch (expected JE2611-0363, found %)', v_je0363.entry_number;
+  END IF;
+  IF NOT COALESCE(v_je0363.is_posted, false) THEN
+    RAISE EXCEPTION 'Precondition failed: Settlement journal JE2611-0363 must be posted.';
+  END IF;
+  IF COALESCE(v_je0363.is_reversed, false) THEN
+    RAISE EXCEPTION 'Precondition failed: Settlement journal JE2611-0363 is already reversed.';
+  END IF;
+  IF v_je0363.total_debit <> 1100000 OR v_je0363.total_credit <> 1100000 THEN
+    RAISE EXCEPTION 'Precondition failed: JE2611-0363 totals mismatch (expected 1,100,000, found Dr %, Cr %)', v_je0363.total_debit, v_je0363.total_credit;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.journal_entry_lines
+    WHERE journal_entry_id = v_je0363.id
+      AND account_id = v_ap_coa_id
+      AND debit = 1100000
+  ) OR NOT EXISTS (
+    SELECT 1 FROM public.journal_entry_lines
+    WHERE journal_entry_id = v_je0363.id
+      AND account_id = v_staff_adv_coa_id
+      AND credit = 1100000
+  ) THEN
+    RAISE EXCEPTION 'Precondition failed: JE2611-0363 lines do not match expected Dr AP 2110 / Cr Staff Advances 1160 for Rp 1,100,000.';
+  END IF;
+
+  SELECT * INTO v_app FROM public.salary_advance_applications WHERE id = c_app_erroneous_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Precondition failed: Erroneous salary advance application % not found.', c_app_erroneous_id;
+  END IF;
+  IF v_app.advance_payment_voucher_id <> c_pv028_id THEN
+    RAISE EXCEPTION 'Precondition failed: Advance application advance_payment_voucher_id mismatch (expected %, found %)', c_pv028_id, v_app.advance_payment_voucher_id;
+  END IF;
+  IF v_app.settlement_payment_voucher_id <> c_pv032_id THEN
+    RAISE EXCEPTION 'Precondition failed: Advance application settlement_payment_voucher_id mismatch (expected %, found %)', c_pv032_id, v_app.settlement_payment_voucher_id;
+  END IF;
+  IF v_app.salary_expense_id <> c_exp365_id THEN
+    RAISE EXCEPTION 'Precondition failed: Advance application salary_expense_id mismatch (expected %, found %)', c_exp365_id, v_app.salary_expense_id;
+  END IF;
+  IF v_app.applied_amount <> 100000 THEN
+    RAISE EXCEPTION 'Precondition failed: Advance application applied_amount mismatch (expected 100,000, found %)', v_app.applied_amount;
+  END IF;
+
   v_actor := COALESCE(auth.uid(), v_pv028.created_by);
 
-  -- Capture before state
+  -- Capture before state preserving the complete erroneous application row and original journal
   v_before := jsonb_build_object(
     'pv028', row_to_json(v_pv028),
     'pv032', row_to_json(v_pv032),
-    'exp365_paid', v_exp365.paid_amount
+    'exp365_paid', v_exp365.paid_amount,
+    'erroneous_application', row_to_json(v_app),
+    'application_row', row_to_json(v_app),
+    'original_settlement_journal', row_to_json(v_je0363)
   );
 
   -- ── 3. Establish Historical Repair Context ────────────────────────────
@@ -131,7 +218,7 @@ BEGIN
   -- ── 4. Remove Erroneous Advance Application (Rp 100,000) ──────────────
   DELETE FROM public.salary_advance_applications
   WHERE id = c_app_erroneous_id;
-  RAISE NOTICE 'Removed erroneous salary advance application %', c_app_erroneous_id;
+  RAISE NOTICE 'Removed erroneous salary advance application % (preserved in finance_historical_repair_commands: %)', c_app_erroneous_id, v_command_id;
 
   -- ── 5. Reclassify / Supersede PV/26-26/028 ─────────────────────────────
   UPDATE public.payment_vouchers
@@ -143,35 +230,30 @@ BEGIN
   RAISE NOTICE 'PV/26-26/028 reclassified to not_applicable/cancelled';
 
   -- ── 6. Reverse Overstated Settlement Journal JE2611-0363 & Reissue Rp 1m ─
-  IF v_pv032.journal_entry_id IS NOT NULL THEN
-    SELECT * INTO v_je0363 FROM public.journal_entries WHERE id = v_pv032.journal_entry_id;
-    IF FOUND AND NOT COALESCE(v_je0363.is_reversed, false) THEN
-      -- Create Reversal Journal Entry
-      INSERT INTO public.journal_entries (
-        entry_number, entry_date, source_module, reference_id, reference_number,
-        description, total_debit, total_credit, is_posted, posted_at, created_at
-      ) VALUES (
-        public.next_journal_entry_number(),
-        COALESCE(v_je0363.entry_date, DATE '2026-10-30'),
-        'historical_repair',
-        c_pv032_id,
-        'REV-' || v_je0363.entry_number,
-        'Historical reversal of overstated salary advance settlement PV/26-26/032',
-        1100000, 1100000, true, now(), now()
-      ) RETURNING id INTO v_rev_je_id;
+  -- Create Reversal Journal Entry
+  INSERT INTO public.journal_entries (
+    entry_number, entry_date, source_module, reference_id, reference_number,
+    description, total_debit, total_credit, is_posted, posted_at, created_at
+  ) VALUES (
+    public.next_journal_entry_number(),
+    COALESCE(v_je0363.entry_date, DATE '2026-10-30'),
+    'historical_repair',
+    c_pv032_id,
+    'REV-' || v_je0363.entry_number,
+    'Historical reversal of overstated salary advance settlement PV/26-26/032',
+    1100000, 1100000, true, now(), now()
+  ) RETURNING id INTO v_rev_je_id;
 
-      INSERT INTO public.journal_entry_lines (journal_entry_id, line_number, account_id, description, debit, credit)
-      VALUES
-        (v_rev_je_id, 1, v_staff_adv_coa_id, 'Historical reversal: Clear Staff Advances - PV/26-26/032', 1100000, 0),
-        (v_rev_je_id, 2, v_ap_coa_id, 'Historical reversal: Clear Accounts Payable - PV/26-26/032', 0, 1100000);
+  INSERT INTO public.journal_entry_lines (journal_entry_id, line_number, account_id, description, debit, credit, staff_id)
+  VALUES
+    (v_rev_je_id, 1, v_staff_adv_coa_id, 'Historical reversal: Clear Staff Advances - PV/26-26/032', 1100000, 0, c_sandi_staff_id),
+    (v_rev_je_id, 2, v_ap_coa_id, 'Historical reversal: Clear Accounts Payable - PV/26-26/032', 0, 1100000, c_sandi_staff_id);
 
-      UPDATE public.journal_entries
-      SET is_reversed = true,
-          reversed_by_id = v_rev_je_id
-      WHERE id = v_je0363.id;
-      RAISE NOTICE 'Reversed JE2611-0363 via reversal journal %', v_rev_je_id;
-    END IF;
-  END IF;
+  UPDATE public.journal_entries
+  SET is_reversed = true,
+      reversed_by_id = v_rev_je_id
+  WHERE id = v_je0363.id;
+  RAISE NOTICE 'Reversed JE2611-0363 via reversal journal %', v_rev_je_id;
 
   -- Create Replacement Settlement Journal for Rp 1,000,000
   INSERT INTO public.journal_entries (
@@ -187,10 +269,10 @@ BEGIN
     1000000, 1000000, true, now(), now()
   ) RETURNING id INTO v_repl_je_id;
 
-  INSERT INTO public.journal_entry_lines (journal_entry_id, line_number, account_id, description, debit, credit)
+  INSERT INTO public.journal_entry_lines (journal_entry_id, line_number, account_id, description, debit, credit, staff_id)
   VALUES
-    (v_repl_je_id, 1, v_ap_coa_id, 'Staff Payment - PV/26-26/032 (Salary Advance Settlement)', 1000000, 0),
-    (v_repl_je_id, 2, v_staff_adv_coa_id, 'Advance Adjustment - PV/26-26/032 (Clear PV/26-26/023)', 0, 1000000);
+    (v_repl_je_id, 1, v_ap_coa_id, 'Staff Payment - PV/26-26/032 (Salary Advance Settlement)', 1000000, 0, c_sandi_staff_id),
+    (v_repl_je_id, 2, v_staff_adv_coa_id, 'Advance Adjustment - PV/26-26/032 (Clear PV/26-26/023)', 0, 1000000, c_sandi_staff_id);
 
   UPDATE public.payment_vouchers
   SET amount = 1000000,
@@ -461,6 +543,9 @@ BEGIN
     IF v_pv.payment_method = 'petty_cash'
        OR (v_pv.coa_account_id IS NOT NULL AND EXISTS (SELECT 1 FROM public.chart_of_accounts WHERE id = v_pv.coa_account_id AND code = '1102'))
        OR v_pv.description ILIKE '%petty cash%' THEN
+      IF NOT EXISTS (SELECT 1 FROM public.petty_cash_books WHERE is_active = true) THEN
+        RAISE EXCEPTION 'Cannot post petty cash payment: no active petty cash book found';
+      END IF;
       SELECT id, is_active, is_header INTO v_bank_coa, v_bank_active, v_bank_is_header
       FROM public.chart_of_accounts
       WHERE code = '1102' AND is_active = true AND is_header = false LIMIT 1;
@@ -663,6 +748,56 @@ BEGIN
   WHERE id = p_pv_id;
 
   RETURN;
+END;
+$$;
+
+-- Upgrade trigger guard to support finance repair context bypass
+CREATE OR REPLACE FUNCTION public.guard_settled_salary_advance_edit()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF current_setting('app.finance_historical_repair', true) = 'on'
+     OR current_setting('app.finance_metadata_repair', true) = 'on' THEN
+    RETURN NEW;
+  END IF;
+
+  -- Only guard vouchers with salary_advance purpose that have active payroll applications or settled status
+  IF OLD.payment_purpose = 'salary_advance' AND (
+    OLD.salary_advance_status IN ('settled', 'partially_settled')
+    OR COALESCE(OLD.salary_advance_applied_amount, 0) > 0
+    OR EXISTS (
+      SELECT 1 FROM public.salary_advance_applications saa
+      WHERE saa.advance_payment_voucher_id = OLD.id
+    )
+  ) THEN
+    -- Lock accounting fields from being changed via ordinary updates
+    IF NEW.amount IS DISTINCT FROM OLD.amount OR
+       NEW.staff_id IS DISTINCT FROM OLD.staff_id OR
+       NEW.payment_method IS DISTINCT FROM OLD.payment_method OR
+       NEW.payment_purpose IS DISTINCT FROM OLD.payment_purpose OR
+       NEW.bank_account_id IS DISTINCT FROM OLD.bank_account_id OR
+       NEW.voucher_date IS DISTINCT FROM OLD.voucher_date OR
+       NEW.pph_amount IS DISTINCT FROM OLD.pph_amount OR
+       NEW.pph_code_id IS DISTINCT FROM OLD.pph_code_id OR
+       NEW.exchange_rate IS DISTINCT FROM OLD.exchange_rate OR
+       NEW.payment_currency IS DISTINCT FROM OLD.payment_currency
+    THEN
+      RAISE EXCEPTION 'Cannot edit accounting fields on salary advance %: advance is already applied to payroll (status: %, applied: Rp %). Reverse or unapply the payroll settlement first.',
+        OLD.voucher_number, OLD.salary_advance_status, OLD.salary_advance_applied_amount;
+    END IF;
+
+    -- Prevent accidental reset of salary_advance_status while applications exist
+    IF (OLD.salary_advance_status IN ('settled', 'partially_settled') AND NEW.salary_advance_status = 'outstanding')
+       AND EXISTS (SELECT 1 FROM public.salary_advance_applications saa WHERE saa.advance_payment_voucher_id = OLD.id)
+    THEN
+      RAISE EXCEPTION 'Cannot reset salary advance % status to outstanding while active payroll applications exist.', OLD.voucher_number;
+    END IF;
+  END IF;
+
+  RETURN NEW;
 END;
 $$;
 

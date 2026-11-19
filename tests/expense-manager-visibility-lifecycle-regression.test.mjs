@@ -121,17 +121,17 @@ test('resolveFallbackState unit tests for target expense lifecycle states', () =
 });
 
 test('ExpenseManager filter conditions include ACTIVE and REPLACED in default Operational list', () => {
-  // Check that ExpenseManager treats REPLACED as operational and approved
-  assert.match(expenseManagerCode, /const isCancelled = exp\.effective_posting_state === 'REVERSED';/);
+  // Check that ExpenseManager treats REPLACED as operational and approved, and only cancelled approval_status hides an expense
+  assert.match(expenseManagerCode, /const isCancelled = exp\.approval_status === 'cancelled';/);
   assert.match(expenseManagerCode, /if \(lifecycleFilter === 'cancelled' \? !isCancelled : isCancelled\) return false;/);
-  assert.match(expenseManagerCode, /if \(exp\.effective_posting_state !== 'ACTIVE' && exp\.effective_posting_state !== 'REPLACED'\) return false;/);
+  assert.match(expenseManagerCode, /if \(approvalFilter === 'approved'\) \{\s*if \(exp\.approval_status !== 'approved'\) return false;/);
 
   // Simulate ExpenseManager filter
   const filterExpense = (exp, lifecycleFilter = 'operational', approvalFilter = 'all') => {
-    const isCancelled = exp.effective_posting_state === 'REVERSED';
+    const isCancelled = exp.approval_status === 'cancelled';
     if (lifecycleFilter === 'cancelled' ? !isCancelled : isCancelled) return false;
     if (approvalFilter === 'approved') {
-      if (exp.effective_posting_state !== 'ACTIVE' && exp.effective_posting_state !== 'REPLACED') return false;
+      if (exp.approval_status !== 'approved') return false;
     }
     return true;
   };
@@ -139,21 +139,25 @@ test('ExpenseManager filter conditions include ACTIVE and REPLACED in default Op
   const exp177 = { voucher_number: 'EXP/26/177', effective_posting_state: 'REPLACED', approval_status: 'approved' };
   const exp178 = { voucher_number: 'EXP/26/178', effective_posting_state: 'ACTIVE', approval_status: 'approved' };
   const exp139 = { voucher_number: 'EXP/26-26/139', effective_posting_state: 'REPLACED', approval_status: 'approved' };
-  const cancelled = { voucher_number: 'EXP/26-26/052', effective_posting_state: 'REVERSED', approval_status: 'pending_approval' };
+  const exp348 = { voucher_number: 'EXP/26/348', effective_posting_state: 'REVERSED', approval_status: 'approved' };
+  const cancelled = { voucher_number: 'EXP/26-26/052', effective_posting_state: 'REVERSED', approval_status: 'cancelled' };
 
   // In default Operational view:
   assert.equal(filterExpense(exp177, 'operational', 'all'), true, 'EXP/26/177 must be visible in Operational view');
   assert.equal(filterExpense(exp178, 'operational', 'all'), true, 'EXP/26/178 must be visible in Operational view');
   assert.equal(filterExpense(exp139, 'operational', 'all'), true, 'EXP/26-26/139 must be visible in Operational view');
+  assert.equal(filterExpense(exp348, 'operational', 'all'), true, 'EXP/26/348 with reversed journal must remain visible in Operational view');
   assert.equal(filterExpense(cancelled, 'operational', 'all'), false, 'Cancelled expense must be hidden in Operational view');
 
   // In Approved filter:
   assert.equal(filterExpense(exp177, 'operational', 'approved'), true, 'EXP/26/177 must be visible when Approved filter is active');
   assert.equal(filterExpense(exp139, 'operational', 'approved'), true, 'EXP/26-26/139 must be visible when Approved filter is active');
+  assert.equal(filterExpense(exp348, 'operational', 'approved'), true, 'EXP/26/348 must remain visible in Approved filter');
 
   // In Cancelled tab:
   assert.equal(filterExpense(cancelled, 'cancelled', 'all'), true, 'Cancelled expense must appear in Cancelled view');
   assert.equal(filterExpense(exp177, 'cancelled', 'all'), false, 'Active/Replaced expense must NOT appear in Cancelled view');
+  assert.equal(filterExpense(exp348, 'cancelled', 'all'), false, 'EXP/26/348 must NOT appear in Cancelled view');
 });
 
 test('Live DB population regression: all expenses match authoritative state with 0 discrepancies', async () => {

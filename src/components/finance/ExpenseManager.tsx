@@ -153,6 +153,8 @@ import {
   calculateExpenseReconciliation,
   getExpenseSettlementStatus,
   type ExpenseSettlementStatus,
+  getSimplifiedExpenseStatus,
+  type SimplifiedExpenseStatus,
   calculateBrokerExpenseTotals,
   brokerLineTotal,
   computeBrokerLinePpn,
@@ -234,6 +236,7 @@ interface FinanceExpense {
     id: string;
     transaction_date: string;
     description: string | null;
+    reference?: string | null;
     debit_amount: number;
     credit_amount: number;
     bank_account_id: string;
@@ -600,6 +603,7 @@ export function ExpenseManager({
     applied_at: string;
   }>>([]);
   const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [bankLinkError, setBankLinkError] = useState<string | null>(null);
   const [linkedDCQuickView, setLinkedDCQuickView] = useState<{ challan: any; items: any[] } | null>(null);
   const [linkedDCQuickViewLoading, setLinkedDCQuickViewLoading] = useState(false);
   const [accountingExpanded, setAccountingExpanded] = useState(false);
@@ -1035,6 +1039,75 @@ export function ExpenseManager({
     }
   };
 
+  const fetchExpenseBankLinks = async (expenseId: string): Promise<FinanceExpense['bank_statement_lines']> => {
+    const [allocRes, linesRes] = await Promise.all([
+      supabase
+        .from('bank_statement_allocations')
+        .select(`
+          id,
+          document_id,
+          allocation_amount,
+          payment_kind,
+          bank_statement_lines!inner(
+            id,
+            transaction_date,
+            description,
+            reference,
+            debit_amount,
+            credit_amount,
+            bank_account_id,
+            bank_accounts(bank_name, account_number, alias, currency)
+          )
+        `)
+        .eq('document_type', 'expense')
+        .eq('document_id', expenseId),
+      supabase
+        .from('bank_statement_lines')
+        .select(`
+          id,
+          transaction_date,
+          description,
+          reference,
+          debit_amount,
+          credit_amount,
+          bank_account_id,
+          payment_kind,
+          matched_expense_id,
+          bank_accounts(bank_name, account_number, alias, currency)
+        `)
+        .eq('matched_expense_id', expenseId),
+    ]);
+
+    if (allocRes.error) {
+      console.error('Error fetching bank allocations:', allocRes.error);
+      throw new Error(`Failed to load bank allocations: ${allocRes.error.message}`);
+    }
+    if (linesRes.error) {
+      console.error('Error fetching matched bank lines:', linesRes.error);
+      throw new Error(`Failed to load matched bank lines: ${linesRes.error.message}`);
+    }
+
+    const legacyRows = (linesRes.data || []).map((line: any) => ({
+      ...line,
+      allocation_id: null,
+      allocation_amount: Number(line.debit_amount || line.credit_amount || 0),
+    }));
+
+    const canonicalRows = (allocRes.data || []).map((alloc: any) => {
+      const line = alloc.bank_statement_lines;
+      return {
+        ...line,
+        id: line?.id,
+        raw_line_id: line?.id,
+        allocation_id: alloc.id,
+        allocation_amount: Number(alloc.allocation_amount || 0),
+        payment_kind: alloc.payment_kind,
+      };
+    }).filter((row: any) => Boolean(row.id));
+
+    return normalizeExpenseBankLinks([...legacyRows, ...canonicalRows]) as FinanceExpense['bank_statement_lines'];
+  };
+
   // The canonical reconciliation relationship is owned by
   // bank_statement_lines.matched_expense_id.  Detail and edit views keep a
   // joined copy of those rows, so updating only reconciledExpenseIds leaves
@@ -1191,6 +1264,19 @@ export function ExpenseManager({
     onEvent: patchBankLine,
   });
 
+  const patchBankAllocation = (payload: any) => {
+    const expenseId = payload.new?.document_id || payload.old?.document_id;
+    if (expenseId) {
+      void syncExpenseBankLinks([expenseId, viewingExpense?.id, editingExpense?.id]);
+    }
+  };
+
+  useSupabaseRealtimeChannel({
+    channelName: 'bank_allocations_expmgr',
+    table: 'bank_statement_allocations',
+    onEvent: patchBankAllocation,
+  });
+
   // Realtime supplies the immediate path. The shared event is the fallback
   // for a link/unlink initiated elsewhere in this SPA, and also keeps the
   // list, detail and edit snapshots in agreement when realtime delivery is
@@ -1213,7 +1299,13 @@ export function ExpenseManager({
     const openExpense = async () => {
       const existing = expenses.find(expense => expense.id === initialViewExpenseId);
       if (existing) {
-        setViewingExpense(existing);
+        try {
+          const bankLines = await fetchExpenseBankLinks(existing.id);
+          existing.bank_statement_lines = bankLines;
+        } catch (err) {
+          console.error('Failed to load bank allocations for existing expense:', err);
+        }
+        setViewingExpense({ ...existing });
         setViewModalOpen(true);
         onInitialViewHandled?.();
         return;
@@ -1255,6 +1347,12 @@ export function ExpenseManager({
 
       if (!error && data) {
         const [hydrated] = await hydrateExpensePostingLifecycle([data as FinanceExpense]);
+        try {
+          const bankLines = await fetchExpenseBankLinks(hydrated.id);
+          hydrated.bank_statement_lines = bankLines;
+        } catch (err) {
+          console.error('Failed to load bank allocations for initial view expense:', err);
+        }
         if (hydrated.expense_category === 'salary' && (!hydrated.salary_advance_applications || hydrated.salary_advance_applications.length === 0)) {
           const { data: apps } = await supabase
             .from('salary_advance_applications')
@@ -1518,8 +1616,27 @@ export function ExpenseManager({
   };
 
   const handleViewExpense = useCallback(async (expense: FinanceExpense) => {
-    setViewingExpense(expense);
+    setBankLinkError(null);
+    let bankLines = expense.bank_statement_lines;
+    try {
+      bankLines = await fetchExpenseBankLinks(expense.id);
+    } catch (err: any) {
+      console.error('Failed to load bank allocations for expense:', err);
+      setBankLinkError(err?.message || 'Failed to load bank allocations');
+    }
+
+    const hydratedExpense: FinanceExpense = {
+      ...expense,
+      bank_statement_lines: bankLines,
+    };
+
+    setViewingExpense(hydratedExpense);
     setViewModalOpen(true);
+
+    if (bankLines) {
+      setExpenses(prev => prev.map(e => e.id === expense.id ? { ...e, bank_statement_lines: bankLines } : e));
+    }
+
     if (expense.document_urls?.length) {
       const entries = await Promise.all(
         expense.document_urls.map(async (url) => [url, await getSignedUrl(url)] as [string, string])
@@ -2595,6 +2712,8 @@ export function ExpenseManager({
     try {
       await unlinkFinanceExpenseBankLink(expenseId);
 
+      const updatedLines = await fetchExpenseBankLinks(expenseId);
+
       // Fetch the updated expense with relations
       const { data: updatedExpense, error: fetchError } = await supabase
         .from('finance_expenses')
@@ -2603,26 +2722,22 @@ export function ExpenseManager({
           batches (batch_number),
           import_containers (container_ref),
           delivery_challans (challan_number),
-          bank_accounts (bank_name, account_number),
-          bank_statement_lines!bsl_matched_expense_fk (
-            id,
-            transaction_date,
-            description,
-            debit_amount,
-            credit_amount,
-            bank_account_id,
-            bank_accounts (bank_name, account_number)
-          )
+          bank_accounts (bank_name, account_number)
         `)
         .eq('id', expenseId)
         .single();
 
       if (fetchError) throw fetchError;
 
+      const merged = { ...updatedExpense, bank_statement_lines: updatedLines };
+
       // Update in local state
       setExpenses(prev => prev.map(exp =>
-        exp.id === expenseId ? updatedExpense : exp
+        exp.id === expenseId ? merged : exp
       ));
+      if (viewingExpense?.id === expenseId) {
+        setViewingExpense(merged);
+      }
       notifyFinanceReconciliationRefresh();
 
       alert('Expense unlinked from bank statement successfully');
@@ -2887,7 +3002,7 @@ export function ExpenseManager({
   const normalizedSearch = searchQuery.trim().toLocaleLowerCase();
 
   const baseExpenses = useMemo(() => expenses.filter((exp) => {
-    const isCancelled = exp.approval_status === 'cancelled' || exp.effective_posting_state === 'REVERSED';
+    const isCancelled = exp.approval_status === 'cancelled';
     if (lifecycleFilter === 'cancelled' ? !isCancelled : isCancelled) return false;
 
     // Filter by type
@@ -2912,7 +3027,7 @@ export function ExpenseManager({
 
     // Filter by approval status
     if (approvalFilter === 'approved') {
-      if (exp.effective_posting_state !== 'ACTIVE' && exp.effective_posting_state !== 'REPLACED') return false;
+      if (exp.approval_status !== 'approved') return false;
     } else if (approvalFilter === 'pending_approval') {
       if (exp.approval_status !== 'pending_approval' || exp.effective_posting_state === 'REVERSED') return false;
     }
@@ -2949,7 +3064,13 @@ export function ExpenseManager({
 
   const filteredExpenses = useMemo(() => {
     if (reconFilter === 'all') return baseExpenses;
-    return baseExpenses.filter(exp => getExpenseSettlementStatus(exp) === reconFilter);
+    return baseExpenses.filter(exp => {
+      const status = getSimplifiedExpenseStatus(exp);
+      if (reconFilter === 'reconciled') return status.payment === 'Paid';
+      if (reconFilter === 'partial') return status.payment === 'Partially Paid';
+      if (reconFilter === 'outstanding') return status.payment === 'Unpaid';
+      return true;
+    });
   }, [baseExpenses, reconFilter]);
 
   // Sorting function
@@ -3079,6 +3200,7 @@ export function ExpenseManager({
     }
 
     const rows: ReconciliationSummaryRow[] = filteredExpenses.map(exp => {
+      const simplified = getSimplifiedExpenseStatus(exp);
       const category = expenseCategories.find(c => c.value === exp.expense_category);
       const linkedTo =
         exp.import_containers?.container_ref ||
@@ -3089,15 +3211,6 @@ export function ExpenseManager({
         : (exp.bank_statement_lines?.[0]?.bank_accounts?.alias ||
            exp.bank_statement_lines?.[0]?.bank_accounts?.bank_name ||
            '');
-      // Payment status (independent of reconciliation)
-      const balance = calculateCanonicalCashPayable(exp) - (exp.paid_amount ?? 0);
-      let paymentStatus = 'Paid';
-      if (balance > 0.01 && (exp.paid_amount ?? 0) > 0.01) paymentStatus = 'Partially Paid';
-      else if (balance > 0.01) paymentStatus = 'Outstanding';
-
-      // Recon status (authoritative calculation shared across ERP)
-      const recon = calculateExpenseReconciliation(exp);
-      const reconStatus = recon.statusLabel;
       const account = exportAccounts[exp.id];
       const journal = postedJournals.get(exp.id);
       const totals = calculateExpenseTotals(exp);
@@ -3115,17 +3228,16 @@ export function ExpenseManager({
         'Posting Date': journal?.date || '',
         'Journal Number': journal?.number || '',
         'Journal Status': exp.effective_posting_state === 'REVERSED'
-          ? 'Cancelled'
+          ? 'Reversed'
           : exp.effective_posting_state === 'REPLACED'
             ? (journal?.status || 'Posted')
-            : journal?.status || 'Not posted',
-        'Approval Status': exp.effective_posting_state === 'REVERSED'
-          ? 'Cancelled'
-          : exp.effective_posting_state === 'REPLACED'
-            ? 'Approved'
-            : exp.effective_posting_state || exp.approval_status || '',
-        'Payment Status': exp.effective_posting_state === 'REVERSED' ? 'Cancelled' : paymentStatus,
-        'Reconciliation Status': reconStatus,
+            : journal?.status || (simplified.approval === 'Approved' ? 'Posted' : 'Not posted'),
+        'Approval Status': simplified.approval,
+        'Payment Status': simplified.payment,
+        'Bank Link Status': simplified.isCash
+          ? (exp.payment_method === 'petty_cash' ? 'Petty Cash' : 'Cash')
+          : simplified.bankLink,
+        'Reconciliation Status': simplified.isCash ? 'Cash' : (simplified.bankLink === 'Linked' ? 'Linked' : 'Unlinked'),
         'Party Type': exp.staff_id ? 'Employee' : exp.suppliers ? 'Supplier' : '',
         'Party Name': partyName,
         'Category Parent': category?.group || '',
@@ -3186,36 +3298,48 @@ export function ExpenseManager({
   }, []);
 
   const expenseSummaryKpis = useMemo(() => {
-    const activeOrReplaced = baseExpenses.filter(
-      expense => expense.effective_posting_state === 'ACTIVE' || expense.effective_posting_state === 'REPLACED'
-    );
-    const totalFormatted = formatExpenseTotals(activeOrReplaced) || formatCurrency(0);
+    const totalFormatted = formatExpenseTotals(baseExpenses) || formatCurrency(0);
 
-    let reconciledCount = 0;
+    let approvedCount = 0;
+    let pendingApprovalCount = 0;
+    let paidCount = 0;
     let partialCount = 0;
-    let outstandingCount = 0;
+    let unpaidCount = 0;
+    let linkedCount = 0;
+    let unlinkedBankCount = 0;
 
     for (let i = 0; i < baseExpenses.length; i++) {
       const e = baseExpenses[i];
-      const status = getExpenseSettlementStatus(e);
-      if (status === 'reconciled') {
-        reconciledCount++;
-      } else if (status === 'partial') {
-        partialCount++;
-      } else if (status === 'outstanding') {
-        outstandingCount++;
+      const status = getSimplifiedExpenseStatus(e);
+      if (status.approval === 'Approved') approvedCount++;
+      else pendingApprovalCount++;
+
+      if (status.payment === 'Paid') paidCount++;
+      else if (status.payment === 'Partially Paid') partialCount++;
+      else unpaidCount++;
+
+      if (!status.isCash) {
+        if (status.bankLink === 'Linked') linkedCount++;
+        else unlinkedBankCount++;
       }
     }
 
     const applicableTotal = baseExpenses.length;
+    const reconciledCount = paidCount;
 
     return {
       totalFormatted,
+      applicableTotal,
+      approvedCount,
+      pendingApprovalCount,
+      paidCount,
+      partialCount,
+      unpaidCount,
+      linkedCount,
+      unlinkedBankCount,
       reconciledRatio: `${reconciledCount} / ${applicableTotal}`,
       reconciledCount,
-      partialCount,
-      outstandingCount,
-      applicableTotal,
+      outstandingCount: unpaidCount,
     };
   }, [baseExpenses, formatExpenseTotals]);
 
@@ -3324,6 +3448,12 @@ export function ExpenseManager({
                   <span className="text-rose-600 font-normal">Outstanding:</span>
                   <span className="font-mono font-semibold">
                     {expenseSummaryKpis.outstandingCount}
+                  </span>
+                </span>
+                <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-800 border border-blue-200/60 px-2 py-0.5 rounded text-[11px] font-medium leading-none">
+                  <span className="text-blue-600 font-normal">Linked:</span>
+                  <span className="font-mono font-semibold">
+                    {expenseSummaryKpis.linkedCount}
                   </span>
                 </span>
               </div>
@@ -3631,7 +3761,7 @@ export function ExpenseManager({
               sortedExpenses.map((expense) => {
                 const category = expenseCategories.find(c => c.value === expense.expense_category);
                 const postingState = expense.effective_posting_state || 'AMBIGUOUS';
-                const isCancelledPosting = postingState === 'REVERSED';
+                const simplifiedStatus = getSimplifiedExpenseStatus(expense);
 
                 // Reconciliation state is authoritative: includes valid salary advances
                 // and amount-based allocations.
@@ -3716,133 +3846,67 @@ export function ExpenseManager({
                       </span>
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap text-center">
-                      {(() => {
-                        if (postingState === 'REVERSED') {
-                          return <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 text-gray-500" title="Cancelled"><Banknote className="w-3 h-3" /></span>;
-                        }
-                        // Payment status — Banknote icon colored by status
-                        const billBalance = calculateCanonicalCashPayable(expense) - (expense.paid_amount ?? 0);
-                        if (billBalance > 0.01 && (expense.paid_amount ?? 0) > 0.01) {
-                          return (
-                            <span
-                              className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-100 text-yellow-700"
-                              title={`Partially Paid · Paid ${formatCurrency(expense.paid_amount ?? 0, getExpenseCurrency(expense))} of ${formatCurrency(calculateCanonicalCashPayable(expense), getExpenseCurrency(expense))} · ${formatCurrency(billBalance, getExpenseCurrency(expense))} left`}
-                            >
-                              <Banknote className="w-3 h-3" />
-                            </span>
-                          );
-                        }
-                        if (billBalance > 0.01) {
-                          return (
-                            <span
-                              className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-100 text-red-700"
-                              title={`Outstanding · ${formatCurrency(billBalance, getExpenseCurrency(expense))} payable`}
-                            >
-                              <Banknote className="w-3 h-3" />
-                            </span>
-                          );
-                        }
-                        return (
-                          <span
-                            className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100 text-green-700"
-                            title="Paid"
-                          >
-                            <Banknote className="w-3 h-3" />
-                          </span>
-                        );
-                      })()}
+                      {simplifiedStatus.payment === 'Paid' ? (
+                        <span
+                          className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100 text-green-700"
+                          title="Paid"
+                        >
+                          <Banknote className="w-3 h-3" />
+                        </span>
+                      ) : simplifiedStatus.payment === 'Partially Paid' ? (
+                        <span
+                          className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-100 text-yellow-700"
+                          title={`Partially Paid · Paid ${formatCurrency(expense.paid_amount ?? 0, getExpenseCurrency(expense))} of ${formatCurrency(calculateCanonicalCashPayable(expense), getExpenseCurrency(expense))}`}
+                        >
+                          <Banknote className="w-3 h-3" />
+                        </span>
+                      ) : (
+                        <span
+                          className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-100 text-red-700"
+                          title="Outstanding"
+                        >
+                          <Banknote className="w-3 h-3" />
+                        </span>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap text-center">
-                      {(() => {
-                        if (isCancelledPosting) {
-                          return (
-                            <span
-                              className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 text-gray-500 cursor-default select-none"
-                              title="Cancelled"
-                            >
-                              <RotateCcw className="w-3 h-3" />
-                            </span>
-                          );
-                        }
-                        if (expense.payment_method === 'cash') {
-                          return (
-                            <span
-                              className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-100 text-blue-700 cursor-default select-none"
-                              title="Petty Cash"
-                            >
-                              <Banknote className="w-3 h-3" />
-                            </span>
-                          );
-                        }
-                        if (isReconciled) {
-                          return (
-                            <span
-                              className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100 text-green-700 cursor-default select-none"
-                              title="Paid / Reconciled"
-                            >
-                              <CheckCircle className="w-3 h-3" />
-                            </span>
-                          );
-                        }
-                        if (isPartiallyReconciled) {
-                          return (
-                            <span
-                              className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-100 text-amber-700 cursor-default select-none"
-                              title="Partially Paid / Reconciled"
-                            >
-                              <Clock className="w-3 h-3" />
-                            </span>
-                          );
-                        }
-                        const billBalance = calculateCanonicalCashPayable(expense) - (expense.paid_amount ?? 0);
-                        const isPartiallyPaid = (expense.paid_amount ?? 0) > 0.01 && billBalance > 0.01;
-                        const isFullyPaid = billBalance <= 0.01;
-
-                        if (isPartiallyPaid) {
-                          return (
-                            <span
-                              className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-100 text-amber-700 cursor-default select-none"
-                              title="Partially Paid / Reconciliation Pending"
-                            >
-                              <Clock className="w-3 h-3" />
-                            </span>
-                          );
-                        }
-                        if (isFullyPaid) {
-                          return (
-                            <span
-                              className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-100 text-amber-700 cursor-default select-none"
-                              title="Paid / Reconciliation Pending"
-                            >
-                              <Clock className="w-3 h-3" />
-                            </span>
-                          );
-                        }
-                        return (
-                          <span
-                            className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 text-gray-400 cursor-default select-none"
-                            title="Outstanding · Unreconciled"
-                          >
-                            <Minus className="w-3 h-3" />
-                          </span>
-                        );
-                      })()}
+                      {simplifiedStatus.isCash ? (
+                        <span
+                          className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-100 text-blue-700 cursor-default select-none"
+                          title="Petty Cash"
+                        >
+                          <Banknote className="w-3 h-3" />
+                        </span>
+                      ) : isReconciled || (simplifiedStatus.bankLink === 'Linked' && simplifiedStatus.payment === 'Paid') ? (
+                        <span
+                          className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100 text-green-700 cursor-default select-none"
+                          title="Paid / Reconciled"
+                        >
+                          <CheckCircle className="w-3 h-3" />
+                        </span>
+                      ) : isPartiallyReconciled || (simplifiedStatus.bankLink === 'Linked' && simplifiedStatus.payment === 'Partially Paid') ? (
+                        <span
+                          className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-100 text-amber-700 cursor-default select-none"
+                          title="Partially Paid / Reconciled"
+                        >
+                          <Clock className="w-3 h-3" />
+                        </span>
+                      ) : (
+                        <span
+                          className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 text-gray-400 cursor-default select-none"
+                          title="Outstanding · Unreconciled"
+                        >
+                          <Minus className="w-3 h-3" />
+                        </span>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap text-center">
-                      {postingState === 'ACTIVE' ? (
+                      {simplifiedStatus.approval === 'Approved' ? (
                         <span
                           className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100 text-green-700"
                           title="Approved · Active posting"
                         >
                           <ClipboardCheck className="w-3 h-3" />
-                        </span>
-                      ) : postingState === 'REPLACED' ? (
-                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100 text-green-700" title="Approved · Current posting">
-                          <ClipboardCheck className="w-3 h-3" />
-                        </span>
-                      ) : postingState === 'REVERSED' ? (
-                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-200 text-gray-600" title="Cancelled">
-                          <RotateCcw className="w-3 h-3" />
                         </span>
                       ) : postingState === 'REJECTED' ? (
                         <span
@@ -3850,10 +3914,6 @@ export function ExpenseManager({
                           title={`Rejected${expense.rejection_reason ? ': ' + expense.rejection_reason : ''}`}
                         >
                           <ClipboardCheck className="w-3 h-3" />
-                        </span>
-                      ) : postingState === 'AMBIGUOUS' ? (
-                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-orange-100 text-orange-700" title={`Review required · ${expense.posting_lifecycle?.ambiguity_reason || 'inconsistent accounting evidence'}`}>
-                          <AlertCircle className="w-3 h-3" />
                         </span>
                       ) : (
                         <span
@@ -3868,37 +3928,27 @@ export function ExpenseManager({
                       <td className="px-2 py-1.5 whitespace-nowrap text-center">
                         <div className="flex items-center justify-center gap-0.5 whitespace-nowrap">
                           {(() => {
-                            const expenseLinkStatus = (() => {
-                              if (postingState === 'AMBIGUOUS') return 'unknown';
-                              if (isCancelledPosting || expense.payment_method === 'cash') return 'unlinked';
-                              if (isReconciled && (recon.reconciledAmount > 0.01 || recon.grossCashPayable <= 0.01)) return 'linked';
-                              if (isPartiallyReconciled || recon.reconciledAmount > 0.01) return 'partial';
-                              return 'unlinked';
-                            })();
-
-                            const isLinkedOrPartial = expenseLinkStatus === 'linked' || expenseLinkStatus === 'partial';
-                            const linkActionTitle = isLinkedOrPartial ? 'Manage Bank Links' : 'Link Bank Transaction';
+                            const isLinked = simplifiedStatus.bankLink === 'Linked';
+                            const linkActionTitle = isLinked ? 'Manage Bank Links' : 'Link Bank Transaction';
 
                             return (
                               <button
                                 type="button"
                                 aria-label={`${linkActionTitle} for ${expense.voucher_number || 'expense'}`}
                                 onClick={() => {
-                                  if (!canManage || isCancelledPosting) {
+                                  if (simplifiedStatus.isCash || isLinked || !canManage) {
                                     void handleViewExpense(expense);
                                   } else {
                                     void handleEdit(expense, true);
                                   }
                                 }}
-                                title={linkActionTitle}
+                                title={simplifiedStatus.isCash ? `${expense.payment_method === 'petty_cash' ? 'Petty Cash' : 'Cash'} Expense` : linkActionTitle}
                                 className={`no-compact !p-0 inline-flex !h-6 !w-6 !min-h-[24px] !min-w-[24px] items-center justify-center rounded transition-colors focus:outline-none focus:ring-2 focus:ring-blue-300 ${
-                                  expenseLinkStatus === 'linked'
-                                    ? 'text-emerald-700 hover:bg-emerald-50'
-                                    : expenseLinkStatus === 'partial'
-                                      ? 'text-amber-700 hover:bg-amber-50'
-                                      : expenseLinkStatus === 'unlinked'
-                                        ? 'text-blue-600 hover:bg-blue-50'
-                                        : 'text-gray-400 hover:bg-gray-100'
+                                  simplifiedStatus.isCash
+                                    ? 'text-gray-400 hover:bg-gray-100'
+                                    : isLinked
+                                      ? 'text-emerald-700 hover:bg-emerald-50 text-green-700 hover:bg-green-50'
+                                      : 'text-blue-600 hover:bg-blue-50'
                                 }`}
                               >
                                 <Landmark className="w-3.5 h-3.5 shrink-0" />
@@ -3912,7 +3962,7 @@ export function ExpenseManager({
                           {(postingState === 'ACTIVE' || postingState === 'PENDING' || postingState === 'REJECTED') && (
                             <FinanceActionButton action="edit" onClick={() => handleEdit(expense)} />
                           )}
-                          {isAdmin && postingState === 'PENDING' && (
+                          {isAdmin && simplifiedStatus.approval === 'Pending' && (
                             <>
                               <span className="w-px h-4 bg-gray-200 mx-0.5" aria-hidden="true" />
                               <FinanceActionButton
@@ -3924,17 +3974,6 @@ export function ExpenseManager({
                                 action="reject"
                                 onClick={() => { setRejectionTarget({ id: expense.id, type: 'expense' }); setRejectionModalOpen(true); }}
                                 disabled={approvalLoading === expense.id}
-                              />
-                            </>
-                          )}
-                          {isAdmin && postingState === 'ACTIVE' && (
-                            <>
-                              <span className="w-px h-4 bg-gray-200 mx-0.5" aria-hidden="true" />
-                              <FinanceActionButton
-                                action="reverse"
-                                label="Cancel Posting"
-                                onClick={() => void handleCancelPostingRequest(expense)}
-                                disabled={cancelPostingLoading && cancelPostingTarget?.id === expense.id}
                               />
                             </>
                           )}
@@ -3958,7 +3997,7 @@ export function ExpenseManager({
                   TOTAL ({sortedExpenses.length} expenses):
                 </td>
                 <td className="px-2 py-1.5 text-right text-sm text-blue-900 font-bold">
-                  {formatExpenseTotals(sortedExpenses.filter(expense => expense.effective_posting_state === 'ACTIVE' || expense.effective_posting_state === 'REPLACED'))}
+                  {formatExpenseTotals(sortedExpenses)}
                 </td>
                 <td colSpan={canManage ? 5 : 4}></td>
               </tr>
@@ -5384,6 +5423,7 @@ export function ExpenseManager({
                         await syncExpenseBankLinks([editingExpense.id]);
                         notifyFinanceReconciliationRefresh();
                       }
+                      const updatedLines = await fetchExpenseBankLinks(editingExpense.id);
                       const { data: updatedExp } = await supabase
                         .from('finance_expenses')
                         .select(`
@@ -5392,15 +5432,6 @@ export function ExpenseManager({
                           import_containers (container_ref),
                           delivery_challans (challan_number),
                           bank_accounts (bank_name, account_number),
-                          bank_statement_lines!bsl_matched_expense_fk (
-                            id,
-                            transaction_date,
-                            description,
-                            debit_amount,
-                            credit_amount,
-                            bank_account_id,
-                            bank_accounts (bank_name, account_number)
-                          ),
                           salary_advance_applications (
                             id,
                             applied_amount,
@@ -5417,8 +5448,12 @@ export function ExpenseManager({
                         .eq('id', editingExpense.id)
                         .single();
                       if (updatedExp) {
-                        setEditingExpense(updatedExp);
-                        setExpenses(prev => prev.map(exp => exp.id === editingExpense.id ? updatedExp : exp));
+                        const merged = { ...updatedExp, bank_statement_lines: updatedLines };
+                        setEditingExpense(merged);
+                        setExpenses(prev => prev.map(exp => exp.id === editingExpense.id ? merged : exp));
+                        if (viewingExpense?.id === editingExpense.id) {
+                          setViewingExpense(merged);
+                        }
                       }
                     }}
                   />
@@ -5593,14 +5628,27 @@ export function ExpenseManager({
           const staff = staffRoster.find(s => s.id === viewingExpense.staff_id);
           return staff?.full_name ?? null;
         })();
+        const simplifiedViewingStatus = getSimplifiedExpenseStatus(viewingExpense);
         const approvalBadge = () => {
-          const s = viewingExpense.effective_posting_state || 'AMBIGUOUS';
-          if (s === 'ACTIVE') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green-50 text-green-700 border border-green-200"><CheckCircle className="w-3 h-3" /> Approved · Active</span>;
-          if (s === 'REPLACED') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green-50 text-green-700 border border-green-200"><CheckCircle className="w-3 h-3" /> Approved · Active</span>;
-          if (s === 'REVERSED') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-700 border border-gray-300"><RotateCcw className="w-3 h-3" /> Cancelled</span>;
-          if (s === 'REJECTED') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-50 text-red-700 border border-red-200"><XCircle className="w-3 h-3" /> Rejected</span>;
-          if (s === 'AMBIGUOUS') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-50 text-orange-700 border border-orange-200"><AlertCircle className="w-3 h-3" /> Review required</span>;
-          return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200"><AlertCircle className="w-3 h-3" /> Pending</span>;
+          if (simplifiedViewingStatus.approval === 'Approved') {
+            return (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green-50 text-green-700 border border-green-200">
+                <CheckCircle className="w-3 h-3" /> Approved
+              </span>
+            );
+          }
+          if (viewingExpense.effective_posting_state === 'REJECTED') {
+            return (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-50 text-red-700 border border-red-200">
+                <XCircle className="w-3 h-3" /> Rejected
+              </span>
+            );
+          }
+          return (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+              <AlertCircle className="w-3 h-3" /> Pending
+            </span>
+          );
         };
 
         // Tax rows (non-broker)
@@ -6172,66 +6220,83 @@ export function ExpenseManager({
                 <div className="flex items-center justify-between mb-1.5">
                   <h3 className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Bank Reconciliation</h3>
                   {(() => {
-                    const recon = calculateExpenseReconciliation(viewingExpense, salaryAdvanceApplications);
-                    if (recon.isFullyReconciled) {
+                    if (simplifiedViewingStatus.isCash) {
                       return (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-50 text-green-700 border border-green-200">
-                          <CheckCircle className="w-2.5 h-2.5" /> Reconciled
-                        </span>
-                      );
-                    }
-                    if (recon.isPartiallyReconciled) {
-                      return (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-                          <Clock className="w-2.5 h-2.5" /> Partially Reconciled
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                          {viewingExpense.payment_method === 'petty_cash' ? 'Petty Cash' : 'Cash Payment'}
                         </span>
                       );
                     }
                     if (bslLines.length > 0) {
                       return (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-                          <Clock className="w-2.5 h-2.5" /> Pending Reconciliation
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-50 text-green-700 border border-green-200">
+                          <CheckCircle className="w-2.5 h-2.5" /> Linked
                         </span>
                       );
                     }
-                    return null;
+                    return (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-600 border border-gray-200">
+                        Unlinked
+                      </span>
+                    );
                   })()}
                 </div>
-                {bslLines.length > 0 ? (
-                  <div className="space-y-1">
+
+                {bankLinkError ? (
+                  <div className="flex items-center gap-1.5 px-2 py-1.5 bg-red-50 border border-red-200 rounded text-[11px] text-red-700">
+                    <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                    <span>{bankLinkError}</span>
+                  </div>
+                ) : simplifiedViewingStatus.isCash ? (
+                  <div className="flex items-center gap-1.5 px-2 py-1.5 bg-blue-50/50 border border-blue-200 rounded text-[11px] text-blue-800">
+                    <Banknote className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                    <span>Settled via {viewingExpense.payment_method === 'petty_cash' ? 'Petty Cash' : 'Cash'} — no bank statement reconciliation required.</span>
+                  </div>
+                ) : bslLines.length > 0 ? (
+                  <div className="space-y-1.5">
                     {bslLines.map((line) => {
                       const lineCurrency = line.bank_accounts?.currency ?? currency;
                       const fmtLine = (n: number) => formatCurrency(n, lineCurrency);
                       const bankAmount = line.debit_amount || line.credit_amount || 0;
                       const linkedAmount = Number(line.allocation_amount ?? bankAmount);
                       const remainingBankAmount = Math.max(0, bankAmount - linkedAmount);
+                      const bankAccountName = line.bank_accounts
+                        ? `${line.bank_accounts.alias || line.bank_accounts.bank_name}${line.bank_accounts.account_number ? ` · ${line.bank_accounts.account_number}` : ''}`
+                        : (viewingExpense.bank_accounts ? `${viewingExpense.bank_accounts.alias || viewingExpense.bank_accounts.bank_name}` : '—');
+                      const bankDescRef = [line.reference, line.description].filter(Boolean).join(' · ') || line.description || line.reference || '—';
+
                       return (
-                        <div key={line.id} className="px-2 py-1.5 bg-white border border-gray-200 rounded">
-                          <div className="flex items-center gap-1.5 mb-1">
-                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-semibold bg-green-50 text-green-700 border border-green-200">
+                        <div key={line.id} className="px-2.5 py-2 bg-white border border-gray-200 rounded-md shadow-2xs space-y-1">
+                          <div className="flex items-center justify-between border-b border-gray-100 pb-1">
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-green-50 text-green-700 border border-green-200">
                               <CheckCircle className="w-2.5 h-2.5" /> Linked
                             </span>
+                            <span className="text-[11px] font-medium text-gray-700">
+                              {bankAccountName}
+                            </span>
                           </div>
-                          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+                          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
                             <div className="flex items-center justify-between">
                               <span className="text-[9px] uppercase font-medium text-gray-400">Date</span>
-                              <span className="text-gray-800">{formatDate(line.transaction_date)}</span>
+                              <span className="text-gray-800 font-medium">{formatDate(line.transaction_date)}</span>
                             </div>
                             <div className="flex items-center justify-between">
-                              <span className="text-[9px] uppercase font-medium text-gray-400">Ref</span>
-                              <span className="text-gray-800 truncate max-w-[80px]">{line.description?.slice(0, 20) || '—'}</span>
+                              <span className="text-[9px] uppercase font-medium text-gray-400">Allocated Amount</span>
+                              <span className="font-mono font-bold text-emerald-700">{fmtLine(linkedAmount)}</span>
                             </div>
                             <div className="flex items-center justify-between">
-                              <span className="text-[9px] uppercase font-medium text-gray-400">Bank Txn</span>
-                              <span className="font-mono font-semibold text-gray-900">{fmtLine(bankAmount)}</span>
+                              <span className="text-[9px] uppercase font-medium text-gray-400">Bank Txn Total</span>
+                              <span className="font-mono text-gray-700">{fmtLine(bankAmount)}</span>
                             </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-[9px] uppercase font-medium text-gray-400">Linked</span>
-                              <span className="font-mono font-semibold text-gray-900">{fmtLine(linkedAmount)}</span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-[9px] uppercase font-medium text-gray-400">Remaining</span>
-                              <span className="font-mono font-medium text-orange-600">{fmtLine(remainingBankAmount)}</span>
+                            {bankAmount > linkedAmount + 0.01 && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-[9px] uppercase font-medium text-gray-400">Line Balance</span>
+                                <span className="font-mono text-amber-600">{fmtLine(remainingBankAmount)}</span>
+                              </div>
+                            )}
+                            <div className="col-span-2 flex items-start gap-1 pt-0.5">
+                              <span className="text-[9px] uppercase font-medium text-gray-400 shrink-0">Ref / Desc:</span>
+                              <span className="text-gray-700 break-words font-mono text-[10px] leading-tight">{bankDescRef}</span>
                             </div>
                           </div>
                         </div>
@@ -6382,7 +6447,7 @@ export function ExpenseManager({
                     ) : (
                       <div className="px-4 pb-2 text-[11px] text-gray-600">
                         {viewingExpense.effective_posting_state === 'REVERSED'
-                            ? 'This expense is cancelled and has no current accounting effect. Journal history remains available in the audit views.'
+                            ? 'The journal for this expense has been reversed. Original and reversal history remain available in the audit views.'
                             : 'Accounting impact is not presented because the effective posting state requires review.'}
                       </div>
                     )
@@ -6391,7 +6456,7 @@ export function ExpenseManager({
 
             {/* ── FOOTER ── */}
             <div className="px-4 py-2 flex justify-end gap-2">
-              {canManage && (viewingExpense.effective_posting_state === 'ACTIVE' || viewingExpense.effective_posting_state === 'REPLACED' || viewingExpense.effective_posting_state === 'PENDING' || viewingExpense.effective_posting_state === 'REJECTED') && (
+              {canManage && viewingExpense.approval_status !== 'cancelled' && (
                 <button
                   onClick={() => { handleEdit(viewingExpense); setViewModalOpen(false); setViewingExpense(null); }}
                   className="px-2.5 py-1 text-[11px] font-medium text-blue-700 bg-white border border-blue-300 rounded hover:bg-blue-50"

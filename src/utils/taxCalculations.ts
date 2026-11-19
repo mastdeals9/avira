@@ -1060,7 +1060,7 @@ export function calculateExpenseReconciliation(
   else if (billBalance > 0.01) paymentStatus = 'Outstanding';
 
   let statusLabel: ExpenseReconciliationResult['statusLabel'] = 'Paid / Reconciled';
-  if (expense.approval_status === 'cancelled' || expense.effective_posting_state === 'REVERSED') {
+  if (expense.approval_status === 'cancelled') {
     statusLabel = 'Cancelled';
   } else if (expense.payment_method === 'cash') {
     statusLabel = 'Petty Cash';
@@ -1174,6 +1174,59 @@ export function getExpenseSettlementStatus(
   }
 
   return 'outstanding';
+}
+
+export interface SimplifiedExpenseStatus {
+  approval: 'Approved' | 'Pending';
+  payment: 'Paid' | 'Partially Paid' | 'Unpaid';
+  bankLink: 'Linked' | 'Unlinked' | 'Cash';
+  isCash: boolean;
+}
+
+/**
+ * Standardized 3-axis expense status:
+ * 1. Approval: Pending, Approved
+ * 2. Payment: Unpaid, Partially Paid, Paid
+ * 3. Bank Link: Linked, Unlinked, Cash (never treats paid_amount as bank linkage)
+ */
+export function getSimplifiedExpenseStatus(expense: {
+  amount?: number | string | null;
+  paid_amount?: number | string | null;
+  approval_status?: string | null;
+  payment_method?: string | null;
+  bank_statement_lines?: Array<any> | null;
+  voucher_allocations?: Array<any> | null;
+  salary_advance_applications?: Array<any> | null;
+  expense_category?: string | null;
+}): SimplifiedExpenseStatus {
+  // 1. Approval
+  const approval: 'Approved' | 'Pending' = expense.approval_status === 'approved' ? 'Approved' : 'Pending';
+
+  // 2. Payment
+  const payable = calculateCanonicalCashPayable(expense as any);
+  const paid = Number(expense.paid_amount || 0);
+  let payment: 'Paid' | 'Partially Paid' | 'Unpaid' = 'Unpaid';
+  if (payable <= 0.01 || paid >= payable - 0.01) {
+    payment = 'Paid';
+  } else if (paid > 0.01) {
+    payment = 'Partially Paid';
+  } else {
+    payment = 'Unpaid';
+  }
+
+  // 3. Bank Link
+  const isCash = expense.payment_method === 'cash' || expense.payment_method === 'petty_cash';
+  const lines = normalizeExpenseBankLinks((expense.bank_statement_lines || []) as any[]);
+  let bankLink: 'Linked' | 'Unlinked' | 'Cash' = 'Unlinked';
+  if (isCash) {
+    bankLink = 'Cash';
+  } else if (lines.length > 0) {
+    bankLink = 'Linked';
+  } else {
+    bankLink = 'Unlinked';
+  }
+
+  return { approval, payment, bankLink, isCash };
 }
 
 // ---------------------------------------------------------------------------
