@@ -1174,11 +1174,10 @@ export function ReceiptVoucherManager({
       .eq('receipt_voucher_id', voucher.id),
       supabase.from('bank_statement_lines')
         .select('id, transaction_date, description, reference, debit_amount, credit_amount, reconciliation_status, bank_accounts(bank_name, account_name, alias, currency)')
-        .eq('matched_receipt_id', voucher.id),
+        .or(`matched_receipt_id.eq.${voucher.id}${voucher.journal_entry_id ? `,matched_entry_id.eq.${voucher.journal_entry_id}` : ''}`),
       supabase.from('bank_statement_allocations')
-        .select('id, allocation_amount, bank_statement_lines(id, transaction_date, description, reference, debit_amount, credit_amount, reconciliation_status, bank_accounts(bank_name, account_name, alias, currency))')
-        .eq('document_type', 'receipt')
-        .eq('document_id', voucher.id),
+        .select('id, allocation_amount, journal_entry_id, bank_statement_lines(id, transaction_date, description, reference, debit_amount, credit_amount, reconciliation_status, bank_accounts(bank_name, account_name, alias, currency))')
+        .or(`and(document_type.eq.receipt,document_id.eq.${voucher.id})${voucher.journal_entry_id ? `,journal_entry_id.eq.${voucher.journal_entry_id}` : ''}`),
       voucher.journal_entry_id
         ? supabase.from('journal_entry_lines').select('line_number, debit, credit, description, chart_of_accounts(code, name)').eq('journal_entry_id', voucher.journal_entry_id).order('line_number')
         : Promise.resolve({ data: [] as any[] }),
@@ -1206,9 +1205,9 @@ export function ReceiptVoucherManager({
       const line = Array.isArray(allocation.bank_statement_lines)
         ? allocation.bank_statement_lines[0]
         : allocation.bank_statement_lines;
-      return line ? { ...line, allocation_id: allocation.id, allocation_amount: allocation.allocation_amount } : null;
+      return line ? { ...line, allocation_id: allocation.id, allocation_amount: Number(allocation.allocation_amount || line.credit_amount || 0) } : null;
     }).filter(Boolean);
-    const mergedBankLines = [...(bankLines || []), ...canonicalLines]
+    const mergedBankLines = [...canonicalLines, ...(bankLines || [])]
       .filter((line: any, index: number, rows: any[]) => rows.findIndex(candidate => candidate.id === line.id) === index);
     setReceiptBankLines(mergedBankLines);
     setReceiptJournalLines(journalLines || []);
@@ -1757,12 +1756,29 @@ export function ReceiptVoucherManager({
                     </div>
 
                     <div className="flex items-center justify-between pt-1.5 border-t border-slate-200/80 gap-2">
-                      <VoucherBankLinkIndicator
-                        voucherNumber={voucher.voucher_number}
-                        evaluation={voucher.bank_link_evaluation}
-                        bankAccountId={voucher.bank_account_id}
-                        onOpenBankReconciliation={onOpenBankReconciliation}
-                      />
+                      <div className="flex items-center gap-2">
+                        <VoucherBankLinkIndicator
+                          voucherNumber={voucher.voucher_number}
+                          evaluation={voucher.bank_link_evaluation}
+                          bankAccountId={voucher.bank_account_id}
+                          onOpenBankReconciliation={onOpenBankReconciliation}
+                        />
+                        {voucher.is_posted && (!voucher.bank_link_evaluation || voucher.bank_link_evaluation.status === 'unlinked') && (
+                          <button
+                            type="button"
+                            onClick={() => handleView(voucher)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border border-blue-300 text-blue-700 bg-blue-50/50 hover:bg-blue-100"
+                            title="Directly link this receipt to a bank deposit"
+                          >
+                            <Link2 className="w-3 h-3" /> Link Bank Statement
+                          </button>
+                        )}
+                        {voucher.is_posted && voucher.bank_link_evaluation?.status === 'linked' && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                            <CheckCircle className="w-3 h-3" /> Reconciled
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-1 ml-auto">
                         {canManage && !voucher.is_posted && (
                           <>
@@ -2303,8 +2319,49 @@ export function ReceiptVoucherManager({
         title="Receipt Voucher Details"
         size="xl"
       >
-        {selectedVoucher && (
+        {selectedVoucher && (() => {
+          const vCurrency = voucherCurrency(selectedVoucher);
+          const voucherAmount = Number(selectedVoucher.amount || 0);
+          const invoiceAllocated = voucherAllocations.reduce((sum: number, a: any) => sum + Number(a.allocated_amount || a.amount || 0), 0);
+          const bankMatchedAmount = receiptBankLines.reduce((sum: number, line: any) => sum + Number(line.allocation_amount || line.credit_amount || line.debit_amount || 0), 0);
+          const unallocatedBalance = Math.max(0, voucherAmount - invoiceAllocated);
+          const isFullDeposit = unallocatedBalance === voucherAmount && invoiceAllocated === 0;
+
+          return (
           <div className="space-y-4">
+            {/* Explicit 4-Figure Financial Overview (Task 7) */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+              <div>
+                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Voucher Amount</span>
+                <span className="text-sm font-bold text-slate-900 block mt-0.5">{formatCurrency(voucherAmount, vCurrency)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Invoice Allocated</span>
+                <span className={`text-sm font-bold block mt-0.5 ${invoiceAllocated > 0 ? 'text-blue-700' : 'text-slate-400'}`}>
+                  {invoiceAllocated > 0 ? formatCurrency(invoiceAllocated, vCurrency) : '—'}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Bank Matched Amount</span>
+                <span className={`text-sm font-bold block mt-0.5 ${bankMatchedAmount > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
+                  {bankMatchedAmount > 0 ? formatCurrency(bankMatchedAmount, vCurrency) : '—'}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Unallocated Receipt Balance</span>
+                <span className={`text-sm font-bold block mt-0.5 ${unallocatedBalance > 0 ? 'text-amber-700' : 'text-slate-400'}`}>
+                  {unallocatedBalance > 0 ? (
+                    <div>
+                      <span>{formatCurrency(unallocatedBalance, vCurrency)}</span>
+                      <span className="block text-[10px] font-normal text-amber-600">
+                        {isFullDeposit ? 'Customer Deposit (GL 2140)' : 'Unallocated Advance'}
+                      </span>
+                    </div>
+                  ) : '—'}
+                </span>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-500">Voucher Number</label>
@@ -2331,14 +2388,10 @@ export function ReceiptVoucherManager({
                 <label className="block text-sm font-medium text-gray-500">Reference</label>
                 <p>{selectedVoucher.reference_number || '-'}</p>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-500">Amount</label>
-                <p className="text-sm font-bold text-green-600">{formatCurrency(selectedVoucher.amount, voucherCurrency(selectedVoucher))}</p>
-              </div>
               {selectedVoucher.settlement_discount && selectedVoucher.settlement_discount > 0 && (
                 <div>
                   <label className="block text-sm font-medium text-gray-500">Settlement Difference / Write-off</label>
-                  <p className="text-sm font-bold text-amber-600">{formatCurrency(selectedVoucher.settlement_discount, voucherCurrency(selectedVoucher))}</p>
+                  <p className="text-sm font-bold text-amber-600">{formatCurrency(selectedVoucher.settlement_discount, vCurrency)}</p>
                   {selectedVoucher.adjustment_notes && (
                     <p className="text-xs text-gray-500 italic mt-0.5">{selectedVoucher.adjustment_notes}</p>
                   )}
@@ -2532,7 +2585,8 @@ export function ReceiptVoucherManager({
               </div>
             </div>
           </div>
-        )}
+          );
+        })()}
       </Modal>
 
       {cancelPostingTarget && (

@@ -508,6 +508,8 @@ export function BankReconciliationEnhanced({
   const recordingReceiptRef = useRef(false);
   const [existingReceipts, setExistingReceipts] = useState<any[]>([]);
   const [linkExistingReceipt, setLinkExistingReceipt] = useState(false);
+  const [receiptSearchQuery, setReceiptSearchQuery] = useState('');
+  const [receiptFilterMatchingAmount, setReceiptFilterMatchingAmount] = useState(true);
   const [linkJournalEntry, setLinkJournalEntry] = useState(false);
   const [availableJournals, setAvailableJournals] = useState<any[]>([]);
   const [linkToSupplierPayment, setLinkToSupplierPayment] = useState(false);
@@ -3166,6 +3168,15 @@ export function BankReconciliationEnhanced({
     setLoanCoaId('');
     loadLoanAccounts(initialDir);
 
+    if (line.credit > 0) {
+      setLinkExistingReceipt(true);
+      setReceiptSearchQuery('');
+      setReceiptFilterMatchingAmount(true);
+      loadExistingReceipts();
+    } else {
+      setLinkExistingReceipt(false);
+    }
+
     setRecordModal(true);
   };
 
@@ -3346,11 +3357,44 @@ export function BankReconciliationEnhanced({
   const loadCustomerInvoices = async (custId: string) => {
     setLoadingInvoices(true);
     try {
-      const { data } = await supabase.rpc('get_invoices_with_balance', {
-        customer_uuid: custId,
-        exclude_voucher_uuid: null,
+      const [{ data: invData }, { data: existingAllocs }] = await Promise.all([
+        supabase.rpc('get_invoices_with_balance', {
+          customer_uuid: custId,
+          exclude_voucher_uuid: null,
+        }),
+        supabase
+          .from('voucher_allocations')
+          .select('sales_invoice_id, allocated_amount, receipt_vouchers!inner(id, voucher_number, is_posted, status)')
+          .eq('voucher_type', 'receipt')
+          .not('sales_invoice_id', 'is', null),
+      ]);
+
+      // Calculate any allocations on draft/unposted receipts that the database trigger tracks
+      const draftAllocMap = new Map<string, { total: number; voucherNumber: string }>();
+      (existingAllocs || []).forEach((alloc: any) => {
+        const invId = alloc.sales_invoice_id;
+        const rv = alloc.receipt_vouchers;
+        if (rv && !rv.is_posted && rv.status !== 'cancelled') {
+          const current = draftAllocMap.get(invId) || { total: 0, voucherNumber: rv.voucher_number };
+          draftAllocMap.set(invId, {
+            total: current.total + Number(alloc.allocated_amount || 0),
+            voucherNumber: rv.voucher_number || current.voucherNumber,
+          });
+        }
       });
-      const unpaid = (data || []).filter((inv: any) => inv.balance_amount > 0);
+
+      const unpaid = (invData || []).map((inv: any) => {
+        const draftInfo = draftAllocMap.get(inv.id);
+        const draftReserved = draftInfo ? draftInfo.total : 0;
+        const actualRemaining = Math.max(0, Number(inv.balance_amount || 0) - draftReserved);
+        return {
+          ...inv,
+          draftReserved,
+          draftVoucherNumber: draftInfo?.voucherNumber,
+          actualRemaining,
+        };
+      }).filter((inv: any) => inv.balance_amount > 0 || inv.actualRemaining > 0);
+
       setReceiptInvoices(unpaid);
     } catch (err) {
       console.error('Error loading invoices:', err);
@@ -3365,12 +3409,12 @@ export function BankReconciliationEnhanced({
         supabase
           .from('receipt_vouchers')
           .select(
-            'id, voucher_number, voucher_date, amount, journal_entry_id, customer_id, customers(company_name)'
+            `id, voucher_number, voucher_date, amount, status, is_posted, journal_entry_id, customer_id, party_type, bank_account_id, reference_number, description,
+             customers(company_name), suppliers(company_name),
+             voucher_allocations(allocated_amount, sales_invoices(invoice_number, total_amount))`
           )
-          .eq('is_posted', true)
-          .not('journal_entry_id', 'is', null)
           .order('voucher_date', { ascending: false })
-          .limit(100),
+          .limit(150),
         loadLinkedDocumentIds(recordingLine?.id),
       ]);
       if (error) throw error;
@@ -3380,13 +3424,14 @@ export function BankReconciliationEnhanced({
           (allReceipts || []).map((receipt: any) => ({
             ...receipt,
             _linked:
-              linked.receiptIds.has(receipt.id) || linked.journalIds.has(receipt.journal_entry_id),
+              linked.receiptIds.has(receipt.id) ||
+              (receipt.journal_entry_id && linked.journalIds.has(receipt.journal_entry_id)),
             _linkedReason: 'Already linked to another bank statement line',
           })),
           recordingLine!,
           (receipt) => Number(receipt.amount || 0),
           (receipt) => receipt.voucher_date,
-          (receipt) => receipt.customers?.company_name
+          (receipt) => receipt.customers?.company_name || receipt.suppliers?.company_name
         )
       );
     } catch (err) {
@@ -3581,6 +3626,19 @@ export function BankReconciliationEnhanced({
         const validAllocations = Object.entries(receiptAllocations)
           .filter(([, amount]) => amount > 0)
           .map(([invoiceId, amount]) => ({ sales_invoice_id: invoiceId, amount }));
+
+        // Validate against over-allocating sales invoices (Section 6)
+        for (const alloc of validAllocations) {
+          const inv = receiptInvoices.find((i: any) => i.id === alloc.sales_invoice_id);
+          const maxAllowed = inv ? (inv.actualRemaining !== undefined ? inv.actualRemaining : inv.balance_amount) : 0;
+          if (inv && alloc.amount > maxAllowed + 0.01) {
+            throw new Error(
+              `Receipt allocation (${formatCurrency(alloc.amount, line.currency)}) exceeds available balance (${formatCurrency(maxAllowed, line.currency)}) for invoice ${inv.invoice_number}.${
+                inv.draftReserved > 0 ? ` Note: Rp ${inv.draftReserved.toLocaleString()} is already allocated in draft voucher ${inv.draftVoucherNumber || 'RV'}. Link the existing voucher instead.` : ''
+              }`
+            );
+          }
+        }
 
         const receiptId = await saveReceiptVoucher(
           null,
@@ -3865,6 +3923,17 @@ export function BankReconciliationEnhanced({
       if (!user) throw new Error('Not authenticated');
 
       const receipt = existingReceipts.find((candidate) => candidate.id === receiptId);
+      if (!receipt) throw new Error('Receipt voucher not found');
+
+      // If the receipt is in draft/unposted state (e.g. Case B RV2611-0002), post it first
+      if (!receipt.is_posted) {
+        const { error: postErr } = await supabase.rpc('post_receipt_voucher', {
+          p_rv_id: receiptId,
+          p_posted_by: user.id,
+        });
+        if (postErr) throw postErr;
+      }
+
       const warning = paymentDateGapWarning(line.date, receipt?.voucher_date);
       if (warning)
         console.warn(warning, { bankDate: line.date, voucherDate: receipt?.voucher_date });
@@ -7077,199 +7146,199 @@ export function BankReconciliationEnhanced({
             )}
 
             {recordingLine.credit > 0 && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="font-medium">Record as Receipt</h4>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onRecordContra?.({
-                          bankAccountId: selectedBank,
-                          statementLineId: recordingLine.id,
-                          date: recordingLine.date,
-                          amount: recordingLine.credit,
-                          description: recordingLine.description,
-                          direction: 'to',
-                        })
-                      }
-                      className="text-xs text-cyan-700 hover:underline"
-                    >
-                      Record Contra
-                    </button>
-                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const prefill: BankReconciliationReceiptPrefill = {
-                            statementLineId: recordingLine.id,
-                            bankAccountId: selectedBank,
-                            date: recordingLine.date,
-                            amount: recordingLine.credit,
-                            description: recordingLine.description,
-                            currency: recordingLine.currency as 'IDR' | 'USD',
-                            reference: recordingLine.reference || '',
-                            partyType: 'customer',
-                            paymentPurpose: 'invoice_payment',
-                          };
-                          setRecordModal(false);
-                          if (onRecordReceipt) onRecordReceipt(prefill);
-                          else setEmbeddedReceiptPrefill(prefill);
-                        }}
-                        className="py-1 px-2.5 rounded-lg text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100"
-                      >
-                        Customer Receipt
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const prefill: BankReconciliationReceiptPrefill = {
-                            statementLineId: recordingLine.id,
-                            bankAccountId: selectedBank,
-                            date: recordingLine.date,
-                            amount: recordingLine.credit,
-                            description: recordingLine.description,
-                            currency: recordingLine.currency as 'IDR' | 'USD',
-                            reference: recordingLine.reference || '',
-                            partyType: 'supplier',
-                            paymentPurpose: 'supplier_refund',
-                          };
-                          setRecordModal(false);
-                          if (onRecordReceipt) onRecordReceipt(prefill);
-                          else setEmbeddedReceiptPrefill(prefill);
-                        }}
-                        className="py-1 px-2.5 rounded-lg text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
-                      >
-                        Supplier Refund
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const prefill: BankReconciliationReceiptPrefill = {
-                            statementLineId: recordingLine.id,
-                            bankAccountId: selectedBank,
-                            date: recordingLine.date,
-                            amount: recordingLine.credit,
-                            description: recordingLine.description,
-                            currency: recordingLine.currency as 'IDR' | 'USD',
-                            reference: recordingLine.reference || '',
-                            partyType: 'employee',
-                            paymentPurpose: 'employee_advance_recovery',
-                          };
-                          setRecordModal(false);
-                          if (onRecordReceipt) onRecordReceipt(prefill);
-                          else setEmbeddedReceiptPrefill(prefill);
-                        }}
-                        className="py-1 px-2.5 rounded-lg text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100"
-                      >
-                        Staff Recovery
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const prefill: BankReconciliationReceiptPrefill = {
-                            statementLineId: recordingLine.id,
-                            bankAccountId: selectedBank,
-                            date: recordingLine.date,
-                            amount: recordingLine.credit,
-                            description: recordingLine.description,
-                            currency: recordingLine.currency as 'IDR' | 'USD',
-                            reference: recordingLine.reference || '',
-                            partyType: 'director',
-                            paymentPurpose: 'director_funding',
-                          };
-                          setRecordModal(false);
-                          if (onRecordReceipt) onRecordReceipt(prefill);
-                          else setEmbeddedReceiptPrefill(prefill);
-                        }}
-                        className="py-1 px-2.5 rounded-lg text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100"
-                      >
-                        Director Funding
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const prefill: BankReconciliationReceiptPrefill = {
-                            statementLineId: recordingLine.id,
-                            bankAccountId: selectedBank,
-                            date: recordingLine.date,
-                            amount: recordingLine.credit,
-                            description: recordingLine.description,
-                            currency: recordingLine.currency as 'IDR' | 'USD',
-                            reference: recordingLine.reference || '',
-                            partyType: 'other',
-                            paymentPurpose: 'other_money_received',
-                          };
-                          setRecordModal(false);
-                          if (onRecordReceipt) onRecordReceipt(prefill);
-                          else setEmbeddedReceiptPrefill(prefill);
-                        }}
-                        className="py-1 px-2.5 rounded-lg text-xs font-medium bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100"
-                      >
-                        Other Receipt
-                      </button>
-                    </div>
+              <div className="space-y-4">
+                {/* 2 Primary Clear Pathways (Task 5) */}
+                <div className="flex items-center justify-between border-b border-gray-200 pb-1 flex-wrap gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <button
                       type="button"
                       onClick={() => {
-                        setLinkExistingReceipt(!linkExistingReceipt);
+                        setLinkExistingReceipt(true);
                         setLinkJournalEntry(false);
-                        if (!linkExistingReceipt) loadExistingReceipts();
+                        loadExistingReceipts();
                       }}
-                      className="text-xs text-blue-600 hover:underline"
+                      className={`py-2 px-3.5 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
+                        linkExistingReceipt && !linkJournalEntry
+                          ? 'border-blue-600 text-blue-700 bg-blue-50/50 rounded-t'
+                          : 'border-transparent text-gray-500 hover:text-gray-700'
+                      }`}
                     >
-                      {linkExistingReceipt ? 'Create New Receipt' : 'Link Existing Receipt'}
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span>Link Existing Receipt</span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-100 text-blue-800 font-medium">Recommended</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => {
-                        setLinkJournalEntry(!linkJournalEntry);
                         setLinkExistingReceipt(false);
-                        if (!linkJournalEntry) loadAvailableJournals(recordingLine);
+                        setLinkJournalEntry(false);
                       }}
-                      className="text-xs text-blue-600 hover:underline"
+                      className={`py-2 px-3.5 text-xs font-semibold border-b-2 transition-all flex items-center gap-1.5 ${
+                        !linkExistingReceipt && !linkJournalEntry
+                          ? 'border-emerald-600 text-emerald-700 bg-emerald-50/50 rounded-t'
+                          : 'border-transparent text-gray-500 hover:text-gray-700'
+                      }`}
                     >
-                      {linkJournalEntry ? 'Create New Receipt' : 'Link Journal Entry'}
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Create New Receipt</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLinkJournalEntry(true);
+                        setLinkExistingReceipt(false);
+                        loadAvailableJournals(recordingLine);
+                      }}
+                      className={`py-2 px-3 text-xs font-semibold border-b-2 transition-all ${
+                        linkJournalEntry
+                          ? 'border-purple-600 text-purple-700 bg-purple-50/50 rounded-t'
+                          : 'border-transparent text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      Link Journal Entry
                     </button>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onRecordContra?.({
+                        bankAccountId: selectedBank,
+                        statementLineId: recordingLine.id,
+                        date: recordingLine.date,
+                        amount: recordingLine.credit,
+                        description: recordingLine.description,
+                        direction: 'to',
+                      })
+                    }
+                    className="text-xs text-cyan-700 hover:underline flex items-center gap-1"
+                  >
+                    Record Contra
+                  </button>
                 </div>
 
-                {linkExistingReceipt ? (
-                  <div className="space-y-3">
-                    <p className="text-xs text-gray-500">
-                      Select an existing receipt voucher to link to this bank statement line.
-                    </p>
-                    <div className="max-h-48 overflow-y-auto border rounded-lg divide-y">
-                      {visiblePickerCandidates(existingReceipts).length === 0 ? (
-                        <div className="p-3 text-center text-gray-500 text-sm">
-                          No receipt vouchers found
-                        </div>
-                      ) : (
-                        visiblePickerCandidates(existingReceipts).map((r) => (
-                          <button
-                            key={r.id}
-                            onClick={() => handleLinkExistingReceipt(recordingLine, r.id)}
-                            disabled={r._linked}
-                            className="w-full p-2 text-left hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed text-sm flex justify-between items-center"
-                          >
-                            <div>
-                              <span className="font-mono font-medium">{r.voucher_number}</span>
-                              <span className="text-gray-500 ml-2">
-                                {r.customers?.company_name}
-                              </span>
-                              <div className="text-xs text-gray-400">
-                                {new Date(r.voucher_date).toLocaleDateString('id-ID')}
-                              </div>
-                              {r._linked && (
-                                <div className="text-xs text-amber-700">Already linked</div>
+                {linkExistingReceipt && !linkJournalEntry ? (
+                  <div className="space-y-3 bg-white p-3 rounded-lg border border-slate-200">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+                      <div className="relative flex-1">
+                        <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-gray-400" />
+                        <input
+                          type="text"
+                          value={receiptSearchQuery}
+                          onChange={(e) => setReceiptSearchQuery(e.target.value)}
+                          placeholder="Search voucher number, customer, reference..."
+                          className="w-full pl-8 pr-3 py-1.5 text-xs border border-gray-300 rounded-md focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                      <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer shrink-0 select-none">
+                        <input
+                          type="checkbox"
+                          checked={receiptFilterMatchingAmount}
+                          onChange={(e) => setReceiptFilterMatchingAmount(e.target.checked)}
+                          className="rounded text-blue-600"
+                        />
+                        <span>Exact Amount Only ({formatCurrency(recordingLine.credit, recordingLine.currency)})</span>
+                      </label>
+                    </div>
+
+                    <div className="max-h-60 overflow-y-auto space-y-2 pr-1 divide-y divide-slate-100">
+                      {(() => {
+                        const candidates = existingReceipts.filter((r) => {
+                          const query = receiptSearchQuery.trim().toLowerCase();
+                          const matchesSearch = !query || [
+                            r.voucher_number,
+                            r.customers?.company_name,
+                            r.suppliers?.company_name,
+                            r.reference_number,
+                            r.description,
+                          ].some((val: any) => val?.toLowerCase().includes(query));
+
+                          const matchesAmount = !receiptFilterMatchingAmount || Math.abs(Number(r.amount) - Number(recordingLine.credit)) <= 0.01;
+                          return matchesSearch && matchesAmount;
+                        });
+
+                        if (candidates.length === 0) {
+                          return (
+                            <div className="p-6 text-center text-gray-500 text-xs bg-slate-50 rounded-lg">
+                              <p className="font-medium">No matching receipt vouchers found.</p>
+                              {receiptFilterMatchingAmount && (
+                                <button
+                                  type="button"
+                                  onClick={() => setReceiptFilterMatchingAmount(false)}
+                                  className="text-blue-600 text-xs underline mt-1.5 block mx-auto"
+                                >
+                                  Show all receipt vouchers regardless of amount
+                                </button>
                               )}
                             </div>
-                            <span className="font-medium text-green-600">
-                              {formatCurrency(r.amount, recordingLine.currency)}
-                            </span>
-                          </button>
-                        ))
-                      )}
+                          );
+                        }
+
+                        return candidates.map((r) => {
+                          const party = r.customers?.company_name || r.suppliers?.company_name || r.party_type || 'Customer';
+                          const allocs = r.voucher_allocations || [];
+                          const isExactAmount = Math.abs(Number(r.amount) - Number(recordingLine.credit)) <= 0.01;
+
+                          return (
+                            <div
+                              key={r.id}
+                              className={`p-2.5 rounded-lg border text-xs flex items-center justify-between gap-3 ${
+                                r._linked
+                                  ? 'bg-slate-50 border-slate-200 opacity-60'
+                                  : isExactAmount
+                                  ? 'bg-blue-50/50 border-blue-200 hover:border-blue-300'
+                                  : 'bg-white border-slate-200 hover:border-slate-300'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1 space-y-0.5">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-mono font-bold text-slate-800">{r.voucher_number}</span>
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                    r.is_posted
+                                      ? 'bg-green-100 text-green-800'
+                                      : 'bg-amber-100 text-amber-800'
+                                  }`}>
+                                    {r.is_posted ? 'Posted' : 'Draft'}
+                                  </span>
+                                  {isExactAmount && (
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-100 text-emerald-800 font-medium">
+                                      Exact Match
+                                    </span>
+                                  )}
+                                  {r._linked && (
+                                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-rose-100 text-rose-800 font-medium">
+                                      Already Linked
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-slate-600 text-[11px]">
+                                  {party} · {new Date(r.voucher_date).toLocaleDateString('id-ID')}
+                                </div>
+                                {allocs.length > 0 ? (
+                                  <div className="text-[10px] text-slate-500">
+                                    Allocated to: {allocs.map((a: any) => a.sales_invoices?.invoice_number).filter(Boolean).join(', ') || 'Invoice'}
+                                  </div>
+                                ) : (
+                                  <div className="text-[10px] text-amber-700">Customer Deposit (GL 2140)</div>
+                                )}
+                              </div>
+                              <div className="text-right shrink-0">
+                                <div className="text-xs font-bold text-emerald-700">
+                                  {formatCurrency(r.amount, recordingLine.currency)}
+                                </div>
+                                {!r._linked && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleLinkExistingReceipt(recordingLine, r.id)}
+                                    className="mt-1 px-2.5 py-1 rounded bg-blue-600 text-white font-medium hover:bg-blue-700 text-xs shadow-sm"
+                                  >
+                                    {r.is_posted ? 'Link Transaction' : 'Post & Link'}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   </div>
                 ) : linkJournalEntry ? (
@@ -7795,34 +7864,39 @@ export function BankReconciliationEnhanced({
                     {receiptType === 'customer_payment' &&
                       receiptCustomerId &&
                       receiptInvoices.length > 0 && (
-                        <div className="border rounded-lg p-2">
-                          <p className="text-xs font-medium text-gray-600 mb-2">
+                        <div className="border rounded-lg p-2.5 bg-slate-50/50">
+                          <p className="text-xs font-semibold text-gray-700 mb-2">
                             Allocate to Invoices (optional)
                           </p>
-                          <div className="max-h-40 overflow-y-auto space-y-1">
+                          <div className="max-h-48 overflow-y-auto space-y-1.5">
                             {receiptInvoices.map((inv: any) => {
                               const isChecked = receiptAllocations[inv.id] !== undefined;
+                              const maxAllowed = inv.actualRemaining !== undefined ? inv.actualRemaining : inv.balance_amount;
+                              const isBlockedByDraft = inv.draftReserved > 0 && maxAllowed <= 0;
+
                               return (
                                 <div
                                   key={inv.id}
-                                  className="flex items-center gap-2 text-xs p-1 hover:bg-gray-50 rounded"
+                                  className={`flex items-center gap-2 text-xs p-2 rounded border bg-white ${
+                                    isBlockedByDraft ? 'border-amber-200 bg-amber-50/40' : 'border-gray-200 hover:bg-gray-50'
+                                  }`}
                                 >
                                   <input
                                     name="checkbox"
                                     aria-label="Checkbox"
                                     type="checkbox"
+                                    disabled={isBlockedByDraft}
                                     checked={isChecked}
                                     onChange={(e) => {
                                       if (e.target.checked) {
                                         const remaining =
                                           recordingLine.credit -
-                                          Object.values(receiptAllocations).reduce(
-                                            (a, b) => a + b,
-                                            0
-                                          );
+                                          Object.entries(receiptAllocations)
+                                            .filter(([k]) => k !== inv.id)
+                                            .reduce((a, b) => a + b[1], 0);
                                         setReceiptAllocations((prev) => ({
                                           ...prev,
-                                          [inv.id]: Math.min(inv.balance_amount, remaining),
+                                          [inv.id]: Math.min(maxAllowed, Math.max(0, remaining)),
                                         }));
                                       } else {
                                         const next = { ...receiptAllocations };
@@ -7832,25 +7906,31 @@ export function BankReconciliationEnhanced({
                                     }}
                                   />
                                   <div className="flex-1 min-w-0">
-                                    <span className="font-mono">{inv.invoice_number}</span>
-                                    <span className="text-red-500 ml-1">
-                                      Bal:{' '}
-                                      {formatCurrency(inv.balance_amount, 'IDR', {
-                                        minimumFractionDigits: 0,
-                                        maximumFractionDigits: 0,
-                                      })}
-                                    </span>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="font-mono font-medium">{inv.invoice_number}</span>
+                                      <span className="text-gray-400 text-[10px]">Total: {formatCurrency(inv.total_amount, 'IDR')}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-0.5 text-[11px] flex-wrap">
+                                      <span className="text-blue-700 font-semibold">
+                                        Allocatable: {formatCurrency(maxAllowed, 'IDR')}
+                                      </span>
+                                      {inv.draftReserved > 0 && (
+                                        <span className="text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded text-[10px]">
+                                          {formatCurrency(inv.draftReserved, 'IDR')} in draft {inv.draftVoucherNumber || 'RV'}
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                   {isChecked && (
                                     <MoneyInput
                                       decimal
                                       min={0}
-                                      max={inv.balance_amount}
+                                      max={maxAllowed}
                                       value={receiptAllocations[inv.id] || 0}
                                       onChange={(n) => {
                                         setReceiptAllocations((prev) => ({
                                           ...prev,
-                                          [inv.id]: Math.min(n, inv.balance_amount),
+                                          [inv.id]: Math.min(n, maxAllowed),
                                         }));
                                       }}
                                       className="w-24 px-1 py-0.5 border rounded text-right text-xs"
@@ -7860,15 +7940,26 @@ export function BankReconciliationEnhanced({
                               );
                             })}
                           </div>
-                          <div className="mt-2 pt-2 border-t text-xs flex justify-between">
-                            <span>Allocated:</span>
-                            <span className="font-medium text-green-600">
-                              {formatCurrency(
-                                Object.values(receiptAllocations).reduce((a, b) => a + b, 0),
-                                recordingLine.currency
-                              )}
-                            </span>
-                          </div>
+                          {(() => {
+                            const totalAlloc = Object.values(receiptAllocations).reduce((a, b) => a + b, 0);
+                            const unalloc = Math.max(0, recordingLine.credit - totalAlloc);
+                            return (
+                              <div className="mt-2.5 pt-2 border-t text-xs space-y-1">
+                                <div className="flex justify-between text-slate-600">
+                                  <span>Total Invoice Allocated:</span>
+                                  <span className="font-bold text-blue-700">
+                                    {formatCurrency(totalAlloc, recordingLine.currency)}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between text-slate-600">
+                                  <span>Unallocated Receipt (Customer Deposit GL 2140):</span>
+                                  <span className="font-bold text-amber-700">
+                                    {formatCurrency(unalloc, recordingLine.currency)}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
                       )}
                     {receiptType === 'customer_payment' && receiptCustomerId && loadingInvoices && (
