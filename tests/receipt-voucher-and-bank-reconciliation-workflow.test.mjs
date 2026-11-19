@@ -13,6 +13,7 @@ test('Receipt Voucher and Bank Reconciliation Workflow Integrity Suite', async (
       '20261119084158_integrate_payment_vouchers_with_petty_cash.sql',
       '20261119093949_fix_shared_expense_category_trigger_row_field_access.sql',
       '20261119123108_fix_explicit_bank_allocation_unlink_auto_rematch.sql',
+      '20261119180149_fix_receipt_cancel_unlink_status_sequence.sql',
     ];
 
     for (const mig of requiredMigrations) {
@@ -27,6 +28,24 @@ test('Receipt Voucher and Bank Reconciliation Workflow Integrity Suite', async (
     assert.match(mig123108, /manually_unlinked\s*=\s*true/i, 'Must set manually_unlinked = true in unmatch_bank_statement_allocation');
     assert.match(mig123108, /CREATE OR REPLACE FUNCTION public\.cancel_receipt_voucher_posting/i, 'Must update cancel_receipt_voucher_posting');
     assert.match(mig123108, /matching_status\s*=\s*'none'/i, 'Must reset matching_status = none during cancellation');
+    assert.match(
+      mig123108,
+      /cancel_receipt_voucher_posting\(\s*p_rv_id\s+uuid,\s*p_cancelled_by\s+uuid\s+DEFAULT\s+NULL::uuid,\s*p_reason\s+text/i,
+      'Migration 20261119123108 must follow canonical parameter sequence (p_rv_id, p_cancelled_by, p_reason) to prevent function overload'
+    );
+
+    // Verify 20261119180149 maintains canonical signature and fixes status sequence
+    const mig180149 = fs.readFileSync(path.join(projectRoot, 'supabase', 'migrations', '20261119180149_fix_receipt_cancel_unlink_status_sequence.sql'), 'utf8');
+    assert.match(
+      mig180149,
+      /cancel_receipt_voucher_posting\(p_rv_id\s+uuid,\s*p_cancelled_by\s+uuid\s+DEFAULT\s+NULL::uuid,\s*p_reason\s+text/i,
+      'Migration 20261119180149 must follow canonical parameter sequence (p_rv_id, p_cancelled_by, p_reason)'
+    );
+    assert.match(
+      mig180149,
+      /IF EXISTS \(SELECT 1 FROM public\.bank_statement_allocations WHERE bank_statement_line_id = v_line_id\)/i,
+      'Must guard allocation owner sync with remaining allocation check in cancel_receipt_voucher_posting'
+    );
   });
 
   await t.test('2. Receipt Voucher cancellation logic & P0001 error suppression', () => {

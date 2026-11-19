@@ -81,8 +81,8 @@ $$;
 
 CREATE OR REPLACE FUNCTION public.cancel_receipt_voucher_posting(
   p_rv_id uuid,
-  p_reason text DEFAULT NULL::text,
-  p_cancelled_by uuid DEFAULT NULL::uuid
+  p_cancelled_by uuid DEFAULT NULL::uuid,
+  p_reason text DEFAULT 'Posting cancelled by administrator'::text
 )
 RETURNS void
 LANGUAGE plpgsql
