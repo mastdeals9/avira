@@ -5,6 +5,7 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   XCircle,
   Plus,
   Calendar,
@@ -27,6 +28,15 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { FinanceModal as Modal } from './FinanceModal';
+import {
+  parseRawCSVToRows,
+  parseAndNormalizeStatement,
+  matchConfiguredBankAccount,
+  checkStatementDuplicates,
+  type NormalizedBankTransaction,
+  type BankStatementMetadata,
+  type StatementValidationResult,
+} from './bankStatementNormalizer';
 import {
   findExpenseCandidatesForBankLine,
   isCandidateAmbiguous,
@@ -243,7 +253,23 @@ interface StatementLine {
     is_posted?: boolean;
     is_reversed?: boolean;
   } | null;
+  isPending?: boolean;
+  originalDate?: string;
   notes?: string;
+}
+
+export interface SmartImportPreviewState {
+  sourceFileName: string;
+  bankAccountId: string;
+  matchedByAccount: boolean;
+  matchedAccountNumber?: string;
+  metadata: BankStatementMetadata;
+  validation: StatementValidationResult;
+  allLines: NormalizedBankTransaction[];
+  newLines: NormalizedBankTransaction[];
+  duplicateLines: NormalizedBankTransaction[];
+  pendingDates: Record<string, string>;
+  activeReviewFilter: 'all' | 'new' | 'duplicates' | 'pending';
 }
 
 interface BankReconciliationEnhancedProps {
@@ -525,6 +551,7 @@ export function BankReconciliationEnhanced({
   );
   const [settleSubmitting, setSettleSubmitting] = useState(false);
   const [showImportResultModal, setShowImportResultModal] = useState(false);
+  const [smartImportPreview, setSmartImportPreview] = useState<SmartImportPreviewState | null>(null);
   const [importResult, setImportResult] = useState<{
     totalInFile: number;
     importedCount: number;
@@ -1609,44 +1636,19 @@ export function BankReconciliationEnhanced({
 
   const handleCSVUpload = async (file: File) => {
     try {
+      setUploading(true);
       const reader = new FileReader();
       reader.onload = async (event) => {
         try {
           const text = event.target?.result as string;
+          const { rows } = parseRawCSVToRows(text);
 
-          // Auto-detect delimiter by checking first few lines
-          const firstLines = text.split('\n').slice(0, 5).join('\n');
-          const commaCount = (firstLines.match(/,/g) || []).length;
-          const semicolonCount = (firstLines.match(/;/g) || []).length;
-          const detectedDelimiter = commaCount > semicolonCount ? ',' : ';';
-
-          const rows: any[][] = [];
-          let currentLine = '';
-          let inQuotes = false;
-
-          for (let i = 0; i < text.length; i++) {
-            const char = text[i];
-
-            if (char === '"') {
-              inQuotes = !inQuotes;
-              currentLine += char;
-            } else if (char === '\n' && !inQuotes) {
-              if (currentLine.trim()) {
-                const cells = parseCSVLine(currentLine, detectedDelimiter);
-                rows.push(cells);
-              }
-              currentLine = '';
-            } else if (char !== '\r') {
-              currentLine += char;
-            }
+          if (rows.length === 0) {
+            alert('The uploaded CSV file is empty.');
+            setUploading(false);
+            return;
           }
 
-          if (currentLine.trim()) {
-            const cells = parseCSVLine(currentLine, detectedDelimiter);
-            rows.push(cells);
-          }
-
-          // Only ask user for year when CSV genuinely contains dates without a year
           let statementYear: number | undefined = undefined;
           if (detectNeedsYearPrompt(rows)) {
             const currentYear = new Date().getFullYear();
@@ -1655,227 +1657,263 @@ export function BankReconciliationEnhanced({
               String(currentYear)
             );
             if (!userYear) {
-              alert('❌ Year is required to process the CSV');
+              setUploading(false);
               return;
             }
             statementYear = parseInt(userYear);
             if (isNaN(statementYear) || statementYear < 2000 || statementYear > 2100) {
               alert('❌ Invalid year provided');
+              setUploading(false);
               return;
             }
           }
 
-          // Stage 1: Parse and validate CSV data
-          let parsedLines: StatementLine[] = [];
-          let metadata: any = {};
-          try {
-            const parsed = parseStatementDataWithMetadata(rows, statementYear);
-            parsedLines = parsed.lines;
-            metadata = parsed.metadata;
-          } catch (parseErr: any) {
-            console.error('CSV parse/validation error:', parseErr);
-            alert(`❌ CSV Validation Error: ${parseErr.message}`);
+          const todayStr = new Date().toISOString().split('T')[0];
+          const result = parseAndNormalizeStatement(rows, {
+            defaultYear: statementYear,
+            todayDate: todayStr,
+            fallbackCurrency: selectedAccount?.currency || 'IDR',
+          });
+
+          if (result.lines.length === 0) {
+            alert('No valid transactions found in the CSV file. Check that the file has date and amount columns.');
+            setUploading(false);
             return;
           }
 
-          if (parsedLines.length === 0) {
-            alert(
-              'No transactions found in the CSV file. Check that the file has date and amount columns.'
-            );
-            return;
+          // Auto-identify bank account from statement metadata
+          let targetBankId = selectedBank;
+          let matchedByAcct = false;
+          const matchedAcctNumber = result.metadata.accountNumber;
+
+          if (result.metadata.accountNumber && bankAccounts.length > 0) {
+            const matched = matchConfiguredBankAccount(result.metadata.accountNumber, bankAccounts);
+            if (matched) {
+              targetBankId = matched.id;
+              matchedByAcct = true;
+            }
           }
 
-          const stmtCurrency = metadata.currency || selectedAccount?.currency || 'IDR';
-          if (selectedAccount?.currency && stmtCurrency !== selectedAccount.currency) {
-            alert(
-              `❌ Statement currency (${stmtCurrency}) does not match bank account currency (${selectedAccount.currency})`
-            );
-            return;
+          if (!targetBankId && bankAccounts.length > 0) {
+            targetBankId = bankAccounts[0].id;
           }
-
-          const totalDebits = parsedLines.reduce((sum, l) => sum + (Number(l.debit) || 0), 0);
-          const totalCredits = parsedLines.reduce((sum, l) => sum + (Number(l.credit) || 0), 0);
-          const openingBal = Number(metadata.openingBalance || 0);
-          const computedClosing = openingBal + totalCredits - totalDebits;
-          const finalLineBal = parsedLines[parsedLines.length - 1]?.balance;
-          const closingBal =
-            metadata.closingBalance && metadata.closingBalance !== 0
-              ? Number(metadata.closingBalance)
-              : finalLineBal !== undefined && finalLineBal !== null
-                ? Number(finalLineBal)
-                : computedClosing;
-
-          const dates = parsedLines
-            .map((l) => l.date)
-            .filter(Boolean)
-            .sort();
-          const startDate = metadata.startDate || dates[0] || dateRange.start;
-          const endDate = metadata.endDate || dates[dates.length - 1] || dateRange.end;
-
-          if (startDate > endDate) {
-            alert(
-              `❌ Invalid statement date range: start date (${startDate}) is after end date (${endDate})`
-            );
-            return;
-          }
-
-          // Stage 2: Create statement upload record
-          let uploadRecord: any = null;
-          try {
-            const { data, error: uploadError } = await supabase
-              .from('bank_statement_uploads')
-              .insert({
-                bank_account_id: selectedBank,
-                statement_period:
-                  metadata.period ||
-                  `${new Date().toLocaleString('default', { month: 'long' })} ${new Date().getFullYear()}`,
-                statement_start_date: startDate,
-                statement_end_date: endDate,
-                currency: stmtCurrency,
-                opening_balance: openingBal,
-                closing_balance: closingBal,
-                total_debits: metadata.totalDebits || totalDebits,
-                total_credits: metadata.totalCredits || totalCredits,
-                transaction_count: parsedLines.length,
-                status: 'completed',
-              })
-              .select()
-              .single();
-
-            if (uploadError) throw uploadError;
-            uploadRecord = data;
-          } catch (uploadErr: any) {
-            console.error('Error creating statement upload record:', uploadErr);
-            alert(`❌ Error creating statement upload record: ${uploadErr.message}`);
-            return;
-          }
-
-          const {
-            data: { user },
-          } = await supabase.auth.getUser();
-
-          const insertData = parsedLines.map((line) => ({
-            upload_id: uploadRecord.id,
-            bank_account_id: selectedBank,
-            transaction_date: line.date,
-            description: line.description,
-            reference: line.reference,
-            debit_amount: line.debit,
-            credit_amount: line.credit,
-            running_balance: line.balance,
-            statement_balance: line.balance,
-            currency: stmtCurrency,
-            reconciliation_status: 'unmatched',
-            payment_kind: 'unclassified',
-            created_by: user?.id,
-          }));
-
-          // Check for existing transactions using hash-equivalent matching (date + amounts + normalized full description + reference)
-          const normalizeDesc = (desc: string) => desc.toLowerCase().replace(/\s+/g, ' ').trim();
 
           const { data: existingLines } = await supabase
             .from('bank_statement_lines')
             .select('transaction_date, description, reference, debit_amount, credit_amount')
-            .eq('bank_account_id', selectedBank);
+            .eq('bank_account_id', targetBankId);
 
-          // Build keys with occurrence count to detect which exact occurrence already exists in DB
-          // e.g. if "BIF BIAYA TXN 2500" appears 3x in DB, we skip the first 3 from CSV
-          const dbKeyCounts = new Map<string, number>();
-          (existingLines || []).forEach((e) => {
-            const k = `${e.transaction_date}|${Number(e.debit_amount) || 0}|${Number(e.credit_amount) || 0}|${(e.reference || '').trim().toLowerCase()}|${normalizeDesc(e.description || '')}`;
-            dbKeyCounts.set(k, (dbKeyCounts.get(k) || 0) + 1);
+          const { newLines, duplicateLines } = checkStatementDuplicates(result.lines, existingLines || []);
+
+          const initialPendingDates: Record<string, string> = {};
+          result.lines.forEach((l) => {
+            if (l.isPending) {
+              initialPendingDates[l.id] = todayStr;
+            }
           });
 
-          const csvKeyCounts = new Map<string, number>();
-          const skippedEntries: typeof insertData = [];
-          const finalInsertData = insertData.filter((line) => {
-            const key = `${line.transaction_date}|${Number(line.debit_amount) || 0}|${Number(line.credit_amount) || 0}|${(line.reference || '').trim().toLowerCase()}|${normalizeDesc(line.description || '')}`;
-            const csvOccurrence = csvKeyCounts.get(key) || 0;
-            csvKeyCounts.set(key, csvOccurrence + 1);
-            const dbCount = dbKeyCounts.get(key) || 0;
-            if (csvOccurrence < dbCount) {
-              skippedEntries.push(line);
-              return false;
-            }
-            return true;
+          setSmartImportPreview({
+            sourceFileName: file.name,
+            bankAccountId: targetBankId,
+            matchedByAccount: matchedByAcct,
+            matchedAccountNumber: matchedAcctNumber,
+            metadata: result.metadata,
+            validation: result.validation,
+            allLines: result.lines,
+            newLines,
+            duplicateLines,
+            pendingDates: initialPendingDates,
+            activeReviewFilter: 'all',
           });
-
-          if (finalInsertData.length === 0) {
-            setImportResult({
-              totalInFile: insertData.length,
-              importedCount: 0,
-              skippedEntries,
-            });
-            setShowImportResultModal(true);
-            return;
-          }
-
-          // Stage 3: Insert statement lines directly to preserve all legitimate lines
-          let insertedCount = 0;
-          try {
-            const { data: inserted, error: insertError } = await supabase
-              .from('bank_statement_lines')
-              .insert(finalInsertData)
-              .select();
-
-            if (insertError) throw insertError;
-            insertedCount = inserted?.length || 0;
-          } catch (insertErr: any) {
-            console.error('Error inserting statement lines:', insertErr);
-            alert(`❌ Error importing statement lines: ${insertErr.message}`);
-            return;
-          }
-
-          setImportResult({
-            totalInFile: insertData.length,
-            importedCount: insertedCount,
-            skippedEntries,
-          });
-          setShowImportResultModal(true);
-
-          // Stage 4: Reload statement lines and auto-match
-          try {
-            await loadStatementLines();
-          } catch (loadError: any) {
-            if (loadError?.name === 'AbortError' || loadError?.message?.includes('aborted')) {
-              console.warn(
-                'loadStatementLines request was aborted (expected during fast refresh).'
-              );
-            } else {
-              console.error('Load statement lines error:', loadError);
-            }
-          }
-
-          if (insertedCount > 0) {
-            try {
-              await autoMatchTransactions({
-                bankAccountId: selectedBank,
-                dateFrom: startDate,
-                dateTo: endDate,
-              });
-            } catch (matchError: any) {
-              if (matchError?.name === 'AbortError' || matchError?.message?.includes('aborted')) {
-                console.warn('autoMatchTransactions request was aborted.');
-              } else {
-                console.error('Auto-match error:', matchError);
-              }
-            }
-          }
-        } catch (err: any) {
-          console.error('File upload workflow error:', err);
-          if (err?.name !== 'AbortError' && !err?.message?.includes('aborted')) {
-            alert(`❌ Error processing file: ${err.message}`);
-          }
+        } catch (parseErr: any) {
+          console.error('CSV parse/normalization error:', parseErr);
+          alert(`❌ CSV Validation Error: ${parseErr.message}`);
+        } finally {
+          setUploading(false);
         }
       };
       reader.onerror = () => {
-        console.error('FileReader error');
         alert('❌ Failed to read CSV file');
+        setUploading(false);
       };
       reader.readAsText(file);
     } catch (error: any) {
       console.error('CSV upload error:', error);
       alert(`❌ Failed to read CSV: ${error.message}`);
+      setUploading(false);
+    }
+  };
+
+  const handlePreviewBankChange = async (newBankId: string) => {
+    if (!smartImportPreview || smartImportPreview.bankAccountId === newBankId) return;
+    try {
+      const { data: existingLines } = await supabase
+        .from('bank_statement_lines')
+        .select('transaction_date, description, reference, debit_amount, credit_amount')
+        .eq('bank_account_id', newBankId);
+
+      const { newLines, duplicateLines } = checkStatementDuplicates(smartImportPreview.allLines, existingLines || []);
+      setSmartImportPreview((prev) =>
+        prev
+          ? {
+              ...prev,
+              bankAccountId: newBankId,
+              newLines,
+              duplicateLines,
+            }
+          : null
+      );
+    } catch (err) {
+      console.error('Error rechecking duplicates on bank account change:', err);
+    }
+  };
+
+  const handleConfirmSmartImport = async (forceImportAll: boolean = false) => {
+    if (!smartImportPreview) return;
+    const { bankAccountId, metadata, validation, allLines, newLines, pendingDates } = smartImportPreview;
+
+    const linesToImport = forceImportAll ? allLines : newLines;
+    if (linesToImport.length === 0) {
+      alert('No new transactions to import.');
+      return;
+    }
+
+    // Verify all pending lines have a valid confirmed date
+    for (const line of linesToImport) {
+      if (line.isPending) {
+        const confirmedDate = pendingDates[line.id];
+        if (!confirmedDate || !/^\d{4}-\d{2}-\d{2}$/.test(confirmedDate)) {
+          alert('❌ Please confirm or select a valid date for all pending bank transactions before importing.');
+          return;
+        }
+      }
+    }
+
+    setUploading(true);
+    try {
+      const targetBank = bankAccounts.find((b) => b.id === bankAccountId);
+      const stmtCurrency = metadata.currency || targetBank?.currency || 'IDR';
+
+      if (targetBank?.currency && stmtCurrency !== targetBank.currency) {
+        alert(`❌ Statement currency (${stmtCurrency}) does not match bank account currency (${targetBank.currency})`);
+        setUploading(false);
+        return;
+      }
+
+      const dates = linesToImport
+        .map((l) => (l.isPending ? pendingDates[l.id] || l.date : l.date))
+        .filter(Boolean)
+        .sort();
+      const startDate = metadata.startDate || dates[0] || dateRange.start;
+      const endDate = metadata.endDate || dates[dates.length - 1] || dateRange.end;
+
+      // 1. Create statement upload record
+      const { data: uploadRecord, error: uploadError } = await supabase
+        .from('bank_statement_uploads')
+        .insert({
+          bank_account_id: bankAccountId,
+          statement_period:
+            metadata.period ||
+            `${new Date().toLocaleString('default', { month: 'long' })} ${new Date().getFullYear()}`,
+          statement_start_date: startDate,
+          statement_end_date: endDate,
+          currency: stmtCurrency,
+          opening_balance: validation.openingBalance || 0,
+          closing_balance: validation.closingBalance || 0,
+          total_debits: validation.totalDebits || 0,
+          total_credits: validation.totalCredits || 0,
+          transaction_count: linesToImport.length,
+          status: 'completed',
+        })
+        .select()
+        .single();
+
+      if (uploadError) throw uploadError;
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      // 2. Prepare statement lines payload
+      const insertData = linesToImport.map((line) => {
+        const finalDate = line.isPending ? pendingDates[line.id] || line.date : line.date;
+        const notes = line.isPending
+          ? line.notes
+            ? `${line.notes} [Confirmed Date: ${finalDate}]`
+            : `[BCA Source: PEND] [Confirmed Date: ${finalDate}]`
+          : line.notes || null;
+
+        return {
+          upload_id: uploadRecord.id,
+          bank_account_id: bankAccountId,
+          transaction_date: finalDate,
+          description: line.description,
+          reference: line.reference || null,
+          branch_code: line.branchCode || null,
+          debit_amount: line.debit,
+          credit_amount: line.credit,
+          running_balance: line.balance || 0,
+          statement_balance: line.balance || 0,
+          currency: stmtCurrency,
+          reconciliation_status: 'unmatched',
+          payment_kind: 'unclassified',
+          notes,
+          created_by: user?.id,
+        };
+      });
+
+      // 3. Batch insert statement lines
+      const { data: inserted, error: insertError } = await supabase
+        .from('bank_statement_lines')
+        .insert(insertData)
+        .select();
+
+      if (insertError) throw insertError;
+      const insertedCount = inserted?.length || 0;
+
+      // Close preview modal and show result
+      setSmartImportPreview(null);
+      setImportResult({
+        totalInFile: allLines.length,
+        importedCount: insertedCount,
+        skippedEntries: smartImportPreview.duplicateLines.map((d) => ({
+          transaction_date: d.date,
+          description: d.description,
+          reference: d.reference,
+          debit_amount: d.debit,
+          credit_amount: d.credit,
+        })) as any[],
+      });
+      setShowImportResultModal(true);
+
+      // If imported account is different from currently active account, switch to it
+      if (selectedBank !== bankAccountId) {
+        setSelectedBank(bankAccountId);
+        try {
+          localStorage.setItem('bank_recon_selected_bank', bankAccountId);
+        } catch (_e) {
+          // ignore localStorage error
+        }
+      }
+
+      // Reload statement lines and auto-match
+      await loadStatementLines();
+      if (insertedCount > 0) {
+        try {
+          await autoMatchTransactions({
+            bankAccountId,
+            dateFrom: startDate,
+            dateTo: endDate,
+          });
+        } catch (matchErr) {
+          console.error('Auto match error:', matchErr);
+        }
+      }
+    } catch (err: any) {
+      console.error('Error confirming import:', err);
+      alert(`❌ Error importing statement: ${err.message}`);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -1885,12 +1923,8 @@ export function BankReconciliationEnhanced({
       alert('❌ No file selected');
       return;
     }
-    if (!selectedBank) {
-      alert('❌ Please select a bank account first');
-      return;
-    }
-    if (!selectedAccount) {
-      alert('❌ Bank account not loaded. Please refresh the page.');
+    if (!selectedBank && bankAccounts.length === 0) {
+      alert('❌ No bank accounts loaded. Please refresh the page.');
       return;
     }
 
@@ -2038,6 +2072,7 @@ export function BankReconciliationEnhanced({
       return;
     }
     try {
+      setUploading(true);
       const reader = new FileReader();
       reader.onload = async (event) => {
         try {
@@ -2047,194 +2082,79 @@ export function BankReconciliationEnhanced({
           const worksheet = workbook.Sheets[sheetName];
           const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
 
-          const { lines, metadata } = parseStatementDataWithMetadata(jsonData);
+          const todayStr = new Date().toISOString().split('T')[0];
+          const result = parseAndNormalizeStatement(jsonData, {
+            todayDate: todayStr,
+            fallbackCurrency: selectedAccount?.currency || 'IDR',
+          });
 
-          if (lines.length === 0) {
+          if (result.lines.length === 0) {
             alert(
               'No valid transactions found in the file. Confirm the statement has a date column and transaction rows.'
             );
+            setUploading(false);
             return;
           }
 
-          const stmtCurrency = metadata.currency || selectedAccount?.currency || 'IDR';
-          if (selectedAccount?.currency && stmtCurrency !== selectedAccount.currency) {
-            alert(
-              `❌ Statement currency (${stmtCurrency}) does not match bank account currency (${selectedAccount.currency})`
-            );
-            return;
+          let targetBankId = selectedBank;
+          let matchedByAcct = false;
+          const matchedAcctNumber = result.metadata.accountNumber;
+
+          if (result.metadata.accountNumber && bankAccounts.length > 0) {
+            const matched = matchConfiguredBankAccount(result.metadata.accountNumber, bankAccounts);
+            if (matched) {
+              targetBankId = matched.id;
+              matchedByAcct = true;
+            }
           }
 
-          const totalDebits = lines.reduce((sum, l) => sum + (Number(l.debit) || 0), 0);
-          const totalCredits = lines.reduce((sum, l) => sum + (Number(l.credit) || 0), 0);
-          const openingBal = Number(metadata.openingBalance || 0);
-          const computedClosing = openingBal + totalCredits - totalDebits;
-          const finalLineBal = lines[lines.length - 1]?.balance;
-          const closingBal =
-            metadata.closingBalance && metadata.closingBalance !== 0
-              ? Number(metadata.closingBalance)
-              : finalLineBal !== undefined && finalLineBal !== null
-                ? Number(finalLineBal)
-                : computedClosing;
-
-          const dates = lines
-            .map((l) => l.date)
-            .filter(Boolean)
-            .sort();
-          const startDate = metadata.startDate || dates[0] || dateRange.start;
-          const endDate = metadata.endDate || dates[dates.length - 1] || dateRange.end;
-
-          if (startDate > endDate) {
-            alert(
-              `❌ Invalid statement date range: start date (${startDate}) is after end date (${endDate})`
-            );
-            return;
+          if (!targetBankId && bankAccounts.length > 0) {
+            targetBankId = bankAccounts[0].id;
           }
 
-          const { data: uploadRecord, error: uploadError } = await supabase
-            .from('bank_statement_uploads')
-            .insert({
-              bank_account_id: selectedBank,
-              statement_period:
-                metadata.period ||
-                `${new Date().toLocaleString('default', { month: 'long' })} ${new Date().getFullYear()}`,
-              statement_start_date: startDate,
-              statement_end_date: endDate,
-              currency: stmtCurrency,
-              opening_balance: openingBal,
-              closing_balance: closingBal,
-              total_debits: metadata.totalDebits || totalDebits,
-              total_credits: metadata.totalCredits || totalCredits,
-              transaction_count: lines.length,
-              status: 'completed',
-            })
-            .select()
-            .single();
-
-          if (uploadError) throw uploadError;
-
-          const {
-            data: { user },
-          } = await supabase.auth.getUser();
-
-          const insertData = lines.map((line) => ({
-            upload_id: uploadRecord.id,
-            bank_account_id: selectedBank,
-            transaction_date: line.date,
-            description: line.description,
-            reference: line.reference,
-            debit_amount: line.debit,
-            credit_amount: line.credit,
-            running_balance: line.balance,
-            statement_balance: line.balance,
-            currency: stmtCurrency,
-            reconciliation_status: 'unmatched',
-            payment_kind: 'unclassified',
-            created_by: user?.id,
-          }));
-
-          // Check for potential duplicates first
           const { data: existingLines } = await supabase
             .from('bank_statement_lines')
-            .select('transaction_date, description, debit_amount, credit_amount, running_balance')
-            .eq('bank_account_id', selectedBank);
+            .select('transaction_date, description, reference, debit_amount, credit_amount')
+            .eq('bank_account_id', targetBankId);
 
-          // Find duplicates by matching date, amounts, and description
-          const duplicates = insertData.filter((newLine) =>
-            existingLines?.some(
-              (existing) =>
-                existing.transaction_date === newLine.transaction_date &&
-                existing.description === newLine.description &&
-                existing.debit_amount === newLine.debit_amount &&
-                existing.credit_amount === newLine.credit_amount &&
-                existing.running_balance === newLine.running_balance
-            )
-          );
+          const { newLines, duplicateLines } = checkStatementDuplicates(result.lines, existingLines || []);
 
-          let finalInsertData = insertData;
-
-          if (duplicates.length > 0) {
-            // Show duplicates to user
-            let dupMessage = `⚠️ Found ${duplicates.length} potential duplicate transaction(s):\n\n`;
-            duplicates.slice(0, 5).forEach((dup, idx) => {
-              const date = new Date(dup.transaction_date).toLocaleDateString('en-GB');
-              const amt = dup.debit_amount || dup.credit_amount;
-              dupMessage += `${idx + 1}. ${date} - ${dup.description.substring(0, 40)} - ${formatCurrency(amt, selectedAccount?.currency)}\n`;
-            });
-            if (duplicates.length > 5) {
-              dupMessage += `... and ${duplicates.length - 5} more\n`;
+          const initialPendingDates: Record<string, string> = {};
+          result.lines.forEach((l) => {
+            if (l.isPending) {
+              initialPendingDates[l.id] = todayStr;
             }
-            dupMessage += `\nDo you want to ADD them anyway?\n(Click OK to add, Cancel to skip duplicates)`;
+          });
 
-            const userWantsToAdd = confirm(dupMessage);
-
-            if (!userWantsToAdd) {
-              // Filter out duplicates
-              finalInsertData = insertData.filter(
-                (newLine) =>
-                  !existingLines?.some(
-                    (existing) =>
-                      existing.transaction_date === newLine.transaction_date &&
-                      existing.description === newLine.description &&
-                      existing.debit_amount === newLine.debit_amount &&
-                      existing.credit_amount === newLine.credit_amount &&
-                      existing.running_balance === newLine.running_balance
-                  )
-              );
-            }
-          }
-
-          if (finalInsertData.length === 0) {
-            alert('ℹ️ No new transactions to import (all were duplicates and skipped)');
-            return;
-          }
-
-          const { data: inserted, error: insertError } = await supabase
-            .from('bank_statement_lines')
-            .insert(finalInsertData)
-            .select();
-
-          if (insertError) {
-            console.error('Insert error:', insertError);
-            throw insertError;
-          }
-
-          const insertedCount = inserted?.length || 0;
-          const skippedCount = insertData.length - finalInsertData.length;
-
-          let message = `✅ Excel Import complete!\n`;
-          message += `   Total processed: ${insertData.length} transaction(s)\n`;
-          message += `   New transactions added: ${insertedCount}\n`;
-          if (skippedCount > 0) {
-            message += `   Duplicates skipped: ${skippedCount}`;
-          }
-          alert(message);
-
-          try {
-            await loadStatementLines();
-          } catch (loadError) {
-            console.error('Load statement lines error:', loadError);
-          }
-
-          if (insertedCount > 0) {
-            try {
-              await autoMatchTransactions({
-                bankAccountId: selectedBank,
-                dateFrom: startDate,
-                dateTo: endDate,
-              });
-            } catch (matchError) {
-              console.error('Auto-match error:', matchError);
-            }
-          }
-        } catch (err: any) {
-          console.error('Error parsing file:', err);
-          alert('❌ Failed to parse file: ' + err.message);
+          setSmartImportPreview({
+            sourceFileName: file.name,
+            bankAccountId: targetBankId,
+            matchedByAccount: matchedByAcct,
+            matchedAccountNumber: matchedAcctNumber,
+            metadata: result.metadata,
+            validation: result.validation,
+            allLines: result.lines,
+            newLines,
+            duplicateLines,
+            pendingDates: initialPendingDates,
+            activeReviewFilter: 'all',
+          });
+        } catch (excelErr: any) {
+          console.error('Excel parse error:', excelErr);
+          alert(`❌ Failed to process Excel file: ${excelErr.message}`);
+        } finally {
+          setUploading(false);
         }
+      };
+      reader.onerror = () => {
+        alert('❌ Failed to read Excel file');
+        setUploading(false);
       };
       reader.readAsBinaryString(file);
     } catch (error: any) {
       console.error('Excel upload error:', error);
       alert(`❌ Failed to process file: ${error.message}`);
+      setUploading(false);
     }
   };
 
@@ -2242,383 +2162,50 @@ export function BankReconciliationEnhanced({
     rows: any[][],
     providedYear?: number
   ): { lines: StatementLine[]; metadata: any } => {
-    const lines: StatementLine[] = [];
-    const metadata: any = {
-      period: '',
-      startDate: '',
-      endDate: '',
-      openingBalance: 0,
-      closingBalance: 0,
-      totalDebits: 0,
-      totalCredits: 0,
-      currency: '',
-    };
-
-    let fileYear = providedYear || null;
-
-    // 1. Pre-scan for metadata (Period, Currency)
-    for (let i = 0; i < Math.min(25, rows.length); i++) {
-      const row = rows[i];
-      if (!row || row.length === 0) continue;
-
-      for (let j = 0; j < row.length; j++) {
-        const cell = String(row[j] || '').trim();
-        if (!cell) continue;
-
-        const pMatch = cell.match(
-          /Period(?:e)?\s*:\s*(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})\s*-\s*(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})/i
-        );
-        if (pMatch) {
-          const sDay = parseInt(pMatch[1]),
-            sMon = parseInt(pMatch[2]);
-          let sYr = parseInt(pMatch[3]);
-          const eDay = parseInt(pMatch[4]),
-            eMon = parseInt(pMatch[5]);
-          let eYr = parseInt(pMatch[6]);
-          if (sYr < 100) sYr += 2000;
-          if (eYr < 100) eYr += 2000;
-          fileYear = sYr;
-          metadata.startDate = `${sYr}-${String(sMon).padStart(2, '0')}-${String(sDay).padStart(2, '0')}`;
-          metadata.endDate = `${eYr}-${String(eMon).padStart(2, '0')}-${String(eDay).padStart(2, '0')}`;
-          const monthNames = [
-            '',
-            'JANUARI',
-            'FEBRUARI',
-            'MARET',
-            'APRIL',
-            'MEI',
-            'JUNI',
-            'JULI',
-            'AGUSTUS',
-            'SEPTEMBER',
-            'OKTOBER',
-            'NOVEMBER',
-            'DESEMBER',
-          ];
-          metadata.period = `${monthNames[sMon] || sMon} ${sYr}`;
-        }
-
-        const cMatch = cell.match(/(?:Currency Code|Mata Uang)\s*:\s*([A-Za-z]+)/i);
-        if (cMatch) {
-          const rawC = cMatch[1].toUpperCase();
-          metadata.currency = rawC === 'RP' ? 'IDR' : rawC;
-        }
-      }
-    }
-
-    // 2. Identify header row
-    let headerRowIdx = -1;
-    for (let i = 0; i < Math.min(25, rows.length); i++) {
-      const row = rows[i];
-      if (!row || row.length === 0) continue;
-      if (
-        row.some(isDateHeader) &&
-        (row.some(isDescHeader) || row.some(isAmountHeader) || row.some(isDebitHeader))
-      ) {
-        headerRowIdx = i;
-        break;
-      }
-    }
-
-    if (headerRowIdx === -1) {
-      return { lines, metadata };
-    }
-
-    const headerRow = rows[headerRowIdx];
-    let dateCol = -1,
-      descCol = -1,
-      branchCol = -1,
-      amountCol = -1,
-      balanceCol = -1;
-    let debitCol = -1,
-      creditCol = -1;
-
-    headerRow.forEach((cell: any, idx: number) => {
-      const s = String(cell || '');
-      if (isDateHeader(s)) dateCol = idx;
-      else if (isDescHeader(s)) descCol = idx;
-      else if (isBranchHeader(s)) branchCol = idx;
-      else if (isDebitHeader(s)) debitCol = idx;
-      else if (isCreditHeader(s)) creditCol = idx;
-      else if (isAmountHeader(s)) amountCol = idx;
-      else if (isBalanceHeader(s)) balanceCol = idx;
+    const todayStr = new Date().toISOString().split('T')[0];
+    const result = parseAndNormalizeStatement(rows, {
+      defaultYear: providedYear,
+      todayDate: todayStr,
+      fallbackCurrency: selectedAccount?.currency || 'IDR',
     });
 
-    if (dateCol === -1) {
-      return { lines, metadata };
-    }
+    const lines: StatementLine[] = result.lines.map((l) => ({
+      id: l.id,
+      date: l.date,
+      description: l.description,
+      reference: l.reference,
+      debit: l.debit,
+      credit: l.credit,
+      balance: l.balance || 0,
+      currency: l.currency,
+      status: 'unmatched',
+      allocatedAmount: 0,
+      remainingAmount: l.debit || l.credit,
+      allocations: [],
+      isPending: l.isPending,
+      originalDate: l.originalDate,
+      notes: l.notes,
+    }));
 
-    // Pre-scan date column if fileYear is not yet known
-    if (!fileYear) {
-      for (let i = headerRowIdx + 1; i < rows.length; i++) {
-        const cell = String(rows[i]?.[dateCol] || '').trim();
-        const m = cell.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})$/);
-        if (m) {
-          const yr = parseInt(m[3]);
-          fileYear = yr < 100 ? (yr < 70 ? 2000 + yr : 1900 + yr) : yr;
-          break;
-        }
-      }
-    }
-
-    const defaultYear = fileYear || providedYear || new Date().getFullYear();
-
-    // 3. Process transaction rows
-    for (let i = headerRowIdx + 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || row.length === 0 || row.every((c: any) => !String(c || '').trim())) continue;
-
-      const rowText = row
-        .map((c: any) =>
-          String(c || '')
-            .toUpperCase()
-            .trim()
-        )
-        .join(' ');
-
-      if (
-        rowText.includes('SALDO AWAL') ||
-        rowText.includes('START BALANCE') ||
-        rowText.includes('OPENING BALANCE')
-      ) {
-        continue;
-      }
-
-      if (
-        rowText.includes('MUTASI DEBET') ||
-        rowText.includes('MUTASI DEBIT') ||
-        rowText.includes('MUTASI KREDIT') ||
-        rowText.includes('MUTASI CREDIT') ||
-        rowText.includes('MUTASI DB') ||
-        rowText.includes('MUTASI CR') ||
-        rowText.includes('SALDO AKHIR') ||
-        rowText.includes('LAST BALANCE') ||
-        rowText.includes('CLOSING BALANCE') ||
-        rowText.includes('ENDING BALANCE')
-      ) {
-        break;
-      }
-
-      const dateVal = row[dateCol];
-      if (!dateVal || !String(dateVal).trim()) continue;
-
-      let parsedDate = '';
-      if (typeof dateVal === 'number') {
-        const excelEpoch = new Date(1900, 0, 1);
-        const daysOffset = dateVal - 2;
-        const jsDate = new Date(excelEpoch.getTime() + daysOffset * 24 * 60 * 60 * 1000);
-        parsedDate = `${jsDate.getFullYear()}-${String(jsDate.getMonth() + 1).padStart(2, '0')}-${String(jsDate.getDate()).padStart(2, '0')}`;
-      } else {
-        const dateStr = String(dateVal).trim();
-        const fullDateMatch = dateStr.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})$/);
-        const numericMatch = dateStr.match(/^(\d{1,2})[.\/-](\d{1,2})$/);
-        const namedMatch = dateStr.match(/^(\d{1,2})[-\s]([A-Za-z]{3,4})(?:[-\s](\d{2,4}))?$/);
-        const monthNames: Record<string, number> = {
-          jan: 1,
-          feb: 2,
-          mar: 3,
-          apr: 4,
-          may: 5,
-          mei: 5,
-          jun: 6,
-          jul: 7,
-          aug: 8,
-          agu: 8,
-          ags: 8,
-          sep: 9,
-          oct: 10,
-          okt: 10,
-          nov: 11,
-          dec: 12,
-          des: 12,
-        };
-
-        let day = 0,
-          mon = 0,
-          yr = defaultYear;
-
-        if (fullDateMatch) {
-          day = parseInt(fullDateMatch[1]);
-          mon = parseInt(fullDateMatch[2]);
-          const rawYr = parseInt(fullDateMatch[3]);
-          yr = rawYr < 100 ? (rawYr < 70 ? 2000 + rawYr : 1900 + rawYr) : rawYr;
-        } else if (numericMatch) {
-          day = parseInt(numericMatch[1]);
-          mon = parseInt(numericMatch[2]);
-        } else if (namedMatch) {
-          day = parseInt(namedMatch[1]);
-          mon = monthNames[namedMatch[2].toLowerCase()] || 0;
-          if (namedMatch[3]) {
-            const rawYr = parseInt(namedMatch[3]);
-            yr = rawYr < 100 ? (rawYr < 70 ? 2000 + rawYr : 1900 + rawYr) : rawYr;
-          }
-        }
-
-        if (day < 1 || day > 31 || mon < 1 || mon > 12) {
-          continue;
-        }
-
-        parsedDate = `${yr}-${String(mon).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      }
-
-      let debit = 0,
-        credit = 0;
-      if (debitCol >= 0 && creditCol >= 0) {
-        const debitStr = String(row[debitCol] || '').trim();
-        const creditStr = String(row[creditCol] || '').trim();
-        debit = parseIndonesianNumber(debitStr);
-        credit = parseIndonesianNumber(creditStr);
-      } else if (amountCol >= 0) {
-        const rawAmountStr = String(row[amountCol] || '').trim();
-        let isCR = /\bCR\b/i.test(rawAmountStr);
-        let isDB = /\bDB\b/i.test(rawAmountStr);
-
-        if (!isCR && !isDB) {
-          for (let c = 0; c < row.length; c++) {
-            if (
-              c === amountCol ||
-              c === dateCol ||
-              c === descCol ||
-              c === branchCol ||
-              c === balanceCol
-            )
-              continue;
-            const cellVal = String(row[c] || '').trim();
-            if (/^CR$/i.test(cellVal)) {
-              isCR = true;
-              break;
-            }
-            if (/^DB$/i.test(cellVal)) {
-              isDB = true;
-              break;
-            }
-          }
-        }
-
-        const cleanAmountStr = rawAmountStr.replace(/\b(CR|DB)\b/gi, '').trim();
-        const amount = parseIndonesianNumber(cleanAmountStr);
-
-        if (isCR) {
-          credit = amount;
-          debit = 0;
-        } else if (isDB) {
-          debit = amount;
-          credit = 0;
-        } else {
-          debit = 0;
-          credit = 0;
-        }
-      }
-
-      let balance = 0;
-      if (
-        balanceCol >= 0 &&
-        row[balanceCol] !== undefined &&
-        row[balanceCol] !== null &&
-        String(row[balanceCol]).trim() !== ''
-      ) {
-        balance = parseIndonesianNumber(row[balanceCol]);
-      }
-
-      // Collect multi-column description and details (e.g. BCA statements where col 1 has
-      // generic "TRSF E-BANKING DB" and subsequent unassigned column has beneficiary/salary details)
-      const descParts: string[] = [];
-      if (descCol >= 0 && row[descCol] !== undefined && row[descCol] !== null) {
-        const primary = String(row[descCol] || '').trim();
-        if (primary) descParts.push(primary);
-      }
-
-      let extraRef = '';
-      for (let c = 0; c < row.length; c++) {
-        if (
-          c === descCol ||
-          c === dateCol ||
-          c === branchCol ||
-          c === debitCol ||
-          c === creditCol ||
-          c === amountCol ||
-          c === balanceCol
-        ) {
-          continue;
-        }
-
-        const cellVal = String(row[c] || '').trim();
-        if (!cellVal) continue;
-
-        // Skip standalone CR or DB indicator columns
-        if (/^(CR|DB)$/i.test(cellVal)) continue;
-
-        // Capture slip or account ref format (e.g. "0516990-0") if present
-        if (/^\d{6,10}-\d+$/.test(cellVal) && !extraRef) {
-          extraRef = cellVal;
-        }
-
-        descParts.push(cellVal);
-      }
-
-      const rawDescription = descParts.join(' ').replace(/\s+/g, ' ').trim();
-      const branch = branchCol >= 0 ? String(row[branchCol] || '').trim() : '';
-
-      let reference = branch || extraRef;
-      if (!reference) {
-        const refMatch = rawDescription.match(/\b(\d{4}\/[A-Z0-9]+\/[A-Z0-9]+)\b/);
-        if (refMatch) {
-          reference = refMatch[1];
-        }
-      }
-
-      const description = rawDescription;
-
-      const numDebit = Number(debit) || 0;
-      const numCredit = Number(credit) || 0;
-      const isValid = (numDebit > 0 && numCredit === 0) || (numCredit > 0 && numDebit === 0);
-
-      if (!isValid) {
-        throw new Error(
-          `Bank statement line at row ${i + 1} (${parsedDate}) must have exactly one positive debit or credit amount. Found debit=${numDebit}, credit=${numCredit}. Raw values: [${row.map((c: any) => String(c ?? '')).join(' | ')}]`
-        );
-      }
-
-      lines.push({
-        id: `temp-${i}`,
-        date: parsedDate,
-        description,
-        reference,
-        debit: numDebit,
-        credit: numCredit,
-        balance,
-        currency: metadata.currency || selectedAccount?.currency || 'IDR',
-        status: 'unmatched',
-        allocatedAmount: 0,
-        remainingAmount: numDebit || numCredit,
-        allocations: [],
-      });
-    }
-
-    // 4. Summary metadata balances scan
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || row.length === 0) continue;
-      const rowJoined = row.map((c: any) => String(c || '').trim()).join(' ');
-
-      const mStart = rowJoined.match(/(?:Saldo\s*Awal|Start\s*Balance)\s*[:=]?\s*([\d,.]+)/i);
-      if (mStart) metadata.openingBalance = parseIndonesianNumber(mStart[1]);
-
-      const mDebit = rowJoined.match(/(?:Mutasi\s*Deb[ei]t|Mutasi\s*DB)\s*[:=]?\s*([\d,.]+)/i);
-      if (mDebit) metadata.totalDebits = parseIndonesianNumber(mDebit[1]);
-
-      const mCredit = rowJoined.match(
-        /(?:Mutasi\s*Kredit|Mutasi\s*Credit|Mutasi\s*CR)\s*[:=]?\s*([\d,.]+)/i
-      );
-      if (mCredit) metadata.totalCredits = parseIndonesianNumber(mCredit[1]);
-
-      const mLast = rowJoined.match(
-        /(?:Saldo\s*Akhir|Last\s*Balance|Ending\s*Balance|Closing\s*Balance)\s*[:=]?\s*([\d,.]+)/i
-      );
-      if (mLast) metadata.closingBalance = parseIndonesianNumber(mLast[1]);
-    }
-
-    return { lines, metadata };
+    return {
+      lines,
+      metadata: {
+        period: result.metadata.period,
+        startDate: result.metadata.startDate,
+        endDate: result.metadata.endDate,
+        openingBalance: result.metadata.openingBalance || 0,
+        closingBalance: result.metadata.closingBalance || 0,
+        totalDebits: result.metadata.totalDebits || 0,
+        totalCredits: result.metadata.totalCredits || 0,
+        currency: result.metadata.currency || 'IDR',
+        accountNumber: result.metadata.accountNumber,
+        rawAccountNumber: result.metadata.rawAccountNumber,
+        accountName: result.metadata.accountName,
+        sourceFormat: result.metadata.sourceFormat,
+        hasPendingTransactions: result.metadata.hasPendingTransactions,
+        pendingCount: result.metadata.pendingCount,
+      },
+    };
   };
 
   const findAmbiguousLines = (
@@ -5087,7 +4674,7 @@ export function BankReconciliationEnhanced({
                 />
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading || !selectedBank}
+                  disabled={uploading || (!selectedBank && bankAccounts.length === 0)}
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-white text-slate-700 rounded hover:bg-slate-50 disabled:opacity-50 font-medium shadow-sm"
                   title="Upload"
                 >
@@ -8956,6 +8543,391 @@ export function BankReconciliationEnhanced({
           </form>
         )}
       </Modal>
+
+      {/* Smart Bank Statement Import Preview Modal */}
+      {smartImportPreview && (
+        <Modal
+          isOpen={true}
+          onClose={() => setSmartImportPreview(null)}
+          title="Smart Bank Statement Importer — Review & Confirm"
+          size="2xl"
+        >
+          <div className="space-y-3.5 text-xs">
+            {/* Top Bar: Source format & Account Identification */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 p-2.5 rounded-lg border bg-slate-50">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold text-slate-700">File:</span>
+                <span className="font-mono text-slate-800 font-medium">{smartImportPreview.sourceFileName}</span>
+                <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  {smartImportPreview.metadata.sourceFormat === 'bca_raw_csv'
+                    ? 'BCA Raw Export (Auto-Normalised)'
+                    : smartImportPreview.metadata.sourceFormat === 'bca_cleaned_csv'
+                    ? 'BCA Cleaned (4-Column)'
+                    : 'Standard Statement Format'}
+                </span>
+                {smartImportPreview.metadata.period && (
+                  <span className="px-2 py-0.5 rounded text-[11px] bg-blue-50 text-blue-700 border border-blue-200">
+                    Period: {smartImportPreview.metadata.period}
+                  </span>
+                )}
+              </div>
+
+              {/* Bank Account Selector with Auto-Match Status */}
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="font-semibold text-slate-700">Bank Account:</span>
+                <select
+                  value={smartImportPreview.bankAccountId}
+                  onChange={(e) => handlePreviewBankChange(e.target.value)}
+                  className="px-2 py-1 border border-slate-300 rounded text-xs font-medium bg-white text-slate-800 shadow-xs focus:ring-1 focus:ring-blue-500"
+                >
+                  {bankAccounts.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.alias ? `${b.alias} (${b.account_number})` : `${b.bank_name} - ${b.account_number} (${b.currency})`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Account Auto-Detection Notification */}
+            {smartImportPreview.matchedByAccount ? (
+              <div className="flex items-center gap-2 p-2 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-[11px]">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  Auto-identified bank account from statement <strong>Account Number: {smartImportPreview.matchedAccountNumber}</strong> (matched to <strong>{bankAccounts.find(b => b.id === smartImportPreview.bankAccountId)?.account_name || 'BCA IDR'}</strong>).
+                </span>
+              </div>
+            ) : smartImportPreview.metadata.accountNumber ? (
+              <div className="flex items-center gap-2 p-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-[11px]">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  Statement Account Number ({smartImportPreview.metadata.rawAccountNumber || smartImportPreview.metadata.accountNumber}) does not match any configured bank account. Please verify the bank account selection above.
+                </span>
+              </div>
+            ) : null}
+
+            {/* Statement Validation Banner & Overview */}
+            <div className={`p-3 rounded-lg border ${
+              smartImportPreview.validation.isValid
+                ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
+                : 'bg-amber-50/70 border-amber-200 text-amber-900'
+            }`}>
+              <div className="flex items-start gap-2.5">
+                {smartImportPreview.validation.isValid ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                )}
+                <div className="flex-1 space-y-1">
+                  <div className="font-semibold flex items-center justify-between">
+                    <span>{smartImportPreview.validation.isValid ? 'Statement Reconciled Perfectly' : 'Statement Validation Warning'}</span>
+                    <span className="font-mono text-[11px] font-normal">
+                      Equation: Opening + Credits - Debits = Closing
+                    </span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed">
+                    {smartImportPreview.validation.isValid ? (
+                      <>
+                        Opening Balance (<strong>{formatCurrency(smartImportPreview.validation.openingBalance, smartImportPreview.metadata.currency)}</strong>) + Total Credits (<strong>{formatCurrency(smartImportPreview.validation.totalCredits, smartImportPreview.metadata.currency)}</strong>) - Total Debits (<strong>{formatCurrency(smartImportPreview.validation.totalDebits, smartImportPreview.metadata.currency)}</strong>) = Closing Balance (<strong>{formatCurrency(smartImportPreview.validation.closingBalance, smartImportPreview.metadata.currency)}</strong>). Discrepancy: Rp 0.
+                      </>
+                    ) : (
+                      smartImportPreview.validation.message
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Financial Overview 5-column Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+              <div className="bg-slate-50 p-2 rounded border border-slate-200">
+                <span className="block text-[10px] text-slate-500 uppercase font-semibold">Opening Balance</span>
+                <span className="font-mono font-bold text-slate-800 text-xs">
+                  {formatCurrency(smartImportPreview.validation.openingBalance, smartImportPreview.metadata.currency)}
+                </span>
+              </div>
+              <div className="bg-slate-50 p-2 rounded border border-slate-200">
+                <span className="block text-[10px] text-slate-500 uppercase font-semibold">Total Debits (OUT)</span>
+                <span className="font-mono font-bold text-red-600 text-xs">
+                  {formatCurrency(smartImportPreview.validation.totalDebits, smartImportPreview.metadata.currency)}
+                </span>
+                <span className="block text-[10px] text-slate-400 mt-0.5">{smartImportPreview.validation.debitCount} transactions</span>
+              </div>
+              <div className="bg-slate-50 p-2 rounded border border-slate-200">
+                <span className="block text-[10px] text-slate-500 uppercase font-semibold">Total Credits (IN)</span>
+                <span className="font-mono font-bold text-emerald-600 text-xs">
+                  {formatCurrency(smartImportPreview.validation.totalCredits, smartImportPreview.metadata.currency)}
+                </span>
+                <span className="block text-[10px] text-slate-400 mt-0.5">{smartImportPreview.validation.creditCount} transactions</span>
+              </div>
+              <div className="bg-slate-50 p-2 rounded border border-slate-200">
+                <span className="block text-[10px] text-slate-500 uppercase font-semibold">Closing Balance</span>
+                <span className="font-mono font-bold text-slate-800 text-xs">
+                  {formatCurrency(smartImportPreview.validation.closingBalance, smartImportPreview.metadata.currency)}
+                </span>
+              </div>
+              <div className="bg-slate-50 p-2 rounded border border-slate-200 col-span-2 sm:col-span-1">
+                <span className="block text-[10px] text-slate-500 uppercase font-semibold">Import Summary</span>
+                <div className="flex items-center justify-center gap-1.5 mt-0.5 text-xs font-bold">
+                  <span className="text-emerald-700">{smartImportPreview.newLines.length} New</span>
+                  {smartImportPreview.duplicateLines.length > 0 && (
+                    <span className="text-slate-400 font-normal">| {smartImportPreview.duplicateLines.length} Dup</span>
+                  )}
+                  {smartImportPreview.metadata.pendingCount > 0 && (
+                    <span className="text-purple-700 font-semibold">| {smartImportPreview.metadata.pendingCount} PEND</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* PEND Transaction Section (Section 6 & Correction) */}
+            {smartImportPreview.metadata.pendingCount > 0 && (
+              <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-lg space-y-2">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-purple-700" />
+                    <span className="font-bold text-purple-900 text-xs">
+                      {smartImportPreview.metadata.pendingCount} Pending Bank Transaction{smartImportPreview.metadata.pendingCount > 1 ? 's' : ''} (Date Confirmation Required)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const todayStr = new Date().toISOString().split('T')[0];
+                      setSmartImportPreview((prev) => {
+                        if (!prev) return null;
+                        const updated: Record<string, string> = { ...prev.pendingDates };
+                        prev.allLines.forEach((l) => {
+                          if (l.isPending) updated[l.id] = todayStr;
+                        });
+                        return { ...prev, pendingDates: updated };
+                      });
+                    }}
+                    className="px-2 py-1 text-[11px] font-medium bg-purple-600 hover:bg-purple-700 text-white rounded shadow-xs"
+                  >
+                    Apply Today's Date to All Pending
+                  </button>
+                </div>
+                <p className="text-[11px] text-purple-800">
+                  The bank marked this transaction as <strong>PEND</strong> in the statement. It normally clears on today's date. Confirm or adjust the clearing date below. The original <code>PEND</code> status is preserved in the transaction audit notes.
+                </p>
+
+                <div className="divide-y divide-purple-200 bg-white rounded border border-purple-200 overflow-hidden">
+                  {smartImportPreview.allLines.filter((l) => l.isPending).map((pendLine) => {
+                    const currentDate = smartImportPreview.pendingDates[pendLine.id] || '';
+                    return (
+                      <div key={pendLine.id} className="p-2.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-200 text-purple-900">
+                              PEND
+                            </span>
+                            <span className="font-semibold text-slate-800 truncate">{pendLine.description}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            Amount:{' '}
+                            <span className={`font-mono font-bold ${pendLine.debit > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                              {formatCurrency(pendLine.debit || pendLine.credit, pendLine.currency)} {pendLine.debit > 0 ? 'DB' : 'CR'}
+                            </span>
+                            {pendLine.balance ? ` · Running Balance: ${formatCurrency(pendLine.balance, pendLine.currency)}` : ''}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <label className="text-[11px] font-semibold text-slate-700">Effective Date:</label>
+                          <input
+                            type="date"
+                            value={currentDate}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setSmartImportPreview((prev) => {
+                                if (!prev) return null;
+                                return {
+                                  ...prev,
+                                  pendingDates: {
+                                    ...prev.pendingDates,
+                                    [pendLine.id]: val,
+                                  },
+                                };
+                              });
+                            }}
+                            className="px-2 py-1 border border-purple-300 rounded text-xs font-mono bg-purple-50/30 text-slate-800 focus:ring-1 focus:ring-purple-500"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Transaction Review Table with Filter Tabs */}
+            <div className="space-y-1.5 flex-1 min-h-0 flex flex-col">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-1">
+                  {(['all', 'new', 'duplicates', 'pending'] as const).map((filterKey) => {
+                    const count =
+                      filterKey === 'all'
+                        ? smartImportPreview.allLines.length
+                        : filterKey === 'new'
+                        ? smartImportPreview.newLines.length
+                        : filterKey === 'duplicates'
+                        ? smartImportPreview.duplicateLines.length
+                        : smartImportPreview.metadata.pendingCount;
+
+                    const isActive = smartImportPreview.activeReviewFilter === filterKey;
+                    return (
+                      <button
+                        key={filterKey}
+                        type="button"
+                        onClick={() =>
+                          setSmartImportPreview((prev) => (prev ? { ...prev, activeReviewFilter: filterKey } : null))
+                        }
+                        className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                          isActive
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {filterKey.charAt(0).toUpperCase() + filterKey.slice(1)} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+                <span className="text-[11px] text-slate-500">
+                  Showing transactions to be imported into {bankAccounts.find(b => b.id === smartImportPreview.bankAccountId)?.alias || 'Bank'}
+                </span>
+              </div>
+
+              <div className="border border-slate-200 rounded-lg overflow-y-auto max-h-56 divide-y divide-slate-100 bg-white">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 sticky top-0 text-[11px] font-semibold text-slate-600">
+                    <tr>
+                      <th className="px-2 py-1.5 text-left">Status</th>
+                      <th className="px-2 py-1.5 text-left">Date</th>
+                      <th className="px-2 py-1.5 text-left">Description</th>
+                      <th className="px-2 py-1.5 text-left">Reference</th>
+                      <th className="px-2 py-1.5 text-right">Debit (OUT)</th>
+                      <th className="px-2 py-1.5 text-right">Credit (IN)</th>
+                      <th className="px-2 py-1.5 text-right">Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {smartImportPreview.allLines
+                      .filter((line) => {
+                        if (smartImportPreview.activeReviewFilter === 'new') {
+                          return smartImportPreview.newLines.some((nl) => nl.id === line.id);
+                        }
+                        if (smartImportPreview.activeReviewFilter === 'duplicates') {
+                          return smartImportPreview.duplicateLines.some((dl) => dl.id === line.id);
+                        }
+                        if (smartImportPreview.activeReviewFilter === 'pending') {
+                          return line.isPending;
+                        }
+                        return true;
+                      })
+                      .map((line, idx) => {
+                        const isDup = smartImportPreview.duplicateLines.some((dl) => dl.id === line.id);
+                        const effectiveDate = line.isPending ? smartImportPreview.pendingDates[line.id] || line.date : line.date;
+
+                        return (
+                          <tr
+                            key={line.id || idx}
+                            className={`hover:bg-slate-50/80 ${isDup ? 'bg-slate-50/50 text-slate-400' : ''}`}
+                          >
+                            <td className="px-2 py-1.5 whitespace-nowrap">
+                              {line.isPending ? (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800">
+                                  Pending
+                                </span>
+                              ) : isDup ? (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500">
+                                  Duplicate
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800">
+                                  New
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 whitespace-nowrap font-mono text-[11px]">
+                              {effectiveDate}
+                              {line.isPending && (
+                                <span className="ml-1 text-[10px] text-purple-600 font-semibold">[PEND]</span>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 truncate max-w-xs" title={line.description}>
+                              {line.description}
+                            </td>
+                            <td className="px-2 py-1.5 whitespace-nowrap font-mono text-[11px] text-slate-500">
+                              {line.reference || '—'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right font-mono text-red-600 font-medium">
+                              {line.debit > 0 ? formatCurrency(line.debit, line.currency) : '—'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right font-mono text-emerald-600 font-medium">
+                              {line.credit > 0 ? formatCurrency(line.credit, line.currency) : '—'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right font-mono text-slate-500">
+                              {line.balance ? formatCurrency(line.balance, line.currency) : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Bottom Actions */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 pt-3 border-t">
+              <button
+                type="button"
+                onClick={() => setSmartImportPreview(null)}
+                className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 font-medium"
+              >
+                Cancel
+              </button>
+
+              <div className="flex items-center gap-2">
+                {smartImportPreview.newLines.length === 0 && (
+                  <button
+                    type="button"
+                    disabled={uploading}
+                    onClick={() => handleConfirmSmartImport(true)}
+                    className="px-3 py-2 border border-amber-300 bg-amber-50 text-amber-800 rounded-lg hover:bg-amber-100 font-medium text-xs"
+                  >
+                    Force Import All ({smartImportPreview.allLines.length})
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={
+                    uploading ||
+                    smartImportPreview.newLines.length === 0 ||
+                    smartImportPreview.allLines.some((l) => l.isPending && !smartImportPreview.pendingDates[l.id])
+                  }
+                  onClick={() => handleConfirmSmartImport(false)}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg font-semibold text-xs flex items-center justify-center gap-2 shadow-sm"
+                >
+                  {uploading ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Importing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Confirm & Import ({smartImportPreview.newLines.length} New Transactions)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {/* Import Result Modal */}
       {showImportResultModal && importResult && (
