@@ -33,6 +33,7 @@ import {
   parseAndNormalizeStatement,
   matchConfiguredBankAccount,
   checkStatementDuplicates,
+  getJakartaTodayString,
   type NormalizedBankTransaction,
   type BankStatementMetadata,
   type StatementValidationResult,
@@ -269,6 +270,7 @@ export interface SmartImportPreviewState {
   newLines: NormalizedBankTransaction[];
   duplicateLines: NormalizedBankTransaction[];
   pendingDates: Record<string, string>;
+  existingDbLines?: any[];
   activeReviewFilter: 'all' | 'new' | 'duplicates' | 'pending';
 }
 
@@ -1668,7 +1670,7 @@ export function BankReconciliationEnhanced({
             }
           }
 
-          const todayStr = new Date().toISOString().split('T')[0];
+          const todayStr = getJakartaTodayString();
           const result = parseAndNormalizeStatement(rows, {
             defaultYear: statementYear,
             todayDate: todayStr,
@@ -1703,14 +1705,18 @@ export function BankReconciliationEnhanced({
             .select('transaction_date, description, reference, debit_amount, credit_amount')
             .eq('bank_account_id', targetBankId);
 
-          const { newLines, duplicateLines } = checkStatementDuplicates(result.lines, existingLines || []);
-
           const initialPendingDates: Record<string, string> = {};
           result.lines.forEach((l) => {
             if (l.isPending) {
               initialPendingDates[l.id] = todayStr;
             }
           });
+
+          const { newLines, duplicateLines } = checkStatementDuplicates(
+            result.lines,
+            existingLines || [],
+            initialPendingDates
+          );
 
           setSmartImportPreview({
             sourceFileName: file.name,
@@ -1723,6 +1729,7 @@ export function BankReconciliationEnhanced({
             newLines,
             duplicateLines,
             pendingDates: initialPendingDates,
+            existingDbLines: existingLines || [],
             activeReviewFilter: 'all',
           });
         } catch (parseErr: any) {
@@ -1752,12 +1759,17 @@ export function BankReconciliationEnhanced({
         .select('transaction_date, description, reference, debit_amount, credit_amount')
         .eq('bank_account_id', newBankId);
 
-      const { newLines, duplicateLines } = checkStatementDuplicates(smartImportPreview.allLines, existingLines || []);
+      const { newLines, duplicateLines } = checkStatementDuplicates(
+        smartImportPreview.allLines,
+        existingLines || [],
+        smartImportPreview.pendingDates
+      );
       setSmartImportPreview((prev) =>
         prev
           ? {
               ...prev,
               bankAccountId: newBankId,
+              existingDbLines: existingLines || [],
               newLines,
               duplicateLines,
             }
@@ -1768,18 +1780,33 @@ export function BankReconciliationEnhanced({
     }
   };
 
+  const handleUpdatePendingDate = (lineId: string, newDate: string) => {
+    setSmartImportPreview((prev) => {
+      if (!prev) return null;
+      const updatedPendingDates: Record<string, string> = {
+        ...prev.pendingDates,
+        [lineId]: newDate,
+      };
+      const { newLines, duplicateLines } = checkStatementDuplicates(
+        prev.allLines,
+        prev.existingDbLines || [],
+        updatedPendingDates
+      );
+      return {
+        ...prev,
+        pendingDates: updatedPendingDates,
+        newLines,
+        duplicateLines,
+      };
+    });
+  };
+
   const handleConfirmSmartImport = async (forceImportAll: boolean = false) => {
     if (!smartImportPreview) return;
-    const { bankAccountId, metadata, validation, allLines, newLines, pendingDates } = smartImportPreview;
-
-    const linesToImport = forceImportAll ? allLines : newLines;
-    if (linesToImport.length === 0) {
-      alert('No new transactions to import.');
-      return;
-    }
+    const { bankAccountId, metadata, validation, allLines, pendingDates } = smartImportPreview;
 
     // Verify all pending lines have a valid confirmed date
-    for (const line of linesToImport) {
+    for (const line of allLines) {
       if (line.isPending) {
         const confirmedDate = pendingDates[line.id];
         if (!confirmedDate || !/^\d{4}-\d{2}-\d{2}$/.test(confirmedDate)) {
@@ -1791,6 +1818,26 @@ export function BankReconciliationEnhanced({
 
     setUploading(true);
     try {
+      // Recalculate duplicate status using confirmed effective date immediately before import
+      const { data: latestDbLines } = await supabase
+        .from('bank_statement_lines')
+        .select('transaction_date, description, reference, debit_amount, credit_amount')
+        .eq('bank_account_id', bankAccountId);
+
+      const { newLines: verifiedNewLines, duplicateLines: verifiedDuplicateLines } = checkStatementDuplicates(
+        allLines,
+        latestDbLines || [],
+        pendingDates
+      );
+
+      const linesToImport = forceImportAll ? allLines : verifiedNewLines;
+      if (linesToImport.length === 0) {
+        alert(
+          'No new transactions to import. All transactions (including confirmed pending transactions) already exist in the database.'
+        );
+        setUploading(false);
+        return;
+      }
       const targetBank = bankAccounts.find((b) => b.id === bankAccountId);
       const stmtCurrency = metadata.currency || targetBank?.currency || 'IDR';
 
@@ -1876,7 +1923,7 @@ export function BankReconciliationEnhanced({
       setImportResult({
         totalInFile: allLines.length,
         importedCount: insertedCount,
-        skippedEntries: smartImportPreview.duplicateLines.map((d) => ({
+        skippedEntries: (forceImportAll ? [] : verifiedDuplicateLines).map((d) => ({
           transaction_date: d.date,
           description: d.description,
           reference: d.reference,
@@ -2082,7 +2129,7 @@ export function BankReconciliationEnhanced({
           const worksheet = workbook.Sheets[sheetName];
           const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
 
-          const todayStr = new Date().toISOString().split('T')[0];
+          const todayStr = getJakartaTodayString();
           const result = parseAndNormalizeStatement(jsonData, {
             todayDate: todayStr,
             fallbackCurrency: selectedAccount?.currency || 'IDR',
@@ -2117,14 +2164,18 @@ export function BankReconciliationEnhanced({
             .select('transaction_date, description, reference, debit_amount, credit_amount')
             .eq('bank_account_id', targetBankId);
 
-          const { newLines, duplicateLines } = checkStatementDuplicates(result.lines, existingLines || []);
-
           const initialPendingDates: Record<string, string> = {};
           result.lines.forEach((l) => {
             if (l.isPending) {
               initialPendingDates[l.id] = todayStr;
             }
           });
+
+          const { newLines, duplicateLines } = checkStatementDuplicates(
+            result.lines,
+            existingLines || [],
+            initialPendingDates
+          );
 
           setSmartImportPreview({
             sourceFileName: file.name,
@@ -2137,6 +2188,7 @@ export function BankReconciliationEnhanced({
             newLines,
             duplicateLines,
             pendingDates: initialPendingDates,
+            existingDbLines: existingLines || [],
             activeReviewFilter: 'all',
           });
         } catch (excelErr: any) {
@@ -2162,7 +2214,7 @@ export function BankReconciliationEnhanced({
     rows: any[][],
     providedYear?: number
   ): { lines: StatementLine[]; metadata: any } => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getJakartaTodayString();
     const result = parseAndNormalizeStatement(rows, {
       defaultYear: providedYear,
       todayDate: todayStr,
@@ -8693,14 +8745,24 @@ export function BankReconciliationEnhanced({
                   <button
                     type="button"
                     onClick={() => {
-                      const todayStr = new Date().toISOString().split('T')[0];
+                      const todayStr = getJakartaTodayString();
                       setSmartImportPreview((prev) => {
                         if (!prev) return null;
                         const updated: Record<string, string> = { ...prev.pendingDates };
                         prev.allLines.forEach((l) => {
                           if (l.isPending) updated[l.id] = todayStr;
                         });
-                        return { ...prev, pendingDates: updated };
+                        const { newLines, duplicateLines } = checkStatementDuplicates(
+                          prev.allLines,
+                          prev.existingDbLines || [],
+                          updated
+                        );
+                        return {
+                          ...prev,
+                          pendingDates: updated,
+                          newLines,
+                          duplicateLines,
+                        };
                       });
                     }}
                     className="px-2 py-1 text-[11px] font-medium bg-purple-600 hover:bg-purple-700 text-white rounded shadow-xs"
@@ -8715,6 +8777,7 @@ export function BankReconciliationEnhanced({
                 <div className="divide-y divide-purple-200 bg-white rounded border border-purple-200 overflow-hidden">
                   {smartImportPreview.allLines.filter((l) => l.isPending).map((pendLine) => {
                     const currentDate = smartImportPreview.pendingDates[pendLine.id] || '';
+                    const isPendDup = smartImportPreview.duplicateLines.some((d) => d.id === pendLine.id);
                     return (
                       <div key={pendLine.id} className="p-2.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs">
                         <div className="flex-1 min-w-0">
@@ -8734,22 +8797,21 @@ export function BankReconciliationEnhanced({
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
+                          <span
+                            className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                              isPendDup
+                                ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                                : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                            }`}
+                          >
+                            {isPendDup ? 'Duplicate on this date (skipped)' : 'New on this date'}
+                          </span>
                           <label className="text-[11px] font-semibold text-slate-700">Effective Date:</label>
                           <input
                             type="date"
                             value={currentDate}
                             onChange={(e) => {
-                              const val = e.target.value;
-                              setSmartImportPreview((prev) => {
-                                if (!prev) return null;
-                                return {
-                                  ...prev,
-                                  pendingDates: {
-                                    ...prev.pendingDates,
-                                    [pendLine.id]: val,
-                                  },
-                                };
-                              });
+                              handleUpdatePendingDate(pendLine.id, e.target.value);
                             }}
                             className="px-2 py-1 border border-purple-300 rounded text-xs font-mono bg-purple-50/30 text-slate-800 focus:ring-1 focus:ring-purple-500"
                           />
@@ -8837,8 +8899,12 @@ export function BankReconciliationEnhanced({
                           >
                             <td className="px-2 py-1.5 whitespace-nowrap">
                               {line.isPending ? (
-                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800">
-                                  Pending
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                    isDup ? 'bg-amber-100 text-amber-800' : 'bg-purple-100 text-purple-800'
+                                  }`}
+                                >
+                                  {isDup ? 'Pending (Duplicate)' : 'Pending (New)'}
                                 </span>
                               ) : isDup ? (
                                 <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500">

@@ -38,6 +38,8 @@ import {
   parseAndNormalizeStatement,
   validateStatementTotals,
   checkStatementDuplicates,
+  getJakartaDateString,
+  getJakartaTodayString,
 } from '../src/components/finance/bankStatementNormalizer.ts';
 
 test('Smart BCA Statement Importer & Automatic Normalization Suite', async (t) => {
@@ -229,5 +231,119 @@ test('Smart BCA Statement Importer & Automatic Normalization Suite', async (t) =
         'Exactly one of debit or credit must be positive'
       );
     });
+  });
+
+  // Test 11: Indonesian local date calculation (Asia/Jakarta) for PEND defaults
+  await t.test('11. Indonesian local date calculation (Asia/Jakarta) for PEND defaults', () => {
+    const jakartaToday = getJakartaTodayString();
+    assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(jakartaToday), 'Jakarta today must be formatted as YYYY-MM-DD');
+
+    // Test specific date conversion at late UTC hour
+    // 2026-11-19 23:30:00 UTC is 2026-11-20 06:30:00 in Asia/Jakarta (UTC+7)
+    const lateUtcDate = new Date('2026-11-19T23:30:00Z');
+    const jakartaDate = getJakartaDateString(lateUtcDate);
+    assert.equal(
+      jakartaDate,
+      '2026-11-20',
+      'Late UTC hour on 19th must correctly resolve to 20th in Asia/Jakarta (WIB)'
+    );
+
+    // Verify parseAndNormalizeStatement defaults to Jakarta today without explicit todayDate
+    const { rows } = parseRawCSVToRows(rawCSV);
+    const result = parseAndNormalizeStatement(rows, { defaultYear: 2026 });
+    const pendLine = result.lines.find((l) => l.isPending);
+    assert.ok(pendLine, 'Pending line must be parsed');
+    assert.equal(pendLine.date, jakartaToday, 'Default pending date must match Asia/Jakarta today string');
+  });
+
+  // Test 12: Raw BCA fixture with PEND date left at today\'s Indonesian date
+  await t.test('12. Raw BCA fixture with PEND date left at today\'s Indonesian date', () => {
+    const { rows } = parseRawCSVToRows(rawCSV);
+    const jakartaToday = getJakartaTodayString();
+    const result = parseAndNormalizeStatement(rows, { defaultYear: 2026 });
+
+    const pendLine = result.lines.find((l) => l.isPending);
+    assert.ok(pendLine, 'Pending row must exist');
+
+    // Initial pendingDates dictionary with Jakarta today
+    const pendingDates = { [pendLine.id]: jakartaToday };
+
+    // Initial DB is empty
+    const dupCheck = checkStatementDuplicates(result.lines, [], pendingDates);
+    assert.equal(dupCheck.duplicateCount, 0, 'No duplicates in empty DB');
+    assert.equal(dupCheck.newLines.length, 63, 'All 63 lines are new');
+
+    const confirmedPendLine = dupCheck.newLines.find((l) => l.isPending);
+    assert.ok(confirmedPendLine, 'Confirmed pending line must be in newLines');
+    assert.equal(confirmedPendLine.date, jakartaToday, 'Confirmed line date must be Jakarta today');
+  });
+
+  // Test 13: Raw BCA fixture after changing PEND date to another date
+  await t.test('13. Raw BCA fixture after changing PEND date to another date', () => {
+    const { rows } = parseRawCSVToRows(rawCSV);
+    const result = parseAndNormalizeStatement(rows, { defaultYear: 2026 });
+
+    const pendLine = result.lines.find((l) => l.isPending);
+    assert.ok(pendLine, 'Pending row must exist');
+
+    // User edits the date to 2026-11-21
+    const changedDate = '2026-11-21';
+    const updatedPendingDates = { [pendLine.id]: changedDate };
+
+    const dupCheck = checkStatementDuplicates(result.lines, [], updatedPendingDates);
+    assert.equal(dupCheck.newLines.length, 63, 'All 63 lines are new');
+
+    const confirmedPendLine = dupCheck.newLines.find((l) => l.isPending);
+    assert.ok(confirmedPendLine, 'Confirmed pending line must be in newLines');
+    assert.equal(confirmedPendLine.date, changedDate, 'Confirmed line date must reflect the user-edited date');
+  });
+
+  // Test 14: Recalculate duplicates after PEND date confirmation (duplicate detected on confirmed date)
+  await t.test('14. Recalculate duplicates after PEND date confirmation', () => {
+    const { rows } = parseRawCSVToRows(rawCSV);
+    const result = parseAndNormalizeStatement(rows, { defaultYear: 2026 });
+
+    const pendLine = result.lines.find((l) => l.isPending);
+    assert.ok(pendLine, 'Pending row must exist');
+
+    // Case A: Suppose DB already has this GOPAY transaction on 2026-11-18
+    const existingDbLines = [
+      {
+        transaction_date: '2026-11-18',
+        description: pendLine.description,
+        reference: pendLine.reference || '',
+        debit_amount: 1001900,
+        credit_amount: 0,
+      },
+    ];
+
+    // When PEND date is initially today (2026-11-20), DB has no record on 2026-11-20 -> Not a duplicate
+    const initialDates = { [pendLine.id]: '2026-11-20' };
+    const checkInitial = checkStatementDuplicates(result.lines, existingDbLines, initialDates);
+    assert.equal(checkInitial.duplicateCount, 0, 'On 2026-11-20, no duplicate exists in DB');
+    assert.equal(checkInitial.newLines.length, 63, 'All 63 lines are new on initial date');
+
+    // User changes PEND date to 2026-11-18 (the date already recorded in DB)
+    const confirmedDates = { [pendLine.id]: '2026-11-18' };
+    const checkRecalculated = checkStatementDuplicates(result.lines, existingDbLines, confirmedDates);
+
+    // Duplicate detection re-evaluates with confirmed date:
+    assert.equal(checkRecalculated.duplicateCount, 1, 'Must detect 1 duplicate on confirmed date 2026-11-18');
+    assert.equal(checkRecalculated.newLines.length, 62, 'New lines must decrease from 63 to 62');
+
+    const dupPend = checkRecalculated.duplicateLines.find((l) => l.id === pendLine.id);
+    assert.ok(dupPend, 'Pending line must be classified as duplicate');
+    assert.equal(dupPend.date, '2026-11-18', 'Duplicate line date must be the confirmed date');
+    assert.equal(dupPend.status, 'duplicate', 'Status must be duplicate');
+
+    // Case B: User realizes mistake and adjusts date to 2026-11-19 (not in DB)
+    const correctedDates = { [pendLine.id]: '2026-11-19' };
+    const checkCorrected = checkStatementDuplicates(result.lines, existingDbLines, correctedDates);
+    assert.equal(checkCorrected.duplicateCount, 0, 'On 2026-11-19, no duplicate in DB');
+    assert.equal(checkCorrected.newLines.length, 63, 'New lines restored to 63');
+
+    const newPend = checkCorrected.newLines.find((l) => l.id === pendLine.id);
+    assert.ok(newPend, 'Pending line is now classified as new');
+    assert.equal(newPend.date, '2026-11-19', 'Effective date must be 2026-11-19');
   });
 });

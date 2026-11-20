@@ -379,6 +379,31 @@ export function matchConfiguredBankAccount(
 }
 
 /**
+ * Returns a date formatted as YYYY-MM-DD in Asia/Jakarta time (WIB, UTC+7).
+ */
+export function getJakartaDateString(date: Date = new Date()): string {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Jakarta',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    return formatter.format(date);
+  } catch (_e) {
+    const jakartaTime = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+    return jakartaTime.toISOString().split('T')[0];
+  }
+}
+
+/**
+ * Returns today's date formatted as YYYY-MM-DD in Asia/Jakarta time (WIB, UTC+7).
+ */
+export function getJakartaTodayString(): string {
+  return getJakartaDateString(new Date());
+}
+
+/**
  * Core Parser and Normalizer
  * Transforms any supported CSV / Excel 2D array into canonical NormalizedBankTransactions,
  * extracting metadata, PEND rows, and running validation.
@@ -394,7 +419,7 @@ export function parseAndNormalizeStatement(
   const format = detectStatementFormat(rows);
   const metadata = extractStatementMetadata(rows, format);
 
-  const todayStr = options.todayDate || new Date().toISOString().split('T')[0];
+  const todayStr = options.todayDate || getJakartaTodayString();
   let defaultYear = options.defaultYear;
 
   // Derive defaultYear from period if available
@@ -743,11 +768,13 @@ export function validateStatementTotals(
 }
 
 /**
- * Checks for duplicates against existing database lines using canonical composite key
+ * Checks for duplicates against existing database lines using canonical composite key.
+ * If pendingDates mapping is supplied, uses confirmed effective dates for pending lines.
  */
 export function checkStatementDuplicates(
   lines: NormalizedBankTransaction[],
-  existingLines: any[]
+  existingLines: any[],
+  pendingDates?: Record<string, string>
 ): {
   newLines: NormalizedBankTransaction[];
   duplicateLines: NormalizedBankTransaction[];
@@ -766,15 +793,21 @@ export function checkStatementDuplicates(
   const duplicateLines: NormalizedBankTransaction[] = [];
 
   lines.forEach((line) => {
-    const key = `${line.date}|${Number(line.debit) || 0}|${Number(line.credit) || 0}|${(line.reference || '').trim().toLowerCase()}|${normalizeDesc(line.description || '')}`;
+    // If pending and a confirmed date is supplied, evaluate duplicate matching with confirmed date
+    const effectiveDate =
+      line.isPending && pendingDates && pendingDates[line.id]
+        ? pendingDates[line.id]
+        : line.date;
+
+    const key = `${effectiveDate}|${Number(line.debit) || 0}|${Number(line.credit) || 0}|${(line.reference || '').trim().toLowerCase()}|${normalizeDesc(line.description || '')}`;
     const csvOccurrence = csvKeyCounts.get(key) || 0;
     csvKeyCounts.set(key, csvOccurrence + 1);
     const dbCount = dbKeyCounts.get(key) || 0;
 
     if (csvOccurrence < dbCount) {
-      duplicateLines.push({ ...line, status: 'duplicate' });
+      duplicateLines.push({ ...line, date: effectiveDate, status: 'duplicate' });
     } else {
-      newLines.push(line);
+      newLines.push({ ...line, date: effectiveDate });
     }
   });
 
