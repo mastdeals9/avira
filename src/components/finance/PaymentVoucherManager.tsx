@@ -3306,7 +3306,7 @@ export function PaymentVoucherManager({
                 <div className="text-xs text-gray-500 mb-0.5">Payment Method</div>
                 <div className="font-medium text-gray-900 capitalize">
                   {viewingVoucher.petty_cash_books?.name || viewingVoucher.payment_method === 'petty_cash'
-                    ? `Cash (Petty Cash: ${viewingVoucher.petty_cash_books?.name || 'Travel'})`
+                    ? `Cash (Petty Cash: ${viewingVoucher.petty_cash_books?.name || 'General Petty Cash'})`
                     : viewingVoucher.payment_method.replace(/_/g, ' ')}
                 </div>
               </div>
