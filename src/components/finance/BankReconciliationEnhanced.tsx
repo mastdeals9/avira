@@ -34,6 +34,7 @@ import {
   matchConfiguredBankAccount,
   checkStatementDuplicates,
   fetchExistingBankStatementLinesSafe,
+  isBcaBankAccount,
   getJakartaTodayString,
   type NormalizedBankTransaction,
   type BankStatementMetadata,
@@ -1720,10 +1721,14 @@ export function BankReconciliationEnhanced({
             }
           });
 
+          const targetBank = bankAccounts.find((b) => b.id === targetBankId);
+          const isBca = isBcaBankAccount(targetBank?.bank_name);
+
           const { newLines, duplicateLines } = checkStatementDuplicates(
             result.lines,
             existingLines,
-            initialPendingDates
+            initialPendingDates,
+            isBca
           );
 
           setSmartImportPreview({
@@ -1764,11 +1769,14 @@ export function BankReconciliationEnhanced({
     try {
       const sampleDates = smartImportPreview.allLines.map((l) => l.date).filter(Boolean);
       const existingLines = await fetchExistingBankStatementLinesSafe(supabase, newBankId, sampleDates);
+      const targetBank = bankAccounts.find((b) => b.id === newBankId);
+      const isBca = isBcaBankAccount(targetBank?.bank_name);
 
       const { newLines, duplicateLines } = checkStatementDuplicates(
         smartImportPreview.allLines,
         existingLines,
-        smartImportPreview.pendingDates
+        smartImportPreview.pendingDates,
+        isBca
       );
       setSmartImportPreview((prev) =>
         prev
@@ -1794,10 +1802,13 @@ export function BankReconciliationEnhanced({
         ...prev.pendingDates,
         [lineId]: newDate,
       };
+      const targetBank = bankAccounts.find((b) => b.id === prev.bankAccountId);
+      const isBca = isBcaBankAccount(targetBank?.bank_name);
       const { newLines, duplicateLines } = checkStatementDuplicates(
         prev.allLines,
         prev.existingDbLines || [],
-        updatedPendingDates
+        updatedPendingDates,
+        isBca
       );
       return {
         ...prev,
@@ -1840,10 +1851,14 @@ export function BankReconciliationEnhanced({
         return;
       }
 
+      const targetBank = bankAccounts.find((b) => b.id === bankAccountId);
+      const isBca = isBcaBankAccount(targetBank?.bank_name);
+
       const { newLines: verifiedNewLines, duplicateLines: verifiedDuplicateLines } = checkStatementDuplicates(
         allLines,
         latestDbLines,
-        pendingDates
+        pendingDates,
+        isBca
       );
 
       const linesToImport = forceImportAll ? allLines : verifiedNewLines;
@@ -1854,7 +1869,6 @@ export function BankReconciliationEnhanced({
         setUploading(false);
         return;
       }
-      const targetBank = bankAccounts.find((b) => b.id === bankAccountId);
       const stmtCurrency = metadata.currency || targetBank?.currency || 'IDR';
 
       if (targetBank?.currency && stmtCurrency !== targetBank.currency) {
@@ -2194,10 +2208,14 @@ export function BankReconciliationEnhanced({
             }
           });
 
+          const targetBank = bankAccounts.find((b) => b.id === targetBankId);
+          const isBca = isBcaBankAccount(targetBank?.bank_name);
+
           const { newLines, duplicateLines } = checkStatementDuplicates(
             result.lines,
             existingLines,
-            initialPendingDates
+            initialPendingDates,
+            isBca
           );
 
           setSmartImportPreview({
@@ -8775,10 +8793,13 @@ export function BankReconciliationEnhanced({
                         prev.allLines.forEach((l) => {
                           if (l.isPending) updated[l.id] = todayStr;
                         });
+                        const targetBank = bankAccounts.find((b) => b.id === prev.bankAccountId);
+                        const isBca = isBcaBankAccount(targetBank?.bank_name);
                         const { newLines, duplicateLines } = checkStatementDuplicates(
                           prev.allLines,
                           prev.existingDbLines || [],
-                          updated
+                          updated,
+                          isBca
                         );
                         return {
                           ...prev,

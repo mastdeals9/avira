@@ -39,6 +39,7 @@ import {
   validateStatementTotals,
   checkStatementDuplicates,
   fetchExistingBankStatementLinesSafe,
+  isBcaBankAccount,
   getJakartaDateString,
   getJakartaTodayString,
   KNOWN_BCA_BRANCH_CODES,
@@ -492,8 +493,8 @@ test('Smart BCA Statement Importer & Automatic Normalization Suite', async (t) =
       assert.ok(legacyBranchValues.has('0998'), 'Must contain 0998');
 
       // Test A: Newly normalized raw lines (which extract genuine references like 1311/FTSCY/WS95051)
-      // must match legacy DB records as duplicates
-      const rawVsLegacyCheck = checkStatementDuplicates(rawResult.lines, legacyDbLines);
+      // must match legacy DB records as duplicates when legacyBcaMode = true
+      const rawVsLegacyCheck = checkStatementDuplicates(rawResult.lines, legacyDbLines, undefined, true);
       assert.equal(
         rawVsLegacyCheck.duplicateCount,
         63,
@@ -522,8 +523,8 @@ test('Smart BCA Statement Importer & Automatic Normalization Suite', async (t) =
       const isTransferDup = rawVsLegacyCheck.duplicateLines.some((d) => d.id === transferRow.id);
       assert.ok(isTransferDup, 'Transfer row with genuine reference must match legacy 0000 DB record as duplicate');
 
-      // Test B: Cleaned CSV (26 rows) must also match legacy DB records as duplicates
-      const cleanVsLegacyCheck = checkStatementDuplicates(cleanResult.lines, legacyDbLines);
+      // Test B: Cleaned CSV (26 rows) must also match legacy DB records as duplicates when legacyBcaMode = true
+      const cleanVsLegacyCheck = checkStatementDuplicates(cleanResult.lines, legacyDbLines, undefined, true);
       assert.equal(
         cleanVsLegacyCheck.duplicateCount,
         26,
@@ -554,7 +555,7 @@ test('Smart BCA Statement Importer & Automatic Normalization Suite', async (t) =
         credit_amount: l.credit,
       }));
 
-      const occCheck = checkStatementDuplicates(repeatedTaxLines, legacyPartialDb);
+      const occCheck = checkStatementDuplicates(repeatedTaxLines, legacyPartialDb, undefined, true);
       assert.equal(occCheck.duplicateCount, 3, 'Exactly 3 occurrences must match legacy DB records as duplicates');
       assert.equal(occCheck.newLines.length, 4, 'Remaining 4 occurrences must be preserved as new transactions');
     }
@@ -654,6 +655,84 @@ test('Smart BCA Statement Importer & Automatic Normalization Suite', async (t) =
       ]);
       assert.equal(pageCallCount, 2, 'Must fetch exactly 2 pages');
       assert.equal(paginatedResult.length, 1250, 'Must return all 1250 items without omission');
+    }
+  );
+
+  // Test 22: Non-BCA bank duplicate matching uses exact reference matching (legacyBcaMode = false)
+  await t.test(
+    '22. Non-BCA bank preserves numeric references and avoids false duplicate matching (legacyBcaMode = false)',
+    () => {
+      // Existing transaction in non-BCA bank:
+      // date 2026-11-21, amount 500, description 'TRANSFER ABC', reference '1234'
+      const nonBcaDb = [
+        {
+          transaction_date: '2026-11-21',
+          debit_amount: 0,
+          credit_amount: 500,
+          description: 'TRANSFER ABC',
+          reference: '1234',
+        },
+      ];
+
+      // Incoming transaction A: same date, amount and description, but reference '5678'
+      const incomingA = [
+        {
+          id: 'non-bca-1',
+          date: '2026-11-21',
+          debit: 0,
+          credit: 500,
+          description: 'TRANSFER ABC',
+          reference: '5678',
+        },
+      ];
+
+      // With legacyBcaMode = false: expected NOT a duplicate
+      const checkA = checkStatementDuplicates(incomingA, nonBcaDb, undefined, false);
+      assert.equal(checkA.duplicateCount, 0, 'Incoming line with reference 5678 must NOT be flagged as duplicate of reference 1234');
+      assert.equal(checkA.newLines.length, 1, 'Incoming line with reference 5678 must be preserved as new transaction');
+
+      // Default (when legacyBcaMode is omitted): also expected NOT a duplicate
+      const checkADefault = checkStatementDuplicates(incomingA, nonBcaDb);
+      assert.equal(checkADefault.duplicateCount, 0, 'Default legacyBcaMode must be false (not a duplicate for differing references)');
+      assert.equal(checkADefault.newLines.length, 1, 'Default legacyBcaMode must preserve line as new');
+
+      // Incoming transaction B: with reference '1234'
+      const incomingB = [
+        {
+          id: 'non-bca-2',
+          date: '2026-11-21',
+          debit: 0,
+          credit: 500,
+          description: 'TRANSFER ABC',
+          reference: '1234',
+        },
+      ];
+
+      // With legacyBcaMode = false: expected DUPLICATE
+      const checkB = checkStatementDuplicates(incomingB, nonBcaDb, undefined, false);
+      assert.equal(checkB.duplicateCount, 1, 'Incoming line with matching reference 1234 must be flagged as duplicate');
+      assert.equal(checkB.newLines.length, 0, '0 new lines when reference matches exactly');
+
+      // Conversely, if legacyBcaMode = true on the same fixture with 4-digit reference '1234':
+      // The 4-digit reference is treated as legacy branch code and triggers fallback duplicate match
+      const checkALegacyBca = checkStatementDuplicates(incomingA, nonBcaDb, undefined, true);
+      assert.equal(
+        checkALegacyBca.duplicateCount,
+        1,
+        'Under legacy BCA mode, 4-digit reference 1234 is treated as legacy branch fallback'
+      );
+
+      // Helper test: isBcaBankAccount correctly identifies BCA bank names
+      assert.equal(isBcaBankAccount('BCA Bank'), true, 'BCA Bank must be recognized as BCA');
+      assert.equal(isBcaBankAccount('BCA'), true, 'BCA must be recognized as BCA');
+      assert.equal(isBcaBankAccount('Bank Central Asia'), true, 'Bank Central Asia must be recognized as BCA');
+      assert.equal(isBcaBankAccount('PT Bank Central Asia'), true, 'PT Bank Central Asia must be recognized as BCA');
+      assert.equal(isBcaBankAccount('Bank BCA - IDR'), true, 'Bank BCA - IDR must be recognized as BCA');
+      assert.equal(isBcaBankAccount('Bank Mandiri'), false, 'Bank Mandiri must NOT be recognized as BCA');
+      assert.equal(isBcaBankAccount('Mandiri'), false, 'Mandiri must NOT be recognized as BCA');
+      assert.equal(isBcaBankAccount('BNI'), false, 'BNI must NOT be recognized as BCA');
+      assert.equal(isBcaBankAccount(null), false, 'null must return false');
+      assert.equal(isBcaBankAccount(undefined), false, 'undefined must return false');
     }
   );
 });

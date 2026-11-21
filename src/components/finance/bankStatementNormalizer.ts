@@ -799,24 +799,45 @@ export function isLegacyBranchReference(ref: any): boolean {
 }
 
 /**
+ * Helper to identify if a bank account is a BCA account based on its bank_name.
+ * Recognizes the actual configured name `BCA Bank` and equivalent `BCA` / `Bank Central Asia` names.
+ */
+export function isBcaBankAccount(bankName?: string | null): boolean {
+  if (!bankName) return false;
+  const s = String(bankName).trim().toLowerCase();
+  return (
+    s === 'bca bank' ||
+    s === 'bca' ||
+    s === 'bank central asia' ||
+    s === 'pt bank central asia' ||
+    s.includes('bank central asia') ||
+    /\bbca\b/i.test(s)
+  );
+}
+
+/**
  * Checks for duplicates against existing database lines using canonical composite key.
  * If pendingDates mapping is supplied, uses confirmed effective dates for pending lines.
  *
  * Backward-compatibility with legacy BCA branch references:
- * The previous importer used `branch || extraRef`, saving branch codes (e.g. 0000, 0386, 0093, 0998)
- * in bank_statement_lines.reference.
+ * When legacyBcaMode === true:
+ * - Four-digit references (e.g. 0000, 0386, 0093, 0998) from the previous importer
+ *   are treated as legacy BCA branch codes.
+ * - Legacy DB records are placed into a fallback duplicate index.
+ * - Fallback duplicate matching is allowed using (date + debit + credit + normalized description).
  *
- * For existing database records with legacy branch references, uses fallback identity:
- * (transaction_date, debit, credit, normalized description).
- * For records with genuine or clean references, uses exact identity:
- * (transaction_date, debit, credit, reference, normalized description).
+ * When legacyBcaMode === false (default):
+ * - Every numeric reference (including four-digit references) is preserved exactly.
+ * - Exact duplicate matching only is used: (date + debit + credit + reference + normalized description).
+ * - Legacy fallback matching is not used.
  *
  * Preserves occurrence counting so genuinely repeated identical transactions are never discarded.
  */
 export function checkStatementDuplicates(
   lines: NormalizedBankTransaction[],
   existingLines: any[],
-  pendingDates?: Record<string, string>
+  pendingDates?: Record<string, string>,
+  legacyBcaMode: boolean = false
 ): {
   newLines: NormalizedBankTransaction[];
   duplicateLines: NormalizedBankTransaction[];
@@ -835,13 +856,13 @@ export function checkStatementDuplicates(
     const desc = normalizeDesc(e.description || '');
     const ref = normalizeRef(e.reference);
 
-    if (isLegacyBranchReference(e.reference)) {
-      // Legacy branch reference (e.g. 0000, 0386, 0093, 0998):
+    if (legacyBcaMode && isLegacyBranchReference(e.reference)) {
+      // Legacy branch reference in BCA records (e.g. 0000, 0386, 0093, 0998):
       // Index under fallback identity (date|debit|credit|description)
       const fbKey = `${date}|${debit}|${credit}|${desc}`;
       dbLegacyFallbackCounts.set(fbKey, (dbLegacyFallbackCounts.get(fbKey) || 0) + 1);
     } else {
-      // Modern or genuine reference: index under exact key
+      // Modern or genuine reference, or non-BCA bank: index under exact key
       const exactKey = `${date}|${debit}|${credit}|${ref}|${desc}`;
       dbExactKeyCounts.set(exactKey, (dbExactKeyCounts.get(exactKey) || 0) + 1);
     }
@@ -862,7 +883,9 @@ export function checkStatementDuplicates(
     const debit = Number(line.debit) || 0;
     const credit = Number(line.credit) || 0;
     const desc = normalizeDesc(line.description || '');
-    const ref = isLegacyBranchReference(line.reference) ? '' : normalizeRef(line.reference);
+    // In legacy BCA mode, strip 4-digit branch code from reference so it matches empty reference
+    // In non-BCA mode (legacyBcaMode === false), preserve every reference as-is
+    const ref = legacyBcaMode && isLegacyBranchReference(line.reference) ? '' : normalizeRef(line.reference);
 
     const exactKey = `${effectiveDate}|${debit}|${credit}|${ref}|${desc}`;
     const fallbackKey = `${effectiveDate}|${debit}|${credit}|${desc}`;
@@ -877,14 +900,16 @@ export function checkStatementDuplicates(
       return;
     }
 
-    // 2. Fallback: Check if an available legacy branch DB record exists
-    const legacyDbCount = dbLegacyFallbackCounts.get(fallbackKey) || 0;
-    const legacyUsedCount = csvLegacyUsedCounts.get(fallbackKey) || 0;
+    // 2. Fallback: Check if an available legacy branch DB record exists (only when legacyBcaMode is true)
+    if (legacyBcaMode) {
+      const legacyDbCount = dbLegacyFallbackCounts.get(fallbackKey) || 0;
+      const legacyUsedCount = csvLegacyUsedCounts.get(fallbackKey) || 0;
 
-    if (legacyUsedCount < legacyDbCount) {
-      csvLegacyUsedCounts.set(fallbackKey, legacyUsedCount + 1);
-      duplicateLines.push({ ...line, date: effectiveDate, status: 'duplicate' });
-      return;
+      if (legacyUsedCount < legacyDbCount) {
+        csvLegacyUsedCounts.set(fallbackKey, legacyUsedCount + 1);
+        duplicateLines.push({ ...line, date: effectiveDate, status: 'duplicate' });
+        return;
+      }
     }
 
     // Record occurrence of exactKey for lines that were not matched
