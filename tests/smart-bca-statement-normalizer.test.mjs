@@ -38,8 +38,11 @@ import {
   parseAndNormalizeStatement,
   validateStatementTotals,
   checkStatementDuplicates,
+  fetchExistingBankStatementLinesSafe,
   getJakartaDateString,
   getJakartaTodayString,
+  KNOWN_BCA_BRANCH_CODES,
+  isLegacyBranchReference,
 } from '../src/components/finance/bankStatementNormalizer.ts';
 
 test('Smart BCA Statement Importer & Automatic Normalization Suite', async (t) => {
@@ -456,4 +459,201 @@ test('Smart BCA Statement Importer & Automatic Normalization Suite', async (t) =
       `Remaining ${repeatedLines.length - 2} occurrences must be preserved as new transactions`
     );
   });
+
+  // Test 19: Backward-compatibility: detect duplicates against legacy database records with BCA branch references
+  await t.test(
+    '19. Backward-compatibility: detect duplicates against legacy DB records with BCA branch references (0000, 0386, 0093, 0998)',
+    () => {
+      const { rows: rawRows } = parseRawCSVToRows(rawCSV);
+      const { rows: cleanRows } = parseRawCSVToRows(cleanCSV);
+
+      const rawResult = parseAndNormalizeStatement(rawRows, { defaultYear: 2026 });
+      const cleanResult = parseAndNormalizeStatement(cleanRows, { defaultYear: 2026 });
+
+      // Build simulated legacy DB records created by previous importer
+      // where `reference` was populated with the raw BCA Branch column value
+      const legacyBranchValues = new Set();
+      const legacyDbLines = rawResult.lines.map((line, idx) => {
+        const rawBranch = String(rawRows[idx + 6]?.[2] || '0000').trim();
+        legacyBranchValues.add(rawBranch);
+        return {
+          transaction_date: line.date,
+          description: line.description,
+          reference: rawBranch, // 0000, 0386, 0093, 0998 saved in DB reference!
+          debit_amount: line.debit,
+          credit_amount: line.credit,
+        };
+      });
+
+      // Verify all known legacy branch codes are represented in the test fixture
+      assert.ok(legacyBranchValues.has('0000'), 'Must contain 0000');
+      assert.ok(legacyBranchValues.has('0386'), 'Must contain 0386');
+      assert.ok(legacyBranchValues.has('0093'), 'Must contain 0093');
+      assert.ok(legacyBranchValues.has('0998'), 'Must contain 0998');
+
+      // Test A: Newly normalized raw lines (which extract genuine references like 1311/FTSCY/WS95051)
+      // must match legacy DB records as duplicates
+      const rawVsLegacyCheck = checkStatementDuplicates(rawResult.lines, legacyDbLines);
+      assert.equal(
+        rawVsLegacyCheck.duplicateCount,
+        63,
+        'All 63 newly parsed raw transactions must match legacy DB records as duplicates'
+      );
+      assert.equal(rawVsLegacyCheck.newLines.length, 0, '0 new lines should be imported when legacy records exist');
+
+      // Verify individual known branch cases
+      const lapiRow = rawResult.lines.find((l) => l.description.includes('PT.LAPI'));
+      assert.ok(lapiRow, 'PT.LAPI row must exist');
+      const isLapiDup = rawVsLegacyCheck.duplicateLines.some((d) => d.id === lapiRow.id);
+      assert.ok(isLapiDup, 'PT.LAPI (legacy branch 0386) must match as duplicate');
+
+      const tarikanRow = rawResult.lines.find((l) => l.description.includes('0516992-0'));
+      assert.ok(tarikanRow, 'Tarikan tunai row must exist');
+      const isTarikanDup = rawVsLegacyCheck.duplicateLines.some((d) => d.id === tarikanRow.id);
+      assert.ok(isTarikanDup, 'Tarikan tunai (legacy branch 0093) must match as duplicate');
+
+      const admRow = rawResult.lines.find((l) => l.description.includes('BIAYA ADM'));
+      assert.ok(admRow, 'Biaya adm row must exist');
+      const isAdmDup = rawVsLegacyCheck.duplicateLines.some((d) => d.id === admRow.id);
+      assert.ok(isAdmDup, 'Biaya adm (legacy branch 0998) must match as duplicate');
+
+      const transferRow = rawResult.lines.find((l) => l.reference === '1311/FTSCY/WS95051');
+      assert.ok(transferRow, 'Transfer row with genuine reference must exist');
+      const isTransferDup = rawVsLegacyCheck.duplicateLines.some((d) => d.id === transferRow.id);
+      assert.ok(isTransferDup, 'Transfer row with genuine reference must match legacy 0000 DB record as duplicate');
+
+      // Test B: Cleaned CSV (26 rows) must also match legacy DB records as duplicates
+      const cleanVsLegacyCheck = checkStatementDuplicates(cleanResult.lines, legacyDbLines);
+      assert.equal(
+        cleanVsLegacyCheck.duplicateCount,
+        26,
+        'All 26 cleaned CSV transactions must match legacy DB records as duplicates'
+      );
+      assert.equal(cleanVsLegacyCheck.newLines.length, 0, '0 new lines from cleaned file against legacy DB');
+    }
+  );
+
+  // Test 20: Backward-compatibility: occurrence counting preserved with legacy branch records
+  await t.test(
+    '20. Backward-compatibility: preserve occurrence counting with legacy branch records',
+    () => {
+      const { rows: rawRows } = parseRawCSVToRows(rawCSV);
+      const rawResult = parseAndNormalizeStatement(rawRows, { defaultYear: 2026 });
+
+      const repeatedTaxLines = rawResult.lines.filter(
+        (l) => l.date === '2026-11-03' && l.debit === 50000 && l.description.includes('PENERIMAAN NEGARA')
+      );
+      assert.equal(repeatedTaxLines.length, 7, 'Must have 7 repeated tax payments on 2026-11-03');
+
+      // Suppose legacy DB only has 3 of these rows with reference = '0000'
+      const legacyPartialDb = repeatedTaxLines.slice(0, 3).map((l) => ({
+        transaction_date: l.date,
+        description: l.description,
+        reference: '0000', // Legacy branch code
+        debit_amount: l.debit,
+        credit_amount: l.credit,
+      }));
+
+      const occCheck = checkStatementDuplicates(repeatedTaxLines, legacyPartialDb);
+      assert.equal(occCheck.duplicateCount, 3, 'Exactly 3 occurrences must match legacy DB records as duplicates');
+      assert.equal(occCheck.newLines.length, 4, 'Remaining 4 occurrences must be preserved as new transactions');
+    }
+  );
+
+  // Test 21: Fail-safe duplicate checking with fetchExistingBankStatementLinesSafe
+  await t.test(
+    '21. Fail-safe duplicate checking: fetchExistingBankStatementLinesSafe handles errors and pagination',
+    async () => {
+      // Case A: Query failure throws an explicit error and NEVER returns empty array
+      const failingClient = {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              gte: () => ({
+                lte: () => ({
+                  range: () => ({
+                    order: async () => ({
+                      data: null,
+                      error: { message: 'Connection reset by peer' },
+                    }),
+                  }),
+                }),
+              }),
+              range: () => ({
+                order: async () => ({
+                  data: null,
+                  error: { message: 'Connection reset by peer' },
+                }),
+              }),
+            }),
+          }),
+        }),
+      };
+
+      await assert.rejects(
+        async () => {
+          await fetchExistingBankStatementLinesSafe(failingClient, 'mock-bank-id', ['2026-11-10']);
+        },
+        /Database error querying bank statement records: Connection reset by peer/,
+        'Must reject with explicit database error message when query fails'
+      );
+
+      // Case B: Client requires bankAccountId
+      await assert.rejects(
+        async () => {
+          await fetchExistingBankStatementLinesSafe(failingClient, '', ['2026-11-10']);
+        },
+        /Bank account ID is required/,
+        'Must reject when bankAccountId is missing'
+      );
+
+      // Case C: Pagination handles >1000 items across multiple pages
+      let pageCallCount = 0;
+      const paginatedClient = {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              gte: () => ({
+                lte: () => ({
+                  range: (from, to) => ({
+                    order: async () => {
+                      pageCallCount++;
+                      if (from === 0) {
+                        // Page 1: 1000 items
+                        const p1 = Array.from({ length: 1000 }, (_, i) => ({
+                          transaction_date: '2026-11-10',
+                          description: `Txn ${i}`,
+                          reference: `ref-${i}`,
+                          debit_amount: 100,
+                          credit_amount: 0,
+                        }));
+                        return { data: p1, error: null };
+                      } else {
+                        // Page 2: 250 items (less than 1000 -> final page)
+                        const p2 = Array.from({ length: 250 }, (_, i) => ({
+                          transaction_date: '2026-11-11',
+                          description: `Txn 1000+${i}`,
+                          reference: `ref-1000+${i}`,
+                          debit_amount: 200,
+                          credit_amount: 0,
+                        }));
+                        return { data: p2, error: null };
+                      }
+                    },
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }),
+      };
+
+      const paginatedResult = await fetchExistingBankStatementLinesSafe(paginatedClient, 'mock-bank-id', [
+        '2026-11-10',
+        '2026-11-11',
+      ]);
+      assert.equal(pageCallCount, 2, 'Must fetch exactly 2 pages');
+      assert.equal(paginatedResult.length, 1250, 'Must return all 1250 items without omission');
+    }
+  );
 });

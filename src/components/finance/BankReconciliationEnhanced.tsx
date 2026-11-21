@@ -33,6 +33,7 @@ import {
   parseAndNormalizeStatement,
   matchConfiguredBankAccount,
   checkStatementDuplicates,
+  fetchExistingBankStatementLinesSafe,
   getJakartaTodayString,
   type NormalizedBankTransaction,
   type BankStatementMetadata,
@@ -1700,10 +1701,17 @@ export function BankReconciliationEnhanced({
             targetBankId = bankAccounts[0].id;
           }
 
-          const { data: existingLines } = await supabase
-            .from('bank_statement_lines')
-            .select('transaction_date, description, reference, debit_amount, credit_amount')
-            .eq('bank_account_id', targetBankId);
+          // Safely query existing bank statement lines with pagination and explicit error handling
+          const sampleDates = result.lines.map((l) => l.date).filter(Boolean);
+          let existingLines: any[];
+          try {
+            existingLines = await fetchExistingBankStatementLinesSafe(supabase, targetBankId, sampleDates);
+          } catch (dbErr: any) {
+            console.error('Failed to query existing statement lines for duplicate check:', dbErr);
+            alert(`❌ Duplicate verification query failed: ${dbErr.message}\nImport stopped to prevent duplicate data.`);
+            setUploading(false);
+            return;
+          }
 
           const initialPendingDates: Record<string, string> = {};
           result.lines.forEach((l) => {
@@ -1714,7 +1722,7 @@ export function BankReconciliationEnhanced({
 
           const { newLines, duplicateLines } = checkStatementDuplicates(
             result.lines,
-            existingLines || [],
+            existingLines,
             initialPendingDates
           );
 
@@ -1729,7 +1737,7 @@ export function BankReconciliationEnhanced({
             newLines,
             duplicateLines,
             pendingDates: initialPendingDates,
-            existingDbLines: existingLines || [],
+            existingDbLines: existingLines,
             activeReviewFilter: 'all',
           });
         } catch (parseErr: any) {
@@ -1754,14 +1762,12 @@ export function BankReconciliationEnhanced({
   const handlePreviewBankChange = async (newBankId: string) => {
     if (!smartImportPreview || smartImportPreview.bankAccountId === newBankId) return;
     try {
-      const { data: existingLines } = await supabase
-        .from('bank_statement_lines')
-        .select('transaction_date, description, reference, debit_amount, credit_amount')
-        .eq('bank_account_id', newBankId);
+      const sampleDates = smartImportPreview.allLines.map((l) => l.date).filter(Boolean);
+      const existingLines = await fetchExistingBankStatementLinesSafe(supabase, newBankId, sampleDates);
 
       const { newLines, duplicateLines } = checkStatementDuplicates(
         smartImportPreview.allLines,
-        existingLines || [],
+        existingLines,
         smartImportPreview.pendingDates
       );
       setSmartImportPreview((prev) =>
@@ -1769,14 +1775,15 @@ export function BankReconciliationEnhanced({
           ? {
               ...prev,
               bankAccountId: newBankId,
-              existingDbLines: existingLines || [],
+              existingDbLines: existingLines,
               newLines,
               duplicateLines,
             }
           : null
       );
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error rechecking duplicates on bank account change:', err);
+      alert(`❌ Failed to verify existing records for selected bank account: ${err.message}`);
     }
   };
 
@@ -1819,14 +1826,23 @@ export function BankReconciliationEnhanced({
     setUploading(true);
     try {
       // Recalculate duplicate status using confirmed effective date immediately before import
-      const { data: latestDbLines } = await supabase
-        .from('bank_statement_lines')
-        .select('transaction_date, description, reference, debit_amount, credit_amount')
-        .eq('bank_account_id', bankAccountId);
+      // Query existing database records with safe pagination and explicit error checking
+      const confirmedDates = allLines.map((l) => (l.isPending ? pendingDates[l.id] || l.date : l.date));
+      let latestDbLines: any[];
+      try {
+        latestDbLines = await fetchExistingBankStatementLinesSafe(supabase, bankAccountId, confirmedDates);
+      } catch (dbErr: any) {
+        console.error('Pre-import duplicate check failed:', dbErr);
+        alert(
+          `❌ Pre-import duplicate verification failed: ${dbErr.message}\nImport cancelled. No records were created.`
+        );
+        setUploading(false);
+        return;
+      }
 
       const { newLines: verifiedNewLines, duplicateLines: verifiedDuplicateLines } = checkStatementDuplicates(
         allLines,
-        latestDbLines || [],
+        latestDbLines,
         pendingDates
       );
 
@@ -2159,10 +2175,17 @@ export function BankReconciliationEnhanced({
             targetBankId = bankAccounts[0].id;
           }
 
-          const { data: existingLines } = await supabase
-            .from('bank_statement_lines')
-            .select('transaction_date, description, reference, debit_amount, credit_amount')
-            .eq('bank_account_id', targetBankId);
+          // Safely query existing bank statement lines with pagination and explicit error handling
+          const sampleDates = result.lines.map((l) => l.date).filter(Boolean);
+          let existingLines: any[];
+          try {
+            existingLines = await fetchExistingBankStatementLinesSafe(supabase, targetBankId, sampleDates);
+          } catch (dbErr: any) {
+            console.error('Failed to query existing statement lines for duplicate check:', dbErr);
+            alert(`❌ Duplicate verification query failed: ${dbErr.message}\nImport stopped to prevent duplicate data.`);
+            setUploading(false);
+            return;
+          }
 
           const initialPendingDates: Record<string, string> = {};
           result.lines.forEach((l) => {
@@ -2173,7 +2196,7 @@ export function BankReconciliationEnhanced({
 
           const { newLines, duplicateLines } = checkStatementDuplicates(
             result.lines,
-            existingLines || [],
+            existingLines,
             initialPendingDates
           );
 
@@ -2188,7 +2211,7 @@ export function BankReconciliationEnhanced({
             newLines,
             duplicateLines,
             pendingDates: initialPendingDates,
-            existingDbLines: existingLines || [],
+            existingDbLines: existingLines,
             activeReviewFilter: 'all',
           });
         } catch (excelErr: any) {

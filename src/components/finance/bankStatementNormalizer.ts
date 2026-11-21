@@ -781,9 +781,37 @@ export function validateStatementTotals(
 }
 
 /**
+ * Known BCA branch codes observed in historical statement exports.
+ */
+export const KNOWN_BCA_BRANCH_CODES = new Set(['0000', '0386', '0093', '0998']);
+
+/**
+ * Checks if a reference is a legacy BCA branch code that was saved into reference
+ * by the previous importer.
+ */
+export function isLegacyBranchReference(ref: any): boolean {
+  if (ref === null || ref === undefined) return false;
+  const s = String(ref).trim();
+  if (!s) return false;
+  if (KNOWN_BCA_BRANCH_CODES.has(s)) return true;
+  // Standard BCA branch code is a 4-digit number
+  return /^\d{4}$/.test(s);
+}
+
+/**
  * Checks for duplicates against existing database lines using canonical composite key.
  * If pendingDates mapping is supplied, uses confirmed effective dates for pending lines.
- * Branch is completely excluded from duplicate identity.
+ *
+ * Backward-compatibility with legacy BCA branch references:
+ * The previous importer used `branch || extraRef`, saving branch codes (e.g. 0000, 0386, 0093, 0998)
+ * in bank_statement_lines.reference.
+ *
+ * For existing database records with legacy branch references, uses fallback identity:
+ * (transaction_date, debit, credit, normalized description).
+ * For records with genuine or clean references, uses exact identity:
+ * (transaction_date, debit, credit, reference, normalized description).
+ *
+ * Preserves occurrence counting so genuinely repeated identical transactions are never discarded.
  */
 export function checkStatementDuplicates(
   lines: NormalizedBankTransaction[],
@@ -795,19 +823,32 @@ export function checkStatementDuplicates(
   duplicateCount: number;
 } {
   const normalizeDesc = (desc: string) => (desc || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  const normalizeRef = (ref: any) => {
-    const s = String(ref || '').trim().toLowerCase();
-    // Branch codes like '0000' must never form part of the duplicate identity
-    return s === '0000' ? '' : s;
-  };
+  const normalizeRef = (ref: any) => String(ref || '').trim().toLowerCase();
 
-  const dbKeyCounts = new Map<string, number>();
+  const dbExactKeyCounts = new Map<string, number>();
+  const dbLegacyFallbackCounts = new Map<string, number>();
+
   (existingLines || []).forEach((e) => {
-    const k = `${e.transaction_date}|${Number(e.debit_amount) || 0}|${Number(e.credit_amount) || 0}|${normalizeRef(e.reference)}|${normalizeDesc(e.description || '')}`;
-    dbKeyCounts.set(k, (dbKeyCounts.get(k) || 0) + 1);
+    const date = String(e.transaction_date || '');
+    const debit = Number(e.debit_amount) || 0;
+    const credit = Number(e.credit_amount) || 0;
+    const desc = normalizeDesc(e.description || '');
+    const ref = normalizeRef(e.reference);
+
+    if (isLegacyBranchReference(e.reference)) {
+      // Legacy branch reference (e.g. 0000, 0386, 0093, 0998):
+      // Index under fallback identity (date|debit|credit|description)
+      const fbKey = `${date}|${debit}|${credit}|${desc}`;
+      dbLegacyFallbackCounts.set(fbKey, (dbLegacyFallbackCounts.get(fbKey) || 0) + 1);
+    } else {
+      // Modern or genuine reference: index under exact key
+      const exactKey = `${date}|${debit}|${credit}|${ref}|${desc}`;
+      dbExactKeyCounts.set(exactKey, (dbExactKeyCounts.get(exactKey) || 0) + 1);
+    }
   });
 
-  const csvKeyCounts = new Map<string, number>();
+  const csvExactKeyCounts = new Map<string, number>();
+  const csvLegacyUsedCounts = new Map<string, number>();
   const newLines: NormalizedBankTransaction[] = [];
   const duplicateLines: NormalizedBankTransaction[] = [];
 
@@ -818,16 +859,37 @@ export function checkStatementDuplicates(
         ? pendingDates[line.id]
         : line.date;
 
-    const key = `${effectiveDate}|${Number(line.debit) || 0}|${Number(line.credit) || 0}|${normalizeRef(line.reference)}|${normalizeDesc(line.description || '')}`;
-    const csvOccurrence = csvKeyCounts.get(key) || 0;
-    csvKeyCounts.set(key, csvOccurrence + 1);
-    const dbCount = dbKeyCounts.get(key) || 0;
+    const debit = Number(line.debit) || 0;
+    const credit = Number(line.credit) || 0;
+    const desc = normalizeDesc(line.description || '');
+    const ref = isLegacyBranchReference(line.reference) ? '' : normalizeRef(line.reference);
 
-    if (csvOccurrence < dbCount) {
+    const exactKey = `${effectiveDate}|${debit}|${credit}|${ref}|${desc}`;
+    const fallbackKey = `${effectiveDate}|${debit}|${credit}|${desc}`;
+
+    // 1. Try exact match first
+    const exactDbCount = dbExactKeyCounts.get(exactKey) || 0;
+    const exactCsvCount = csvExactKeyCounts.get(exactKey) || 0;
+
+    if (exactCsvCount < exactDbCount) {
+      csvExactKeyCounts.set(exactKey, exactCsvCount + 1);
       duplicateLines.push({ ...line, date: effectiveDate, status: 'duplicate' });
-    } else {
-      newLines.push({ ...line, date: effectiveDate });
+      return;
     }
+
+    // 2. Fallback: Check if an available legacy branch DB record exists
+    const legacyDbCount = dbLegacyFallbackCounts.get(fallbackKey) || 0;
+    const legacyUsedCount = csvLegacyUsedCounts.get(fallbackKey) || 0;
+
+    if (legacyUsedCount < legacyDbCount) {
+      csvLegacyUsedCounts.set(fallbackKey, legacyUsedCount + 1);
+      duplicateLines.push({ ...line, date: effectiveDate, status: 'duplicate' });
+      return;
+    }
+
+    // Record occurrence of exactKey for lines that were not matched
+    csvExactKeyCounts.set(exactKey, exactCsvCount + 1);
+    newLines.push({ ...line, date: effectiveDate });
   });
 
   return {
@@ -835,4 +897,101 @@ export function checkStatementDuplicates(
     duplicateLines,
     duplicateCount: duplicateLines.length,
   };
+}
+
+/**
+ * Safely fetches existing bank statement lines from database for duplicate detection.
+ *
+ * Safety guarantees:
+ * 1. Handles Supabase query errors explicitly — NEVER interprets a failed query as an empty database result.
+ * 2. Uses pagination to fetch ALL relevant lines (handling >1000 records).
+ * 3. Scopes by date range around sample dates (with a 60-day buffer) when dates are provided.
+ * 4. Throws an error on any failure, allowing callers to stop the import cleanly before creating records.
+ */
+export async function fetchExistingBankStatementLinesSafe(
+  supabaseClient: any,
+  bankAccountId: string,
+  sampleDates?: string[]
+): Promise<
+  Array<{
+    transaction_date: string;
+    description: string;
+    reference: string | null;
+    debit_amount: number;
+    credit_amount: number;
+  }>
+> {
+  if (!supabaseClient) {
+    throw new Error('Database client is not available.');
+  }
+  if (!bankAccountId) {
+    throw new Error('Bank account ID is required to query existing statement lines.');
+  }
+
+  // Derive date bounds if sample dates provided
+  let minDate: string | undefined;
+  let maxDate: string | undefined;
+
+  const validDates = (sampleDates || [])
+    .filter((d) => d && /^\d{4}-\d{2}-\d{2}$/.test(String(d)))
+    .sort();
+
+  if (validDates.length > 0) {
+    // Add 60-day buffer before earliest and after latest to safely cover any PEND or clearing shifts
+    const earliest = new Date(validDates[0]);
+    earliest.setDate(earliest.getDate() - 60);
+    minDate = earliest.toISOString().split('T')[0];
+
+    const latest = new Date(validDates[validDates.length - 1]);
+    latest.setDate(latest.getDate() + 60);
+    maxDate = latest.toISOString().split('T')[0];
+  }
+
+  const pageSize = 1000;
+  let allLines: Array<{
+    transaction_date: string;
+    description: string;
+    reference: string | null;
+    debit_amount: number;
+    credit_amount: number;
+  }> = [];
+  let from = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let query = supabaseClient
+      .from('bank_statement_lines')
+      .select('transaction_date, description, reference, debit_amount, credit_amount')
+      .eq('bank_account_id', bankAccountId);
+
+    if (minDate) {
+      query = query.gte('transaction_date', minDate);
+    }
+    if (maxDate) {
+      query = query.lte('transaction_date', maxDate);
+    }
+
+    const { data, error } = await query
+      .range(from, from + pageSize - 1)
+      .order('transaction_date', { ascending: true });
+
+    if (error) {
+      throw new Error(
+        `Database error querying bank statement records: ${error.message || JSON.stringify(error)}`
+      );
+    }
+
+    if (!data || data.length === 0) {
+      hasMore = false;
+    } else {
+      allLines = allLines.concat(data);
+      if (data.length < pageSize) {
+        hasMore = false;
+      } else {
+        from += pageSize;
+      }
+    }
+  }
+
+  return allLines;
 }
