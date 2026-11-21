@@ -346,4 +346,114 @@ test('Smart BCA Statement Importer & Automatic Normalization Suite', async (t) =
     assert.ok(newPend, 'Pending line is now classified as new');
     assert.equal(newPend.date, '2026-11-19', 'Effective date must be 2026-11-19');
   });
+
+  // Test 15: Completely ignore BCA Branch column and do not populate branchCode
+  await t.test('15. Completely ignore BCA Branch column and do not populate branchCode', () => {
+    const { rows } = parseRawCSVToRows(rawCSV);
+    const result = parseAndNormalizeStatement(rows, { defaultYear: 2026 });
+
+    result.lines.forEach((line) => {
+      assert.equal(line.branchCode, undefined, `Line ${line.id} branchCode must not be populated from BCA Branch`);
+    });
+  });
+
+  // Test 16: Never use Branch as reference, extract genuine reference only from transaction data
+  await t.test('16. Never use Branch as reference, extract genuine reference only from transaction data', () => {
+    const { rows } = parseRawCSVToRows(rawCSV);
+    const result = parseAndNormalizeStatement(rows, { defaultYear: 2026 });
+
+    result.lines.forEach((line) => {
+      assert.notEqual(line.reference, '0000', `Line ${line.id} must NEVER have branch '0000' as reference`);
+      if (line.reference) {
+        assert.ok(
+          line.description.includes(line.reference) || /^\d{6,10}-\d+$/.test(line.reference),
+          `Reference '${line.reference}' must genuinely exist in transaction data for line ${line.id}`
+        );
+      }
+    });
+  });
+
+  // Test 17: All 26 overlapping transactions match as duplicates using ERP checkStatementDuplicates
+  await t.test('17. All 26 overlapping transactions match as duplicates between raw BCA CSV and cleaned CSV', () => {
+    const { rows: rawRows } = parseRawCSVToRows(rawCSV);
+    const { rows: cleanRows } = parseRawCSVToRows(cleanCSV);
+
+    const rawResult = parseAndNormalizeStatement(rawRows, { defaultYear: 2026 });
+    const cleanResult = parseAndNormalizeStatement(cleanRows, { defaultYear: 2026 });
+
+    assert.equal(cleanResult.lines.length, 26, 'Cleaned fixture must produce 26 transactions');
+    assert.equal(rawResult.lines.length, 63, 'Raw fixture must produce 63 transactions');
+
+    // Scenario A: Raw file already imported in DB -> Clean file uploaded
+    const mockDbFromRaw = rawResult.lines.map((l) => ({
+      transaction_date: l.date,
+      description: l.description,
+      reference: l.reference || '',
+      debit_amount: l.debit,
+      credit_amount: l.credit,
+    }));
+
+    const cleanDupCheck = checkStatementDuplicates(cleanResult.lines, mockDbFromRaw);
+    assert.equal(
+      cleanDupCheck.duplicateCount,
+      26,
+      'All 26 cleaned CSV transactions must be identified as duplicates against raw BCA DB records'
+    );
+    assert.equal(cleanDupCheck.newLines.length, 0, '0 new lines should be imported from the cleaned file');
+
+    // Scenario B: Clean file already imported in DB -> Raw file uploaded
+    const mockDbFromClean = cleanResult.lines.map((l) => ({
+      transaction_date: l.date,
+      description: l.description,
+      reference: l.reference || '',
+      debit_amount: l.debit,
+      credit_amount: l.credit,
+    }));
+
+    const rawDupCheck = checkStatementDuplicates(rawResult.lines, mockDbFromClean);
+    assert.equal(
+      rawDupCheck.duplicateCount,
+      26,
+      'Exactly 26 overlapping transactions must be identified as duplicates in the raw file'
+    );
+    assert.equal(
+      rawDupCheck.newLines.length,
+      37,
+      'Exactly 37 new transactions (63 - 26) must be identified for import from raw file'
+    );
+
+    // Scenario C: Re-uploading raw file against itself
+    const exactReupload = checkStatementDuplicates(rawResult.lines, mockDbFromRaw);
+    assert.equal(exactReupload.duplicateCount, 63, 'Exact raw re-upload must identify all 63 duplicates');
+    assert.equal(exactReupload.newLines.length, 0, 'Exact raw re-upload must have 0 new lines');
+  });
+
+  // Test 18: Preserve occurrence counting for genuinely repeated identical transactions
+  await t.test('18. Preserve occurrence counting for genuinely repeated identical transactions', () => {
+    const { rows: rawRows } = parseRawCSVToRows(rawCSV);
+    const rawResult = parseAndNormalizeStatement(rawRows, { defaultYear: 2026 });
+
+    // On 2026-11-03, there are multiple identical "BYR VIA E-BANKING ... 50000" rows
+    const repeatedLines = rawResult.lines.filter(
+      (l) => l.date === '2026-11-03' && l.debit === 50000 && l.description.includes('PENERIMAAN NEGARA')
+    );
+    assert.ok(repeatedLines.length >= 6, `Must find at least 6 repeated tax payments on 2026-11-03 (found ${repeatedLines.length})`);
+
+    // Suppose DB only has 2 of these tax payments
+    const partialDb = repeatedLines.slice(0, 2).map((l) => ({
+      transaction_date: l.date,
+      description: l.description,
+      reference: l.reference || '',
+      debit_amount: l.debit,
+      credit_amount: l.credit,
+    }));
+
+    const occCheck = checkStatementDuplicates(repeatedLines, partialDb);
+    assert.equal(occCheck.duplicateCount, 2, 'Only the 2 existing occurrences should be flagged as duplicates');
+    assert.equal(
+      occCheck.newLines.length,
+      repeatedLines.length - 2,
+      `Remaining ${repeatedLines.length - 2} occurrences must be preserved as new transactions`
+    );
+  });
 });

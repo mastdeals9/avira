@@ -93,6 +93,9 @@ export const isDescHeader = (s: string): boolean =>
 export const isBranchHeader = (s: string): boolean =>
   ['cabang', 'branch', 'branch code'].includes(normalizeHeader(s));
 
+export const isReferenceHeader = (s: string): boolean =>
+  ['referensi', 'reference', 'ref', 'no ref', 'ref no', 'no referensi', 'voucher no'].includes(normalizeHeader(s));
+
 export const isAmountHeader = (s: string): boolean =>
   ['mutasi', 'amount', 'total amount', 'nominal'].includes(normalizeHeader(s));
 
@@ -452,6 +455,7 @@ export function parseAndNormalizeStatement(
   let dateCol = -1,
     descCol = -1,
     branchCol = -1,
+    refCol = -1,
     amountCol = -1,
     balanceCol = -1,
     debitCol = -1,
@@ -463,6 +467,7 @@ export function parseAndNormalizeStatement(
     if (isDateHeader(s)) dateCol = idx;
     else if (isDescHeader(s)) descCol = idx;
     else if (isBranchHeader(s)) branchCol = idx;
+    else if (isReferenceHeader(s)) refCol = idx;
     else if (isDebitHeader(s)) debitCol = idx;
     else if (isCreditHeader(s)) creditCol = idx;
     else if (isAmountHeader(s)) amountCol = idx;
@@ -640,6 +645,7 @@ export function parseAndNormalizeStatement(
         c === descCol ||
         c === dateCol ||
         c === branchCol ||
+        c === refCol ||
         c === debitCol ||
         c === creditCol ||
         c === amountCol ||
@@ -661,9 +667,16 @@ export function parseAndNormalizeStatement(
     }
 
     const description = descParts.join(' ').replace(/\s+/g, ' ').trim();
-    const branch = branchCol >= 0 ? String(row[branchCol] || '').trim() : '';
 
-    let reference = branch || extraRef;
+    // User requirements:
+    // 1. Completely ignore the BCA `Branch` column during transaction import.
+    // 2. Do not populate `branch_code` from the BCA Branch column.
+    // 3. Never use Branch as the transaction `reference`.
+    // 4. Extract a genuine transaction reference only when it exists in the transaction data. Otherwise leave reference blank.
+    let reference = refCol >= 0 ? String(row[refCol] || '').trim() : '';
+    if (!reference && extraRef) {
+      reference = extraRef;
+    }
     if (!reference) {
       const refMatch = description.match(/\b(\d{4}\/[A-Z0-9]+\/[A-Z0-9]+)\b/);
       if (refMatch) {
@@ -687,8 +700,8 @@ export function parseAndNormalizeStatement(
       originalDate: isPending ? 'PEND' : originalDate,
       isPending,
       description,
-      reference,
-      branchCode: branch || undefined,
+      reference: reference || '',
+      branchCode: undefined, // Branch column completely ignored; never populate branchCode from BCA Branch
       debit: numDebit,
       credit: numCredit,
       balance,
@@ -770,6 +783,7 @@ export function validateStatementTotals(
 /**
  * Checks for duplicates against existing database lines using canonical composite key.
  * If pendingDates mapping is supplied, uses confirmed effective dates for pending lines.
+ * Branch is completely excluded from duplicate identity.
  */
 export function checkStatementDuplicates(
   lines: NormalizedBankTransaction[],
@@ -781,10 +795,15 @@ export function checkStatementDuplicates(
   duplicateCount: number;
 } {
   const normalizeDesc = (desc: string) => (desc || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const normalizeRef = (ref: any) => {
+    const s = String(ref || '').trim().toLowerCase();
+    // Branch codes like '0000' must never form part of the duplicate identity
+    return s === '0000' ? '' : s;
+  };
 
   const dbKeyCounts = new Map<string, number>();
   (existingLines || []).forEach((e) => {
-    const k = `${e.transaction_date}|${Number(e.debit_amount) || 0}|${Number(e.credit_amount) || 0}|${(e.reference || '').trim().toLowerCase()}|${normalizeDesc(e.description || '')}`;
+    const k = `${e.transaction_date}|${Number(e.debit_amount) || 0}|${Number(e.credit_amount) || 0}|${normalizeRef(e.reference)}|${normalizeDesc(e.description || '')}`;
     dbKeyCounts.set(k, (dbKeyCounts.get(k) || 0) + 1);
   });
 
@@ -799,7 +818,7 @@ export function checkStatementDuplicates(
         ? pendingDates[line.id]
         : line.date;
 
-    const key = `${effectiveDate}|${Number(line.debit) || 0}|${Number(line.credit) || 0}|${(line.reference || '').trim().toLowerCase()}|${normalizeDesc(line.description || '')}`;
+    const key = `${effectiveDate}|${Number(line.debit) || 0}|${Number(line.credit) || 0}|${normalizeRef(line.reference)}|${normalizeDesc(line.description || '')}`;
     const csvOccurrence = csvKeyCounts.get(key) || 0;
     csvKeyCounts.set(key, csvOccurrence + 1);
     const dbCount = dbKeyCounts.get(key) || 0;
