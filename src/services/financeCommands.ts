@@ -383,14 +383,18 @@ export const linkBankStatementLine = (
   bankLineId: string,
   documentType: 'expense' | 'receipt' | 'payment' | 'fund_transfer' | 'petty_cash' | 'tax_payment' | 'journal',
   documentId: string,
-  paymentKind: 'supplier' | 'pph23' = 'supplier',
+  paymentKind: 'supplier' | 'pph23' | 'journal' | 'other' | string = 'supplier',
   allocationAmount?: number,
 ) => {
+  const normalizedPaymentKind =
+    documentType === 'journal' && (paymentKind === 'journal' || !paymentKind || paymentKind === 'supplier')
+      ? 'other'
+      : paymentKind;
   const payload = {
     p_bank_line_id: bankLineId,
     p_document_type: documentType,
     p_document_id: documentId,
-    p_payment_kind: paymentKind,
+    p_payment_kind: normalizedPaymentKind,
     ...(allocationAmount === undefined ? {} : { p_allocation_amount: allocationAmount }),
   };
   return rpc<{

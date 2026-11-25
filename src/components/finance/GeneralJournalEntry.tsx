@@ -1,17 +1,64 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../../lib/supabase';
 import { useFinance } from '../../contexts/FinanceContext';
 import { useLanguage } from '../../contexts/LanguageContext';
-import { saveFinanceJournal } from '../../services/financeCommands';
+import { saveFinanceJournal, linkBankStatementLine } from '../../services/financeCommands';
 import {
-  Plus, Trash2, Search, Eye, BookOpen, FileText,
-  ChevronDown, X, Loader2, Save, RotateCcw
+  Plus, Trash2, Search, BookOpen, FileText,
+  ChevronDown, X, Loader2, Save, RotateCcw,
+  Landmark, Link2, CheckCircle2
 } from 'lucide-react';
 import { showToast } from '../ToastNotification';
 import { FinanceModal as Modal } from './FinanceModal';
+import { FinanceActionButton } from './FinanceUI';
 import { SapRow } from './SapLayout';
 import { FloatingField, FLOAT_INPUT } from './FloatingField';
 import { MoneyInput } from '../MoneyInput';
+import {
+  loadUnmatchedDebitBankTransactions,
+  notifyFinanceReconciliationRefresh,
+  rankCandidateLines,
+  type BankTransactionLine
+} from './bankTransactionLinking';
+
+interface BankAccount {
+  id: string;
+  bank_name: string;
+  account_name: string;
+  account_number: string;
+  currency: string;
+  coa_id: string;
+}
+
+interface LinkedBankAllocation {
+  id: string;
+  allocation_amount: number;
+  payment_kind: string;
+  created_at: string;
+  totalLineAmount?: number;
+  totalAllocated?: number;
+  remainingUnallocated?: number;
+  bank_statement_lines?: {
+    id: string;
+    transaction_date: string;
+    description: string;
+    reference: string;
+    debit_amount: number;
+    credit_amount: number;
+    reconciliation_status: string;
+    matching_status?: string;
+    bank_account_id: string;
+    bank_accounts?: {
+      id: string;
+      bank_name: string;
+      account_name: string;
+      account_number: string;
+      currency: string;
+      coa_id: string;
+    };
+  };
+}
 
 interface Account {
   id: string;
@@ -40,6 +87,9 @@ interface JournalEntry {
   total_debit: number;
   total_credit: number;
   is_posted: boolean;
+  is_reversed?: boolean;
+  is_cancelled?: boolean;
+  cancellation_reason?: string | null;
   created_at: string;
 }
 
@@ -169,12 +219,44 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
 
   const [searchOpen, setSearchOpen] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const searchRef = useRef<HTMLDivElement>(null);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [dropdownPosition, setDropdownPosition] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
+
+  const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const triggerRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   const [viewEntry, setViewEntry] = useState<JournalEntryDetail | null>(null);
   const [viewModalOpen, setViewModalOpen] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
+  const [hasBankGlMap, setHasBankGlMap] = useState<Map<string, boolean>>(new Map());
+  const [bankAllocations, setBankAllocations] = useState<LinkedBankAllocation[]>([]);
+  const [loadingBankAllocations, setLoadingBankAllocations] = useState(false);
+
+  // Link bank modal state
+  const [showLinkBankModal, setShowLinkBankModal] = useState(false);
+  const [candidateBankLines, setCandidateBankLines] = useState<BankTransactionLine[]>([]);
+  const [candidateSearchTerm, setCandidateSearchTerm] = useState('');
+  const [selectedCandidateBankLineId, setSelectedCandidateBankLineId] = useState('');
+  const [linkingBankAllocationAmount, setLinkingBankAllocationAmount] = useState<number>(0);
+  const [loadingCandidateBankLines, setLoadingCandidateBankLines] = useState(false);
+  const [submittingBankLink, setSubmittingBankLink] = useState(false);
+  const [targetBankLinkEntry, setTargetBankLinkEntry] = useState<JournalEntryDetail | JournalEntry | null>(null);
+  const [targetBankLinkEligible, setTargetBankLinkEligible] = useState<{
+    bankAccount: BankAccount;
+    isCredit: boolean;
+    amount: number;
+  } | null>(null);
 
   const [templateOpen, setTemplateOpen] = useState(false);
   const templateRef = useRef<HTMLDivElement>(null);
@@ -196,38 +278,170 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
 
   const loadEntries = useCallback(async () => {
     setLoading(true);
+    const { data: bData } = await supabase
+      .from('bank_accounts')
+      .select('id, bank_name, account_name, account_number, currency, coa_id')
+      .eq('is_active', true);
+    const activeBanks = bData || [];
+    setBankAccounts(activeBanks);
+
     const { data } = await supabase
       .from('journal_entries')
-      .select('id, entry_number, entry_date, description, source_module, total_debit, total_credit, is_posted, created_at')
+      .select('id, entry_number, entry_date, description, source_module, total_debit, total_credit, is_posted, is_reversed, is_cancelled, cancellation_reason, created_at')
       .eq('source_module', 'manual')
       .gte('entry_date', dateRange.startDate)
       .lte('entry_date', dateRange.endDate)
       .order('created_at', { ascending: false });
-    if (data) setEntries(data);
+
+    if (data) {
+      setEntries(data);
+      const entryIds = data.map((e) => e.id);
+      const glMap = new Map<string, boolean>();
+      if (entryIds.length > 0 && activeBanks.length > 0) {
+        const bankCoaIds = new Set(activeBanks.map((b) => b.coa_id));
+        const { data: linesData } = await supabase
+          .from('journal_entry_lines')
+          .select('journal_entry_id, account_id')
+          .in('journal_entry_id', entryIds);
+        (linesData || []).forEach((l) => {
+          if (bankCoaIds.has(l.account_id)) {
+            glMap.set(l.journal_entry_id, true);
+          }
+        });
+      }
+      setHasBankGlMap(glMap);
+    }
     setLoading(false);
   }, [dateRange]);
 
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
   useEffect(() => { loadEntries(); }, [loadEntries, refreshTrigger]);
 
+  const updateDropdownPosition = useCallback(() => {
+    if (searchOpen === null) return;
+    const targetEl = searchContainerRef.current || triggerRefs.current[searchOpen];
+    if (!targetEl) return;
+
+    const rect = targetEl.getBoundingClientRect();
+    const windowHeight = window.innerHeight;
+    const windowWidth = window.innerWidth;
+
+    // Check if scrolled completely out of view
+    if (rect.bottom < 0 || rect.top > windowHeight) {
+      setSearchOpen(null);
+      return;
+    }
+
+    const spaceBelow = windowHeight - rect.bottom - 8;
+    const spaceAbove = rect.top - 8;
+    // Open upward if space below is tight (<220px) and above has more room
+    const openUpward = spaceBelow < 220 && spaceAbove > spaceBelow;
+
+    const desiredWidth = Math.max(rect.width, 380);
+    const minLeft = 8;
+    const maxLeft = Math.max(minLeft, windowWidth - desiredWidth - 8);
+    const left = Math.max(minLeft, Math.min(rect.left, maxLeft));
+    const width = Math.min(desiredWidth, windowWidth - 16);
+
+    if (openUpward) {
+      setDropdownPosition({
+        bottom: windowHeight - rect.top + 4,
+        left,
+        width,
+        maxHeight: Math.min(260, Math.max(120, spaceAbove - 12)),
+      });
+    } else {
+      setDropdownPosition({
+        top: rect.bottom + 4,
+        left,
+        width,
+        maxHeight: Math.min(260, Math.max(120, spaceBelow - 12)),
+      });
+    }
+  }, [searchOpen]);
+
+  useEffect(() => {
+    if (searchOpen === null) {
+      setDropdownPosition(null);
+      return;
+    }
+
+    updateDropdownPosition();
+    window.addEventListener('scroll', updateDropdownPosition, true);
+    window.addEventListener('resize', updateDropdownPosition);
+    return () => {
+      window.removeEventListener('scroll', updateDropdownPosition, true);
+      window.removeEventListener('resize', updateDropdownPosition);
+    };
+  }, [searchOpen, updateDropdownPosition]);
+
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
-        setSearchOpen(null);
+      const target = e.target as Node;
+      if (searchOpen !== null) {
+        const inSearchContainer = searchContainerRef.current?.contains(target);
+        const inDropdown = dropdownRef.current?.contains(target);
+        const inTrigger = triggerRefs.current[searchOpen]?.contains(target);
+        if (!inSearchContainer && !inDropdown && !inTrigger) {
+          setSearchOpen(null);
+          setSearchTerm('');
+        }
       }
-      if (templateRef.current && !templateRef.current.contains(e.target as Node)) {
+      if (templateRef.current && !templateRef.current.contains(target)) {
         setTemplateOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  }, [searchOpen]);
 
   useEffect(() => {
     if (searchOpen !== null && searchInputRef.current) {
       searchInputRef.current.focus();
     }
   }, [searchOpen]);
+
+  const scrollItemIntoView = (index: number) => {
+    if (!listRef.current) return;
+    const buttons = listRef.current.querySelectorAll<HTMLButtonElement>('button');
+    const target = buttons[index];
+    if (target) {
+      target.scrollIntoView({ block: 'nearest' });
+    }
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setSearchOpen(null);
+      setSearchTerm('');
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightedIndex(prev => {
+        const next = prev < filteredAccounts.length - 1 ? prev + 1 : 0;
+        scrollItemIntoView(next);
+        return next;
+      });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightedIndex(prev => {
+        const next = prev > 0 ? prev - 1 : Math.max(0, filteredAccounts.length - 1);
+        scrollItemIntoView(next);
+        return next;
+      });
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filteredAccounts[highlightedIndex] && searchOpen !== null) {
+        selectAccount(searchOpen, filteredAccounts[highlightedIndex]);
+      }
+    }
+  };
+
+  const openAccountSearch = (idx: number) => {
+    setSearchOpen(idx);
+    setSearchTerm('');
+    setHighlightedIndex(0);
+  };
 
   const filteredAccounts = accounts.filter(a => {
     if (!searchTerm) return true;
@@ -261,6 +475,7 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
     });
     setSearchOpen(null);
     setSearchTerm('');
+    setHighlightedIndex(0);
   };
 
   const removeLine = (index: number) => {
@@ -349,6 +564,220 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
     }
   };
 
+  const loadBankAllocationsForEntry = async (entryId: string) => {
+    setLoadingBankAllocations(true);
+    try {
+      const { data, error } = await supabase
+        .from('bank_statement_allocations')
+        .select(`
+          id,
+          allocation_amount,
+          payment_kind,
+          created_at,
+          bank_statement_lines (
+            id,
+            transaction_date,
+            description,
+            reference,
+            debit_amount,
+            credit_amount,
+            reconciliation_status,
+            matching_status,
+            bank_account_id,
+            bank_accounts (
+              id,
+              bank_name,
+              account_name,
+              account_number,
+              currency,
+              coa_id
+            )
+          )
+        `)
+        .or(`journal_entry_id.eq.${entryId},and(document_type.eq.journal,document_id.eq.${entryId})`);
+
+      if (error) throw error;
+      const rawAllocs = (data as unknown as LinkedBankAllocation[]) || [];
+
+      const bslIds = [...new Set(rawAllocs.map((a) => a.bank_statement_lines?.id).filter((id): id is string => Boolean(id)))];
+      const lineTotalsMap = new Map<string, number>();
+      if (bslIds.length > 0) {
+        const { data: allLineAllocs } = await supabase
+          .from('bank_statement_allocations')
+          .select('bank_statement_line_id, allocation_amount, journal_entries(is_posted, is_reversed)')
+          .in('bank_statement_line_id', bslIds);
+
+        (allLineAllocs || []).forEach((item: any) => {
+          const je = Array.isArray(item.journal_entries) ? item.journal_entries[0] : item.journal_entries;
+          if (je && (!je.is_posted || je.is_reversed || je.is_cancelled)) return;
+          lineTotalsMap.set(
+            item.bank_statement_line_id,
+            (lineTotalsMap.get(item.bank_statement_line_id) || 0) + Number(item.allocation_amount || 0)
+          );
+        });
+      }
+
+      const enriched = rawAllocs.map((alloc) => {
+        const line = alloc.bank_statement_lines;
+        const totalLineAmount = line
+          ? Number(line.debit_amount || 0) > 0
+            ? Number(line.debit_amount)
+            : Number(line.credit_amount || 0)
+          : 0;
+        const totalAllocated = line ? lineTotalsMap.get(line.id) || Number(alloc.allocation_amount || 0) : 0;
+        const remainingUnallocated = Math.max(0, totalLineAmount - totalAllocated);
+        return {
+          ...alloc,
+          totalLineAmount,
+          totalAllocated,
+          remainingUnallocated,
+        };
+      });
+
+      setBankAllocations(enriched);
+    } catch (err) {
+      console.error('Error loading bank allocations for journal entry:', err);
+      setBankAllocations([]);
+    } finally {
+      setLoadingBankAllocations(false);
+    }
+  };
+
+  const eligibleBankLineForView = useMemo(() => {
+    if (!viewEntry || !viewEntry.is_posted || viewEntry.is_reversed || viewEntry.is_cancelled) return null;
+
+    for (const line of viewEntry.lines) {
+      const bank = bankAccounts.find((b) => b.coa_id === line.account_id);
+      if (bank) {
+        const isCredit = Number(line.credit || 0) > 0;
+        const lineAmount = isCredit ? Number(line.credit) : Number(line.debit || 0);
+        const totalAllocated = bankAllocations.reduce((sum, a) => sum + Number(a.allocation_amount || 0), 0);
+        const remainingToAllocate = Math.max(0, lineAmount - totalAllocated);
+        if (remainingToAllocate > 0.01) {
+          return { bankAccount: bank, isCredit, amount: remainingToAllocate };
+        }
+      }
+    }
+    return null;
+  }, [viewEntry, bankAllocations, bankAccounts]);
+
+  const openLinkBankModal = async (
+    entry: JournalEntry | JournalEntryDetail,
+    eligible?: { bankAccount: BankAccount; isCredit: boolean; amount: number } | null
+  ) => {
+    try {
+      let activeEligible = eligible;
+      let targetDetail: JournalEntryDetail;
+
+      if ('lines' in entry && entry.lines && entry.lines.length > 0) {
+        targetDetail = entry as JournalEntryDetail;
+      } else {
+        const { data: lineData } = await supabase
+          .from('journal_entry_lines')
+          .select('line_number, account_id, description, debit, credit, chart_of_accounts(code, name)')
+          .eq('journal_entry_id', entry.id)
+          .order('line_number');
+        targetDetail = { ...entry, lines: (lineData || []) as any };
+      }
+
+      if (!activeEligible) {
+        for (const line of targetDetail.lines) {
+          const bank = bankAccounts.find((b) => b.coa_id === line.account_id);
+          if (bank) {
+            const isCredit = Number(line.credit || 0) > 0;
+            const lineAmount = isCredit ? Number(line.credit) : Number(line.debit || 0);
+            if (lineAmount > 0.01) {
+              activeEligible = { bankAccount: bank, isCredit, amount: lineAmount };
+              break;
+            }
+          }
+        }
+      }
+
+      if (!activeEligible) {
+        showToast({
+          type: 'info',
+          title: 'No Bank Movement',
+          message: 'No bank account line found on this journal entry to reconcile.',
+        });
+        return;
+      }
+
+      setTargetBankLinkEntry(targetDetail);
+      setTargetBankLinkEligible(activeEligible);
+      setCandidateSearchTerm('');
+      setSelectedCandidateBankLineId('');
+      setLoadingCandidateBankLines(true);
+      setShowLinkBankModal(true);
+
+      const direction = activeEligible.isCredit ? 'debit' : 'credit';
+      const rawCandidates = await loadUnmatchedDebitBankTransactions({
+        bankAccountId: activeEligible.bankAccount.id,
+        direction,
+        includeLinked: false,
+      });
+
+      const ranked = rankCandidateLines(rawCandidates, activeEligible.amount, targetDetail.entry_date);
+      setCandidateBankLines(ranked);
+      if (ranked.length > 0) {
+        const best = ranked[0];
+        setSelectedCandidateBankLineId(best.id);
+        const maxAlloc = Math.min(best.remainingAmount ?? 0, activeEligible.amount);
+        setLinkingBankAllocationAmount(maxAlloc);
+      }
+    } catch (err: any) {
+      console.error('Error preparing bank statement link:', err);
+      showToast({ type: 'error', title: 'Error', message: err?.message || 'Could not load candidate bank transactions' });
+    } finally {
+      setLoadingCandidateBankLines(false);
+    }
+  };
+
+  const filteredCandidateBankLines = useMemo(() => {
+    if (!candidateSearchTerm.trim()) return candidateBankLines;
+    const term = candidateSearchTerm.trim().toLowerCase();
+    return candidateBankLines.filter((l) => {
+      const desc = (l.description || '').toLowerCase();
+      const ref = (l.reference || '').toLowerCase();
+      const date = (l.transaction_date || '').toLowerCase();
+      const amountStr = String(l.debit_amount || l.credit_amount || '');
+      const remStr = String(l.remainingAmount || '');
+      return (
+        desc.includes(term) ||
+        ref.includes(term) ||
+        date.includes(term) ||
+        amountStr.includes(term) ||
+        remStr.includes(term)
+      );
+    });
+  }, [candidateBankLines, candidateSearchTerm]);
+
+  const handleConfirmBankLink = async () => {
+    if (!selectedCandidateBankLineId || !targetBankLinkEntry || linkingBankAllocationAmount <= 0.01) return;
+    setSubmittingBankLink(true);
+    try {
+      await linkBankStatementLine(
+        selectedCandidateBankLineId,
+        'journal',
+        targetBankLinkEntry.id,
+        'other',
+        linkingBankAllocationAmount
+      );
+      setShowLinkBankModal(false);
+      if (viewModalOpen && viewEntry?.id === targetBankLinkEntry.id) {
+        await loadBankAllocationsForEntry(targetBankLinkEntry.id);
+      }
+      await loadEntries();
+      notifyFinanceReconciliationRefresh();
+      showToast({ type: 'success', title: 'Bank Linked', message: 'Bank statement linked successfully' });
+    } catch (err: any) {
+      console.error('Error linking bank statement:', err);
+      showToast({ type: 'error', title: 'Link Failed', message: err?.message || 'Unknown error linking bank statement' });
+    } finally {
+      setSubmittingBankLink(false);
+    }
+  };
+
   const viewEntryDetail = async (entry: JournalEntry) => {
     const { data } = await supabase
       .from('journal_entry_lines')
@@ -358,9 +787,19 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
 
     setViewEntry({ ...entry, lines: (data || []) as any });
     setViewModalOpen(true);
+    await loadBankAllocationsForEntry(entry.id);
   };
 
   const handleEditEntry = async (entry: JournalEntry) => {
+    if (entry.is_posted) {
+      showToast({
+        type: 'error',
+        title: 'Cannot Edit',
+        message: 'Posted journal entries cannot be edited. Please reverse the entry if corrections are required.',
+      });
+      return;
+    }
+
     const { data: lineData } = await supabase
       .from('journal_entry_lines')
       .select('line_number, account_id, description, debit, credit, chart_of_accounts(code, name)')
@@ -436,9 +875,14 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
     }
   };
 
-  const formatCurrency = (val: number) => {
-    if (!val) return '-';
-    return new Intl.NumberFormat('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(val);
+  const formatCurrency = (val: number | null | undefined, cur: string = 'IDR') => {
+    if (val === null || val === undefined || isNaN(Number(val))) return '-';
+    return new Intl.NumberFormat(cur === 'IDR' ? 'id-ID' : 'en-US', {
+      style: 'currency',
+      currency: cur,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    }).format(Number(val));
   };
 
   return (
@@ -501,77 +945,76 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-gray-600">
-                  <th className="text-left px-2 py-1.5 font-medium w-10">#</th>
+                  <th className="text-center px-2 py-1.5 font-medium w-10">#</th>
                   <th className="text-left px-2 py-1.5 font-medium min-w-[280px]">Account</th>
                   <th className="text-left px-2 py-1.5 font-medium min-w-[160px]">Line Narration</th>
                   <th className="text-right px-2 py-1.5 font-medium w-36">Debit</th>
                   <th className="text-right px-2 py-1.5 font-medium w-36">Credit</th>
-                  <th className="text-center px-2 py-2.5 font-medium w-20">Actions</th>
+                  <th className="text-center px-2 py-1.5 font-medium w-16">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {lines.map((line, idx) => (
                   <tr key={line.key} className="border-t border-gray-100 hover:bg-gray-50/50">
-                    <td className="px-4 py-2 text-gray-400 text-xs">{idx + 1}</td>
-                    <td className="px-4 py-2 relative">
+                    <td className="px-2 py-1.5 text-gray-400 text-xs text-center align-middle">{idx + 1}</td>
+                    <td className="px-2 py-1.5 align-middle">
                       {searchOpen === idx ? (
-                        <div ref={searchRef} className="relative">
-                          <div className="flex items-center border border-blue-400 rounded-lg bg-white shadow-sm">
-                            <Search className="w-4 h-4 text-gray-400 ml-2 shrink-0" />
-                            <input name="search_term" aria-label="Search account..."
-                              ref={searchInputRef}
-                              type="text"
-                              value={searchTerm}
-                              onChange={e => setSearchTerm(e.target.value)}
-                              placeholder="Search account..."
-                              className="w-full px-2 py-1.5 text-sm border-0 focus:ring-0 focus:outline-none"
-                            />
-                            <button onClick={() => { setSearchOpen(null); setSearchTerm(''); }} className="p-1 mr-1">
-                              <X className="w-4 h-4 text-gray-400" />
-                            </button>
-                          </div>
-                          <div className="absolute left-0 top-full mt-1 w-full bg-white rounded-lg shadow-xl border border-gray-200 z-50 max-h-48 overflow-y-auto">
-                            {filteredAccounts.length === 0 ? (
-                              <div className="px-2 py-1.5 text-sm text-gray-400">No accounts found</div>
-                            ) : (
-                              filteredAccounts.map(acc => (
-                                <button
-                                  key={acc.id}
-                                  onClick={() => selectAccount(idx, acc)}
-                                  className="w-full text-left px-3 py-2 hover:bg-blue-50 flex items-center gap-2 transition-colors"
-                                >
-                                  <span className="text-xs font-mono text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">{acc.code}</span>
-                                  <span className="text-sm text-gray-800 truncate">{acc.name}</span>
-                                  <span className="text-xs text-gray-400 ml-auto shrink-0">{acc.account_type}</span>
-                                </button>
-                              ))
-                            )}
-                          </div>
+                        <div
+                          ref={searchContainerRef}
+                          className="flex items-center h-[34px] border border-blue-500 ring-1 ring-blue-500 rounded-lg bg-white px-2 shadow-sm"
+                        >
+                          <Search className="w-3.5 h-3.5 text-blue-500 mr-1.5 shrink-0" />
+                          <input
+                            name="account_search"
+                            aria-label="Search account..."
+                            ref={searchInputRef}
+                            type="text"
+                            value={searchTerm}
+                            onChange={e => {
+                              setSearchTerm(e.target.value);
+                              setHighlightedIndex(0);
+                            }}
+                            onKeyDown={handleSearchKeyDown}
+                            placeholder="Search by code or name..."
+                            className="w-full h-full text-xs sm:text-sm border-0 p-0 focus:ring-0 focus:outline-none bg-transparent"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => { setSearchOpen(null); setSearchTerm(''); }}
+                            className="p-0.5 text-gray-400 hover:text-gray-600 shrink-0"
+                            title="Close search"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5">
                           <button
-                            onClick={() => { setSearchOpen(idx); setSearchTerm(''); }}
-                            className={`flex-1 text-left px-3 py-1.5 rounded-lg border transition-colors text-sm ${
+                            ref={el => { triggerRefs.current[idx] = el; }}
+                            type="button"
+                            onClick={() => openAccountSearch(idx)}
+                            className={`flex-1 h-[34px] text-left px-2.5 rounded-lg border transition-colors text-xs sm:text-sm flex items-center justify-between gap-2 ${
                               line.account_id
                                 ? 'border-gray-200 bg-white hover:border-gray-300'
                                 : 'border-dashed border-gray-300 text-gray-400 hover:border-blue-400 hover:text-blue-500'
                             }`}
                           >
                             {line.account_id ? (
-                              <span>
-                                <span className="font-mono text-blue-600 mr-1.5">{line.account_code}</span>
-                                {line.account_name}
+                              <span className="truncate flex items-center gap-1.5">
+                                <span className="font-mono text-blue-600 font-medium shrink-0">{line.account_code}</span>
+                                <span className="truncate text-gray-800">{line.account_name}</span>
                               </span>
                             ) : (
-                              'Select account...'
+                              <span className="text-gray-400">Select account...</span>
                             )}
+                            <ChevronDown className="w-3.5 h-3.5 text-gray-400 shrink-0" />
                           </button>
                           {line.account_id && (
                             <button
+                              type="button"
                               onClick={onNavigateToLedger}
                               title="View Ledger"
-                              className="p-1 text-gray-400 hover:text-blue-600 transition-colors"
+                              className="p-1 h-[34px] w-[34px] inline-flex items-center justify-center text-gray-400 hover:text-blue-600 rounded-lg hover:bg-gray-100 transition-colors shrink-0"
                             >
                               <BookOpen className="w-4 h-4" />
                             </button>
@@ -579,38 +1022,42 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
                         </div>
                       )}
                     </td>
-                    <td className="px-4 py-2">
-                      <input name="line" aria-label="Optional"
+                    <td className="px-2 py-1.5 align-middle">
+                      <input
+                        name="line"
+                        aria-label="Optional line narration"
                         type="text"
                         value={line.description}
                         onChange={e => updateLine(idx, 'description', e.target.value)}
                         placeholder="Optional"
-                        className="w-full px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        className="w-full h-[34px] px-2.5 text-xs sm:text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
                       />
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-2 py-1.5 align-middle">
                       <MoneyInput
                         decimal
                         value={line.debit}
                         onChange={amount => updateLine(idx, 'debit', amount)}
                         placeholder="0"
-                        className="w-full px-2.5 py-1.5 text-sm text-right border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 tabular-nums"
+                        className="w-full h-[34px] px-2.5 text-xs sm:text-sm text-right border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 tabular-nums bg-white"
                       />
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-2 py-1.5 align-middle">
                       <MoneyInput
                         decimal
                         value={line.credit}
                         onChange={amount => updateLine(idx, 'credit', amount)}
                         placeholder="0"
-                        className="w-full px-2.5 py-1.5 text-sm text-right border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 tabular-nums"
+                        className="w-full h-[34px] px-2.5 text-xs sm:text-sm text-right border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 tabular-nums bg-white"
                       />
                     </td>
-                    <td className="px-2 py-2 text-center">
+                    <td className="px-2 py-1.5 text-center align-middle">
                       <button
+                        type="button"
                         onClick={() => removeLine(idx)}
                         disabled={lines.length <= 2}
-                        className="p-1 text-gray-400 hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        className="p-1 h-[34px] w-[34px] inline-flex items-center justify-center text-gray-400 hover:text-red-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors rounded-lg hover:bg-red-50"
+                        title={lines.length <= 2 ? 'Minimum 2 lines required' : 'Remove line'}
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -619,19 +1066,20 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
                 ))}
               </tbody>
               <tfoot>
-                <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
-                  <td className="px-2 py-1.5" colSpan={3}>
+                <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold text-xs sm:text-sm">
+                  <td className="px-2 py-2" colSpan={3}>
                     <button
+                      type="button"
                       onClick={addLine}
-                      className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 transition-colors"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs sm:text-sm font-medium text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors"
                     >
-                      <Plus className="w-4 h-4" /> Add Row
+                      <Plus className="w-3.5 h-3.5" /> Add Row
                     </button>
                   </td>
-                  <td className={`px-2 py-1.5 text-right tabular-nums ${totalDebit !== totalCredit ? 'text-red-600' : 'text-gray-900'}`}>
+                  <td className={`px-2 py-2 text-right tabular-nums ${totalDebit !== totalCredit ? 'text-red-600' : 'text-gray-900'}`}>
                     {formatCurrency(totalDebit)}
                   </td>
-                  <td className={`px-2 py-1.5 text-right tabular-nums ${totalDebit !== totalCredit ? 'text-red-600' : 'text-gray-900'}`}>
+                  <td className={`px-2 py-2 text-right tabular-nums ${totalDebit !== totalCredit ? 'text-red-600' : 'text-gray-900'}`}>
                     {formatCurrency(totalCredit)}
                   </td>
                   <td></td>
@@ -641,33 +1089,35 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
           </div>
 
           {/* Difference indicator + actions */}
-          <div className="p-4 border-t border-gray-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-            <div>
+          <div className="px-3 py-2.5 border-t border-gray-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 bg-gray-50/40 rounded-b-xl">
+            <div className="text-xs">
               {totalDebit > 0 && !isBalanced && (
-                <span className="text-sm text-red-600 font-medium">
+                <span className="text-xs text-red-600 font-medium">
                   Difference: {formatCurrency(Math.abs(totalDebit - totalCredit))} {totalDebit > totalCredit ? '(Debit excess)' : '(Credit excess)'}
                 </span>
               )}
               {isBalanced && hasAccounts && !editingEntryId && (
-                <span className="text-sm text-green-600 font-medium">Balanced - ready to post</span>
+                <span className="text-xs text-green-600 font-medium">Balanced - ready to post</span>
               )}
               {editingEntryId && (
-                <span className="text-sm text-orange-600 font-medium">Editing mode - make changes and click Update Journal</span>
+                <span className="text-xs text-orange-600 font-medium">Editing mode - make changes and click Update Journal</span>
               )}
             </div>
             <div className="flex items-center gap-2">
               <button
+                type="button"
                 onClick={resetForm}
-                className="flex items-center gap-1.5 px-4 py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium text-gray-700 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-100 bg-white transition-colors"
               >
-                <RotateCcw className="w-4 h-4" /> Clear
+                <RotateCcw className="w-3.5 h-3.5" /> Clear
               </button>
               <button
+                type="button"
                 onClick={handlePost}
                 disabled={!isBalanced || !hasAccounts || saving}
-                className="flex items-center gap-1.5 px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center gap-1.5 h-8 px-4 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
               >
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                 {saving ? (editingEntryId ? 'Updating...' : 'Posting...') : (editingEntryId ? 'Update Journal' : 'Post Journal')}
               </button>
             </div>
@@ -704,34 +1154,53 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
               <tbody>
                 {entries.map(e => (
                   <tr key={e.id} className="border-t border-gray-100 hover:bg-gray-50/80 transition-colors">
-                    <td className="px-2 py-1.5 font-mono text-blue-700 font-medium">{e.entry_number}</td>
+                    <td className="px-2 py-1.5 font-mono text-blue-700 font-medium">
+                      <span>{e.entry_number}</span>
+                      {e.is_cancelled && (
+                        <span className="ml-1.5 px-1.5 py-0.5 text-[10px] font-semibold bg-rose-100 text-rose-800 rounded border border-rose-200" title={e.cancellation_reason || 'Cancelled'}>
+                          Cancelled
+                        </span>
+                      )}
+                      {e.is_reversed && !e.is_cancelled && (
+                        <span className="ml-1.5 px-1.5 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-800 rounded border border-amber-200">
+                          Reversed
+                        </span>
+                      )}
+                    </td>
                     <td className="px-2 py-1.5 text-gray-600">{new Date(e.entry_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
                     <td className="px-2 py-1.5 text-gray-800 max-w-xs truncate">{e.description || '-'}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{formatCurrency(e.total_debit)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{formatCurrency(e.total_credit)}</td>
                     <td className="px-2 py-1.5 text-center">
                       <div className="flex items-center justify-center gap-1.5">
-                        <button
+                        <FinanceActionButton
+                          action="view"
+                          label="View entry details"
                           onClick={() => viewEntryDetail(e)}
-                          className="p-1 text-gray-400 hover:text-blue-600 transition-colors"
-                          title="View"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleEditEntry(e)}
-                          className="p-1 text-gray-400 hover:text-gray-700 transition-colors"
-                          title="Edit"
-                        >
-                          <BookOpen className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteEntry(e.id)}
-                          className="p-1 text-gray-400 hover:text-red-600 transition-colors"
-                          title="Delete"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        />
+                        {canManage && (
+                          <>
+                            <FinanceActionButton
+                              action="edit"
+                              label={e.is_posted ? "Posted journal cannot be edited" : "Edit draft journal entry"}
+                              disabled={e.is_posted}
+                              onClick={() => !e.is_posted && handleEditEntry(e)}
+                            />
+                            <FinanceActionButton
+                              action="delete"
+                              label={e.is_posted ? "Posted journal cannot be deleted" : "Delete draft journal entry"}
+                              disabled={e.is_posted}
+                              onClick={() => !e.is_posted && handleDeleteEntry(e.id)}
+                            />
+                          </>
+                        )}
+                        {canManage && e.is_posted && !e.is_reversed && hasBankGlMap.get(e.id) && (
+                          <FinanceActionButton
+                            action="bankLink"
+                            label="Link Bank Statement"
+                            onClick={() => openLinkBankModal(e)}
+                          />
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -764,6 +1233,133 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
                 <span className="text-gray-800">{viewEntry.description}</span>
               </div>
             )}
+
+            {/* Bank Reconciliation Section */}
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-semibold text-slate-800">
+                  <Landmark className="w-4 h-4 text-blue-600" />
+                  <span>Bank Reconciliation</span>
+                </div>
+                {bankAllocations.length > 0 ? (
+                  <span className="px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-800 text-[11px] flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Linked to Bank Statement ({bankAllocations.length})
+                  </span>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-full font-medium bg-slate-200 text-slate-700 text-[11px]">
+                      Not Linked
+                    </span>
+                    {eligibleBankLineForView && canManage && (
+                      <button
+                        type="button"
+                        onClick={() => openLinkBankModal(viewEntry, eligibleBankLineForView)}
+                        className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded text-xs flex items-center gap-1 shadow-sm transition-colors"
+                      >
+                        <Link2 className="w-3.5 h-3.5" />
+                        Link Bank Statement
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {loadingBankAllocations ? (
+                <div className="text-slate-500 text-[11px] py-1">Loading bank reconciliation details...</div>
+              ) : bankAllocations.length > 0 ? (
+                <div className="space-y-2 pt-1 border-t border-slate-200">
+                  {bankAllocations.map((alloc) => {
+                    const line = alloc.bank_statement_lines;
+                    const bank = line?.bank_accounts;
+                    const totalStatementAmount = alloc.totalLineAmount ?? (line
+                      ? Number(line.debit_amount || 0) > 0
+                        ? Number(line.debit_amount)
+                        : Number(line.credit_amount || 0)
+                      : 0);
+                    const remaining = alloc.remainingUnallocated ?? Math.max(0, totalStatementAmount - Number(alloc.allocation_amount || 0));
+                    const currency = bank?.currency || 'IDR';
+
+                    return (
+                      <div key={alloc.id} className="bg-white p-3 rounded border border-slate-200 space-y-2 shadow-2xs">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+                          <div>
+                            <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Bank Account</span>
+                            <div className="font-semibold text-slate-900">
+                              {bank ? `${bank.bank_name} - ${bank.account_name} (${bank.account_number})` : 'Bank Account'}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Statement Date</span>
+                            <div className="font-medium text-slate-900">
+                              {line?.transaction_date ? new Date(line.transaction_date).toLocaleDateString('id-ID', { year: 'numeric', month: 'short', day: 'numeric' }) : '-'}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Statement Narration & Reference</span>
+                          <div className="text-slate-800 font-mono text-[11px] bg-slate-50 p-2 rounded mt-0.5 border border-slate-100 flex items-start justify-between gap-2">
+                            <span className="break-words">{line?.description || '-'}</span>
+                            {line?.reference && (
+                              <span className="shrink-0 bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded text-[10px] font-semibold border border-blue-200">
+                                Ref: {line.reference}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 border-t border-slate-100 text-[11px]">
+                          <div>
+                            <span className="text-[10px] text-gray-500 uppercase font-medium">Statement Total</span>
+                            <div className="font-mono font-semibold text-slate-800">
+                              {formatCurrency(totalStatementAmount, currency)}
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-gray-500 uppercase font-medium">Allocated to Journal</span>
+                            <div className="font-mono font-semibold text-emerald-700">
+                              {formatCurrency(alloc.allocation_amount, currency)}
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-gray-500 uppercase font-medium">Remaining Unallocated</span>
+                            <div className={`font-mono font-semibold ${remaining <= 0.01 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                              {remaining <= 0.01 ? `${formatCurrency(0, currency)} (Fully Reconciled)` : formatCurrency(remaining, currency)}
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-gray-500 uppercase font-medium">Reconciliation Status</span>
+                            <div>
+                              <span
+                                className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                  line?.reconciliation_status === 'matched'
+                                    ? 'bg-green-100 text-green-800 border border-green-200'
+                                    : 'bg-amber-100 text-amber-800 border border-amber-200'
+                                }`}
+                              >
+                                {line?.reconciliation_status === 'matched' ? 'Matched' : 'Partially Reconciled'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {line?.id && (
+                          <div className="text-[10px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-55">
+                            <span>Transaction Line ID: <code className="text-slate-600 font-mono">{line.id}</code></span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-slate-500 text-[11px]">
+                  {eligibleBankLineForView
+                    ? `Contains bank movement for ${eligibleBankLineForView.bankAccount.bank_name} (${formatCurrency(eligibleBankLineForView.amount, eligibleBankLineForView.bankAccount.currency)}). Click "Link Bank Statement" to reconcile.`
+                    : 'No bank account movement in this journal entry.'}
+                </div>
+              )}
+            </div>
             <table className="w-full text-sm border border-gray-200 rounded-lg overflow-hidden">
               <thead>
                 <tr className="bg-gray-50 text-gray-600">
@@ -798,6 +1394,211 @@ export function GeneralJournalEntry({ canManage, onNavigateToLedger, initialEdit
             </table>
           </div>
         </Modal>
+      )}
+
+      {/* Link Bank Statement Modal */}
+      <Modal
+        isOpen={showLinkBankModal}
+        onClose={() => setShowLinkBankModal(false)}
+        title={`Link Bank Statement: ${targetBankLinkEntry?.entry_number || ''}`}
+        size="lg"
+      >
+        <div className="space-y-3 text-xs">
+          {targetBankLinkEligible && (
+            <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+              <div>
+                <span className="text-blue-900 font-medium">
+                  {targetBankLinkEligible.bankAccount.bank_name} ({targetBankLinkEligible.bankAccount.account_number})
+                </span>
+                <div className="text-blue-700 text-[11px]">
+                  Side: <strong>{targetBankLinkEligible.isCredit ? 'Credit (Bank Withdrawal)' : 'Debit (Bank Deposit)'}</strong>
+                </div>
+              </div>
+              <div className="text-right">
+                <span className="text-[10px] text-blue-600 uppercase font-semibold">Target Amount</span>
+                <div className="font-mono font-bold text-blue-900 text-sm">
+                  {formatCurrency(targetBankLinkEligible.amount, targetBankLinkEligible.bankAccount.currency)}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search candidate statement lines by narration, reference, or amount..."
+              value={candidateSearchTerm}
+              onChange={(e) => setCandidateSearchTerm(e.target.value)}
+              className="w-full pl-8 pr-3 py-1.5 border rounded text-xs"
+            />
+          </div>
+
+          {loadingCandidateBankLines ? (
+            <div className="text-center py-6 text-gray-500">
+              <Loader2 className="w-5 h-5 animate-spin mx-auto mb-1 text-blue-600" />
+              Loading candidate statement lines...
+            </div>
+          ) : filteredCandidateBankLines.length === 0 ? (
+            <div className="text-center py-6 text-gray-500 border rounded-lg bg-gray-50">
+              No unmatched bank statement lines found matching criteria.
+            </div>
+          ) : (
+            <div className="max-h-60 overflow-y-auto border rounded-lg divide-y">
+              {filteredCandidateBankLines.map((line) => {
+                const isSelected = selectedCandidateBankLineId === line.id;
+                const rem = line.remainingAmount ?? 0;
+                const isExact = targetBankLinkEligible && Math.abs(rem - targetBankLinkEligible.amount) < 0.01;
+                return (
+                  <div
+                    key={line.id}
+                    onClick={() => {
+                      setSelectedCandidateBankLineId(line.id);
+                      if (targetBankLinkEligible) {
+                        setLinkingBankAllocationAmount(Math.min(rem, targetBankLinkEligible.amount));
+                      }
+                    }}
+                    className={`p-2.5 cursor-pointer transition-colors ${
+                      isSelected ? 'bg-blue-50 border-l-4 border-blue-600' : 'hover:bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-medium text-gray-900 font-mono text-[11px]">{line.description}</span>
+                          {isExact && (
+                            <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              Exact Match
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-gray-500 text-[10px]">
+                          {new Date(line.transaction_date).toLocaleDateString('id-ID')}
+                          {line.reference ? ` • Ref: ${line.reference}` : ''}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="font-mono font-semibold text-gray-900">
+                          {formatCurrency(line.debit_amount || line.credit_amount, targetBankLinkEligible?.bankAccount.currency || 'IDR')}
+                        </div>
+                        <div className="text-[10px] text-amber-700 font-medium">
+                          Rem: {formatCurrency(rem, targetBankLinkEligible?.bankAccount.currency || 'IDR')}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {selectedCandidateBankLineId && targetBankLinkEligible && (
+            <div className="p-2.5 bg-gray-50 border rounded-lg space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="font-medium text-gray-700">Allocation Amount:</span>
+                <span className="text-gray-500 text-[11px]">
+                  Max: <strong className="font-mono text-blue-700">
+                    {(() => {
+                      const sel = candidateBankLines.find((l) => l.id === selectedCandidateBankLineId);
+                      return formatCurrency(Math.min(sel?.remainingAmount || 0, targetBankLinkEligible.amount), targetBankLinkEligible.bankAccount.currency);
+                    })()}
+                  </strong>
+                </span>
+              </div>
+              <input
+                type="number"
+                min="1"
+                step="any"
+                value={linkingBankAllocationAmount || ''}
+                onChange={(e) => {
+                  const sel = candidateBankLines.find((l) => l.id === selectedCandidateBankLineId);
+                  const max = Math.min(sel?.remainingAmount || 0, targetBankLinkEligible.amount);
+                  setLinkingBankAllocationAmount(Math.min(parseFloat(e.target.value) || 0, max));
+                }}
+                className="w-full px-2.5 py-1.5 border rounded text-xs font-mono font-medium"
+              />
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => setShowLinkBankModal(false)}
+              className="px-3 py-1.5 border rounded text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={submittingBankLink || !selectedCandidateBankLineId || linkingBankAllocationAmount <= 0.01}
+              onClick={handleConfirmBankLink}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded font-medium shadow-sm"
+            >
+              {submittingBankLink ? 'Linking…' : 'Link Statement'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+      {/* Account selection portal dropdown */}
+      {searchOpen !== null && dropdownPosition && createPortal(
+        <div
+          ref={dropdownRef}
+          data-journal-account-dropdown
+          style={{
+            position: 'fixed',
+            ...(dropdownPosition.top !== undefined ? { top: `${dropdownPosition.top}px` } : {}),
+            ...(dropdownPosition.bottom !== undefined ? { bottom: `${dropdownPosition.bottom}px` } : {}),
+            left: `${dropdownPosition.left}px`,
+            width: `${dropdownPosition.width}px`,
+            zIndex: 9999,
+          }}
+          className="bg-white rounded-lg shadow-2xl border border-gray-200 overflow-hidden flex flex-col"
+        >
+          <div className="px-2.5 py-1 bg-gray-50 border-b border-gray-100 flex items-center justify-between text-[11px] text-gray-500 select-none">
+            <span>{filteredAccounts.length} account{filteredAccounts.length === 1 ? '' : 's'}</span>
+            <span className="text-[10px] text-gray-400">↑↓ to navigate · Enter to select · Esc to close</span>
+          </div>
+          <div
+            ref={listRef}
+            style={{ maxHeight: `${dropdownPosition.maxHeight}px` }}
+            className="overflow-y-auto divide-y divide-gray-50"
+          >
+            {filteredAccounts.length === 0 ? (
+              <div className="px-3 py-3 text-xs text-gray-400 text-center">
+                No accounts found{searchTerm ? ` matching "${searchTerm}"` : ''}
+              </div>
+            ) : (
+              filteredAccounts.map((acc, accIdx) => {
+                const isHighlighted = accIdx === highlightedIndex;
+                return (
+                  <button
+                    key={acc.id}
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      selectAccount(searchOpen, acc);
+                    }}
+                    onMouseEnter={() => setHighlightedIndex(accIdx)}
+                    className={`w-full text-left px-2.5 py-1.5 min-h-[34px] flex items-center gap-2 transition-colors ${
+                      isHighlighted ? 'bg-blue-50 text-blue-900' : 'hover:bg-gray-50 text-gray-800'
+                    }`}
+                  >
+                    <span className="text-xs font-mono font-medium text-blue-600 bg-blue-50/80 border border-blue-200/60 px-1.5 py-0.5 rounded shrink-0">
+                      {acc.code}
+                    </span>
+                    <span className="text-xs sm:text-sm font-medium truncate flex-1">
+                      {acc.name}
+                    </span>
+                    <span className="text-[11px] text-gray-400 bg-gray-100/80 px-1.5 py-0.5 rounded shrink-0 font-normal">
+                      {acc.account_type}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

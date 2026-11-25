@@ -86,18 +86,30 @@ export function canonicalBankReconciliationStatus(
 }
 
 export function isAvailableTransaction(line: BankTransactionLine) {
-  if (
-    !line.manually_unlinked &&
-    Boolean(line.matched_entry_id || line.matched_fund_transfer_id) &&
-    (line.matching_status === 'confirmed' || line.reconciliation_status === 'recorded' || line.reconciliation_status === 'matched')
-  ) {
+  if (line.manually_unlinked) {
+    return false;
+  }
+  if (line.reconciliation_status === 'matched') {
     return false;
   }
   const bankAmount = bankStatementLineAmount(line.debit_amount, line.credit_amount);
   const allocatedAmount = Number(line.allocatedAmount || 0);
   const remainingAmount = line.remainingAmount ?? Math.max(0, bankAmount - allocatedAmount);
-  return canonicalBankReconciliationStatus(bankAmount, allocatedAmount) !== 'matched'
-    && Number(remainingAmount) > BANK_ALLOCATION_EPSILON;
+
+  // Direct recorded entry with no allocations is fully reconciled
+  if (
+    line.reconciliation_status === 'recorded' &&
+    allocatedAmount <= BANK_ALLOCATION_EPSILON
+  ) {
+    return false;
+  }
+
+  // Authoritative check: if remaining amount > epsilon and not fully matched, line is available for allocation
+  return (
+    (line.reconciliation_status === 'partially_reconciled' ||
+      canonicalBankReconciliationStatus(bankAmount, allocatedAmount) !== 'matched') &&
+    Number(remainingAmount) > BANK_ALLOCATION_EPSILON
+  );
 }
 
 export async function loadUnmatchedDebitBankTransactions({
@@ -146,12 +158,12 @@ export async function loadUnmatchedDebitBankTransactions({
       lineIds,
       batchIds => supabase
         .from('bank_statement_allocations')
-        .select('bank_statement_line_id, allocation_amount, journal_entries(is_posted, is_reversed)')
+        .select('bank_statement_line_id, allocation_amount, journal_entries(is_posted, is_reversed, is_cancelled)')
         .in('bank_statement_line_id', batchIds)
     );
     for (const allocation of allocations) {
       const je = Array.isArray(allocation.journal_entries) ? allocation.journal_entries[0] : allocation.journal_entries;
-      if (je && (!je.is_posted || je.is_reversed)) {
+      if (je && (!je.is_posted || je.is_reversed || je.is_cancelled)) {
         continue;
       }
       allocatedByLine.set(
@@ -196,11 +208,12 @@ export async function linkBankTransaction({
     throw new Error('A bank transaction must be linked to a Finance document or journal entry.');
   }
 
+  const docType = matchedExpenseId ? 'expense' : matchedPaymentId ? 'payment' : 'journal';
   await linkBankStatementLine(
     bankStatementLineId,
-    matchedExpenseId ? 'expense' : matchedPaymentId ? 'payment' : 'journal',
+    docType,
     (matchedExpenseId || matchedPaymentId || matchedJournalEntryId) as string,
-    paymentKind,
+    docType === 'journal' ? 'other' : paymentKind,
     allocationAmount,
   );
   if (note) {
@@ -215,4 +228,36 @@ export async function unlinkBankTransaction(bankStatementLineId: string): Promis
 
 export function notifyFinanceReconciliationRefresh(): void {
   window.dispatchEvent(new CustomEvent(FINANCE_RECONCILIATION_REFRESH_EVENT));
+}
+
+export function rankCandidateLines(
+  lines: BankTransactionLine[],
+  targetAmount: number,
+  targetDate?: string | null
+): BankTransactionLine[] {
+  return [...lines].sort((a, b) => {
+    // 1. Exact balance match on remaining amount
+    const aRemainingExact = Math.abs((a.remainingAmount ?? 0) - targetAmount) <= 0.01 ? 0 : 1;
+    const bRemainingExact = Math.abs((b.remainingAmount ?? 0) - targetAmount) <= 0.01 ? 0 : 1;
+    if (aRemainingExact !== bRemainingExact) return aRemainingExact - bRemainingExact;
+
+    // 2. Exact balance match on total line amount
+    const aTotal = Number(a.debit_amount || 0) > 0 ? Number(a.debit_amount) : Number(a.credit_amount || 0);
+    const bTotal = Number(b.debit_amount || 0) > 0 ? Number(b.debit_amount) : Number(b.credit_amount || 0);
+    const aTotalExact = Math.abs(aTotal - targetAmount) <= 0.01 ? 0 : 1;
+    const bTotalExact = Math.abs(bTotal - targetAmount) <= 0.01 ? 0 : 1;
+    if (aTotalExact !== bTotalExact) return aTotalExact - bTotalExact;
+
+    // 3. Proximity of transaction date
+    if (targetDate) {
+      const targetTime = new Date(targetDate).getTime();
+      const aTime = a.transaction_date ? new Date(a.transaction_date).getTime() : 0;
+      const bTime = b.transaction_date ? new Date(b.transaction_date).getTime() : 0;
+      const aDiff = Math.abs(aTime - targetTime);
+      const bDiff = Math.abs(bTime - targetTime);
+      if (aDiff !== bDiff) return aDiff - bDiff;
+    }
+
+    return 0;
+  });
 }

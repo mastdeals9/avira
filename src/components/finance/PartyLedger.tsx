@@ -337,11 +337,12 @@ export default function PartyLedger() {
     } else if (partyType === 'supplier' && supplierSubView === 'advances') {
       const advQuery = supabase
         .from('journal_entry_lines')
-        .select('id, debit, credit, description, journal_entry_id, transaction_currency, exchange_rate, journal_entries!inner(id, reference_id, reference_number, entry_number, entry_date, source_module, is_posted, is_reversed), chart_of_accounts!inner(code)')
+        .select('id, debit, credit, description, journal_entry_id, transaction_currency, exchange_rate, journal_entries!inner(id, reference_id, reference_number, entry_number, entry_date, source_module, is_posted, is_reversed, is_cancelled), chart_of_accounts!inner(code)')
         .eq('supplier_id', selectedParty)
         .eq('chart_of_accounts.code', '1170')
         .eq('journal_entries.is_posted', true)
-        .eq('journal_entries.is_reversed', false);
+        .eq('journal_entries.is_reversed', false)
+        .eq('journal_entries.is_cancelled', false);
       const advLines = await dateRange(advQuery, 'journal_entries.entry_date');
       if (advLines.data) {
         advLines.data.forEach((line: any) => {
@@ -564,11 +565,12 @@ export default function PartyLedger() {
       if (!isUsdSupplier) {
         const apLinesQuery = supabase
           .from('journal_entry_lines')
-          .select('id, entry_date:journal_entries!inner(entry_date), debit, credit, description, journal_entry_id, journal_entries!inner(id, reference_id, reference_number, entry_number, source_module, transaction_category, is_posted, is_reversed), chart_of_accounts!inner(code)')
+          .select('id, entry_date:journal_entries!inner(entry_date), debit, credit, description, journal_entry_id, journal_entries!inner(id, reference_id, reference_number, entry_number, source_module, transaction_category, is_posted, is_reversed, is_cancelled), chart_of_accounts!inner(code)')
           .eq('supplier_id', selectedParty)
           .eq('chart_of_accounts.code', '2110')
           .eq('journal_entries.is_posted', true)
-          .eq('journal_entries.is_reversed', false);
+          .eq('journal_entries.is_reversed', false)
+          .eq('journal_entries.is_cancelled', false);
         const apLines = await dateRange(apLinesQuery, 'journal_entries.entry_date');
         if (apLines.data) {
           const piIds = new Set<string>((invoices || []).map(p => p.id).filter(Boolean));

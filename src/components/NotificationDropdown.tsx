@@ -57,7 +57,19 @@ export function NotificationDropdown() {
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
   const { user } = useAuth();
+
+  useEffect(() => {
+    const onCountChange = (e: Event) => {
+      const custom = e as CustomEvent<{ count: number }>;
+      setPendingApprovalsCount(custom.detail?.count || 0);
+    };
+    window.addEventListener('pending-approvals-count-changed', onCountChange);
+    return () => {
+      window.removeEventListener('pending-approvals-count-changed', onCountChange);
+    };
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -240,6 +252,35 @@ export function NotificationDropdown() {
                 </button>
               </div>
             </div>
+
+            {pendingApprovalsCount > 0 && (
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent('open-pending-approvals'));
+                  setIsOpen(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    window.dispatchEvent(new CustomEvent('open-pending-approvals'));
+                    setIsOpen(false);
+                  }
+                }}
+                className="bg-gradient-to-r from-blue-50 to-indigo-50 hover:from-blue-100 hover:to-indigo-100 border-b border-blue-200/80 px-4 py-2.5 flex items-center justify-between cursor-pointer transition select-none"
+                title="Open Pending Approvals panel"
+              >
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
+                  <span className="text-xs font-semibold text-blue-900">
+                    Pending Approvals ({pendingApprovalsCount})
+                  </span>
+                </div>
+                <span className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1">
+                  View &rarr;
+                </span>
+              </div>
+            )}
 
             <div className="max-h-96 overflow-y-auto">
               {notifications.length === 0 ? (

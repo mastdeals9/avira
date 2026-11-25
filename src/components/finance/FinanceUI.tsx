@@ -95,6 +95,7 @@ const ACTION_CLASS: Partial<Record<FinanceAction, string>> = {
   reject: ICON_BTN_DANGER,
   reverse: ICON_BTN,
   delete: ICON_BTN_DANGER,
+  bankLink: ICON_BTN_INFO,
 };
 
 export function FinanceActionButton({ action, label, className = '', ...props }:
@@ -109,7 +110,7 @@ export function FinanceActionButton({ action, label, className = '', ...props }:
       type="button"
       title={title}
       aria-label={title}
-      className={`finance-icon-button ${ACTION_CLASS[action] ?? ICON_BTN} ${className}`}
+      className={`finance-icon-button ${ACTION_CLASS[action] ?? ICON_BTN} disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent ${className}`}
       {...props}
     >
       <Icon className={ICON_SIZE} />

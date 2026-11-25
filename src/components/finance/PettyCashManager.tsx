@@ -1246,8 +1246,8 @@ export function PettyCashManager({ canManage, onNavigateToFundTransfer, initialV
             <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">
               Book: {pettyCashBooks[0].name} (Float: {formatCurrency(pettyCashBooks[0].float_amount, 'IDR')})
             </div>
-            <div className={`text-xs font-mono font-bold ${pettyCashBooks[0].current_balance < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
-              {formatCurrency(pettyCashBooks[0].current_balance, 'IDR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+            <div className={`text-xs font-mono font-bold ${(pettyCashBooks[0].current_balance ?? cashBalance) < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+              {formatCurrency(pettyCashBooks[0].current_balance || cashBalance, 'IDR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
             </div>
           </div>
         )}

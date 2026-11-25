@@ -146,41 +146,18 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
 
       setOpeningBalance(effectiveOpeningBalance);
 
-      // The bank book remains statement-native. Show the active GL balance
-      // beside it so a statement/import gap is visible rather than hidden.
+      // Use canonical dynamic bank balance from vw_bank_ledger_effective
       if (selectedBankData?.coa_id) {
-        const { data: glLines } = await supabase
-          .from('journal_entry_lines')
-          .select('debit, credit, transaction_debit, transaction_credit, journal_entry_id, journal_entries!inner(entry_date, source_module, reference_number, is_posted, is_reversed)')
-          .eq('account_id', selectedBankData.coa_id)
-          .eq('journal_entries.is_posted', true)
-          .eq('journal_entries.is_reversed', false);
-        const journalIds = Array.from(new Set((glLines || []).map((line: any) => line.journal_entry_id).filter(Boolean)));
-        const economicDates = journalIds.length
-          ? await fetchInBatches<any>(
-              journalIds,
-              batch => supabase.from('bank_statement_allocations')
-                .select('journal_entry_id, bank_statement_lines!inner(transaction_date)')
-                .in('journal_entry_id', batch)
-            )
-          : [];
-        const canonicalBankDate = new Map<string, string>();
-        (economicDates || []).forEach((row: any) => {
-          const date = row.bank_statement_lines?.transaction_date;
-          if (!date) return;
-          const current = canonicalBankDate.get(row.journal_entry_id);
-          if (!current || date < current) canonicalBankDate.set(row.journal_entry_id, date);
-        });
-        const glMovement = (glLines || []).reduce((sum: number, line: any) => {
-          const journal = line.journal_entries;
-          const reportingDate = canonicalBankDate.get(line.journal_entry_id) || journal?.entry_date;
-          if (!reportingDate || reportingDate < openingBalanceDate || reportingDate > globalDateRange.endDate) return sum;
-          const useTransaction = selectedBankData.currency === 'USD';
-          const debit = useTransaction ? Number(line.transaction_debit ?? line.debit ?? 0) : Number(line.debit || 0);
-          const credit = useTransaction ? Number(line.transaction_credit ?? line.credit ?? 0) : Number(line.credit || 0);
-          return sum + debit - credit;
-        }, 0);
-        setGlClosingBalance(storedOpeningBalance + glMovement);
+        const { data: bookBal, error: bookBalErr } = await supabase
+          .rpc('calculate_bank_account_book_balance', {
+            p_bank_account_id: selectedBank,
+            p_as_of_date: globalDateRange.endDate,
+          });
+        if (!bookBalErr && bookBal !== null && bookBal !== undefined) {
+          setGlClosingBalance(Number(bookBal));
+        } else {
+          setGlClosingBalance(null);
+        }
       } else {
         setGlClosingBalance(null);
       }

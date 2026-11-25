@@ -224,9 +224,10 @@ async function loadPphDetail(row: Row): Promise<SourceLine[]> {
   const journalRes = sourceIds.length
     ? await supabase
       .from('journal_entries')
-      .select('id, reference_id, entry_number, entry_date, is_posted, is_reversed')
+      .select('id, reference_id, entry_number, entry_date, is_posted, is_reversed, is_cancelled')
       .eq('is_posted', true)
       .eq('is_reversed', false)
+      .eq('is_cancelled', false)
       .in('reference_id', sourceIds)
     : { data: [] as any[] };
   const journals = new Map<string, any>(((journalRes.data ?? []) as any[]).map(j => [j.reference_id, j]));

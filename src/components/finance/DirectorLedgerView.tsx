@@ -57,12 +57,14 @@ export default function DirectorLedgerView() {
             reference_number,
             description,
             is_posted,
-            is_reversed
+            is_reversed,
+            is_cancelled
           )
         `)
         .in('account.code', ['1310', '2105'])
         .eq('journal.is_posted', true)
         .eq('journal.is_reversed', false)
+        .eq('journal.is_cancelled', false)
         .order('journal(entry_date)', { ascending: true });
 
       if (error) throw error;

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigation } from '../contexts/NavigationContext';
-import { X, FileText, Truck, DollarSign, Wallet } from 'lucide-react';
+import { X, FileText, Truck, DollarSign, Wallet, Bell } from 'lucide-react';
 import { formatCurrency, resolveTransactionCurrency } from '../utils/currency';
 import { useSupabaseRealtimeChannel } from '../hooks/useSupabaseRealtimeChannel';
 import { getEffectiveExpensePostingStates } from '../services/expensePostingLifecycle';
@@ -25,15 +25,10 @@ export function ApprovalNotifications() {
   const { profile } = useAuth();
   const { setCurrentPage, setNavigationData } = useNavigation();
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
-  const [showNotification, setShowNotification] = useState(false);
-  const [dismissedSignature, setDismissedSignature] = useState<string | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
 
+  const getOpenStateKey = useCallback(() => `approval_panel_open_${profile?.id ?? 'default'}`, [profile?.id]);
   const getDismissKey = useCallback(() => `approval_popup_dismissed_${profile?.id ?? 'unknown'}`, [profile?.id]);
-  const getSignature = useCallback((approvals: PendingApproval[]) =>
-    approvals
-      .map(item => `${item.type}:${item.id}`)
-      .sort()
-      .join('|'), []);
 
   const getCompanyName = (rawCustomer: unknown) => {
     if (Array.isArray(rawCustomer)) {
@@ -144,11 +139,16 @@ export function ApprovalNotifications() {
         }
 
         setPendingApprovals(approvals);
-        const currentSignature = getSignature(approvals);
-        if (approvals.length > 0 && currentSignature !== dismissedSignature) {
-          setShowNotification(true);
-        } else {
-          setShowNotification(false);
+
+        // Broadcast count so header notification controls can stay in sync
+        try {
+          window.dispatchEvent(
+            new CustomEvent('pending-approvals-count-changed', {
+              detail: { count: approvals.length },
+            })
+          );
+        } catch {
+          // Ignore
         }
       } catch (error) {
         console.error('Error loading pending approvals:', error);
@@ -159,7 +159,7 @@ export function ApprovalNotifications() {
 
     inFlightRef.current = run;
     return run;
-  }, [dismissedSignature, getSignature]);
+  }, []);
 
   const debouncedLoad = useCallback(() => {
     if (debounceTimerRef.current) {
@@ -170,14 +170,16 @@ export function ApprovalNotifications() {
     }, 300);
   }, [loadPendingApprovals]);
 
+  // Initial load & restore persistent open state (closed by default)
   useEffect(() => {
     if (profile?.role !== 'admin') return;
 
     try {
-      const stored = localStorage.getItem(getDismissKey());
-      setDismissedSignature(stored || null);
+      const storedOpen = localStorage.getItem(getOpenStateKey());
+      // The panel is closed by default. Only restore open if user explicitly opened it earlier.
+      setIsOpen(storedOpen === 'open');
     } catch {
-      setDismissedSignature(null);
+      setIsOpen(false);
     }
 
     loadPendingApprovals();
@@ -192,7 +194,54 @@ export function ApprovalNotifications() {
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [debouncedLoad, getDismissKey, loadPendingApprovals, profile?.role]);
+  }, [debouncedLoad, getOpenStateKey, loadPendingApprovals, profile?.role]);
+
+  // Handle explicit open/dismiss/toggle actions
+  const handleOpen = useCallback(() => {
+    setIsOpen(true);
+    try {
+      localStorage.setItem(getOpenStateKey(), 'open');
+    } catch {
+      // Ignore storage failures
+    }
+  }, [getOpenStateKey]);
+
+  const handleDismiss = useCallback(() => {
+    setIsOpen(false);
+    try {
+      localStorage.setItem(getOpenStateKey(), 'closed');
+      localStorage.setItem(getDismissKey(), 'dismissed');
+    } catch {
+      // Ignore storage failures
+    }
+  }, [getDismissKey, getOpenStateKey]);
+
+  const handleToggle = useCallback(() => {
+    setIsOpen((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(getOpenStateKey(), next ? 'open' : 'closed');
+        if (!next) {
+          localStorage.setItem(getDismissKey(), 'dismissed');
+        }
+      } catch {
+        // Ignore storage failures
+      }
+      return next;
+    });
+  }, [getDismissKey, getOpenStateKey]);
+
+  // External trigger listeners (e.g. from notification bell)
+  useEffect(() => {
+    window.addEventListener('open-pending-approvals', handleOpen);
+    window.addEventListener('toggle-pending-approvals', handleToggle);
+    window.addEventListener('close-pending-approvals', handleDismiss);
+    return () => {
+      window.removeEventListener('open-pending-approvals', handleOpen);
+      window.removeEventListener('toggle-pending-approvals', handleToggle);
+      window.removeEventListener('close-pending-approvals', handleDismiss);
+    };
+  }, [handleDismiss, handleOpen, handleToggle]);
 
   const approvalEnabled = profile?.role === 'admin';
   const onApprovalEvent = () => { debouncedLoad(); };
@@ -222,14 +271,6 @@ export function ApprovalNotifications() {
   });
 
   const handleViewItem = (item: PendingApproval) => {
-    setShowNotification(false);
-    const signature = getSignature(pendingApprovals);
-    try {
-      localStorage.setItem(getDismissKey(), signature);
-      setDismissedSignature(signature);
-    } catch {
-      // Ignore storage failures
-    }
     if (item.type === 'sales_order') setCurrentPage('sales-orders');
     else if (item.type === 'delivery_challan') setCurrentPage('delivery-challan');
     else {
@@ -241,18 +282,7 @@ export function ApprovalNotifications() {
     }
   };
 
-  const handleDismiss = () => {
-    setShowNotification(false);
-    const signature = getSignature(pendingApprovals);
-    try {
-      localStorage.setItem(getDismissKey(), signature);
-      setDismissedSignature(signature);
-    } catch {
-      // Ignore storage failures
-    }
-  };
-
-  if (!showNotification || pendingApprovals.length === 0) return null;
+  if (profile?.role !== 'admin' || pendingApprovals.length === 0) return null;
 
   const typeConfig = {
     sales_order:     { label: 'Sales Order',     bg: 'bg-blue-100',   text: 'text-blue-600',   Icon: FileText },
@@ -261,46 +291,78 @@ export function ApprovalNotifications() {
     petty_cash:      { label: 'Petty Cash',       bg: 'bg-yellow-100', text: 'text-yellow-600', Icon: Wallet },
   };
 
+  // Minimized state: notification bell pill with persistent pending approvals badge
+  if (!isOpen) {
+    return (
+      <button
+        type="button"
+        onClick={handleOpen}
+        className="fixed bottom-16 sm:bottom-4 right-2 sm:right-4 z-50 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 hover:scale-105 active:scale-95 group border border-blue-400/30"
+        title={`Pending Approvals (${pendingApprovals.length})`}
+        aria-label={`Pending Approvals (${pendingApprovals.length})`}
+        data-testid="pending-approvals-trigger"
+      >
+        <div className="relative flex items-center justify-center">
+          <Bell className="w-5 h-5 text-white" />
+          <span className="absolute -top-1.5 -right-2 min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1 shadow border border-white">
+            {pendingApprovals.length}
+          </span>
+        </div>
+        <span className="text-xs font-semibold tracking-wide hidden sm:inline pr-1">
+          Pending Approvals
+        </span>
+      </button>
+    );
+  }
+
+  // Expanded state: full slide-out panel
   return (
-    <div className="fixed bottom-16 sm:bottom-4 right-2 sm:right-4 left-2 sm:left-auto sm:w-96 max-w-[calc(100vw-16px)] max-h-[70vh] sm:max-h-[600px] overflow-hidden rounded-xl shadow-2xl bg-white border border-gray-200 animate-slide-up z-50">
-      <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between">
+    <div className="fixed bottom-16 sm:bottom-4 right-2 sm:right-4 left-2 sm:left-auto sm:w-96 max-w-[calc(100vw-16px)] max-h-[70vh] sm:max-h-[600px] overflow-hidden rounded-xl shadow-2xl bg-white border border-gray-200 animate-slide-up z-50 flex flex-col">
+      <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-          <h3 className="font-semibold">Pending Approvals</h3>
-          <span className="bg-white/20 text-xs px-2 py-0.5 rounded-full">{pendingApprovals.length}</span>
+          <h3 className="font-semibold text-sm sm:text-base">Pending Approvals</h3>
+          <span className="bg-white/20 text-xs px-2 py-0.5 rounded-full font-medium">{pendingApprovals.length}</span>
         </div>
-        <button onClick={handleDismiss} className="text-white/80 hover:text-white transition">
+        <button
+          type="button"
+          onClick={handleDismiss}
+          className="text-white/80 hover:text-white transition p-1 rounded-lg hover:bg-white/10"
+          title="Close panel"
+          aria-label="Close panel"
+          data-testid="pending-approvals-close"
+        >
           <X className="w-5 h-5" />
         </button>
       </div>
 
-      <div className="max-h-[500px] overflow-y-auto">
+      <div className="max-h-[500px] overflow-y-auto flex-1">
         {pendingApprovals.map((item, index) => {
           const cfg = typeConfig[item.type];
           const Icon = cfg.Icon;
           return (
             <div
               key={`${item.type}-${item.id}`}
-              className={`p-4 border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition ${index === 0 ? 'bg-blue-50' : ''}`}
+              className={`p-3.5 border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition ${index === 0 ? 'bg-blue-50/60' : ''}`}
               onClick={() => handleViewItem(item)}
             >
               <div className="flex items-start gap-3">
-                <div className={`p-2 rounded-lg ${cfg.bg} ${cfg.text}`}>
-                  <Icon className="w-5 h-5" />
+                <div className={`p-2 rounded-lg shrink-0 ${cfg.bg} ${cfg.text}`}>
+                  <Icon className="w-4 h-4 sm:w-5 sm:h-5" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <p className="text-sm font-semibold text-gray-900">{cfg.label}</p>
-                      <p className="text-xs text-gray-600 mt-0.5">{item.number}</p>
+                      <p className="text-xs sm:text-sm font-semibold text-gray-900">{cfg.label}</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5 font-mono">{item.number}</p>
                     </div>
-                    <span className="text-xs text-gray-500 whitespace-nowrap">
+                    <span className="text-[11px] text-gray-400 whitespace-nowrap">
                       {new Date(item.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-700 mt-1 truncate">{item.description}</p>
+                  <p className="text-xs text-gray-600 mt-1 truncate">{item.description}</p>
                   {item.amount !== undefined && (
-                    <p className="text-xs font-medium text-blue-600 mt-1">
+                    <p className="text-xs font-semibold text-blue-600 mt-1">
                       {formatCurrency(item.amount, item.currency)}
                     </p>
                   )}
@@ -311,8 +373,8 @@ export function ApprovalNotifications() {
         })}
       </div>
 
-      <div className="bg-gray-50 px-4 py-3 text-center">
-        <p className="text-xs text-gray-500">Click on an item to review and approve</p>
+      <div className="bg-gray-50 px-4 py-2.5 text-center border-t border-gray-100 shrink-0">
+        <p className="text-[11px] text-gray-500">Click on an item to review and approve</p>
       </div>
 
       <style>{`
@@ -320,7 +382,7 @@ export function ApprovalNotifications() {
           from { transform: translateY(100%); opacity: 0; }
           to   { transform: translateY(0);    opacity: 1; }
         }
-        .animate-slide-up { animation: slide-up 0.3s ease-out; }
+        .animate-slide-up { animation: slide-up 0.25s ease-out; }
       `}</style>
     </div>
   );

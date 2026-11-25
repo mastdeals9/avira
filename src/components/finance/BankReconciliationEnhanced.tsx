@@ -122,6 +122,7 @@ interface BankAccount {
   alias: string | null;
   opening_balance?: number;
   opening_balance_date?: string | null;
+  coa_id?: string | null;
 }
 
 interface DirectorLoanLedgerAccount {
@@ -410,9 +411,9 @@ export function BankReconciliationEnhanced({
   // an empty bank account.
   const [statementLoadError, setStatementLoadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'matched' | 'suggested' | 'unmatched'>(
-    'unmatched'
-  );
+  const [activeFilter, setActiveFilter] = useState<
+    'all' | 'matched' | 'partially_reconciled' | 'suggested' | 'unmatched'
+  >('unmatched');
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(
     null
   );
@@ -542,6 +543,10 @@ export function BankReconciliationEnhanced({
   const [receiptFilterMatchingAmount, setReceiptFilterMatchingAmount] = useState(true);
   const [linkJournalEntry, setLinkJournalEntry] = useState(false);
   const [availableJournals, setAvailableJournals] = useState<any[]>([]);
+  const [journalSearchQuery, setJournalSearchQuery] = useState('');
+  const [selectedJournalId, setSelectedJournalId] = useState<string>('');
+  const [journalAllocationAmount, setJournalAllocationAmount] = useState<number>(0);
+  const [loadingJournals, setLoadingJournals] = useState(false);
   const [linkToSupplierPayment, setLinkToSupplierPayment] = useState(false);
   const [supplierPayments, setSupplierPayments] = useState<any[]>([]);
   const [loadingSupplierPayments, setLoadingSupplierPayments] = useState(false);
@@ -905,7 +910,7 @@ export function BankReconciliationEnhanced({
       const { data, error } = await supabase
         .from('bank_accounts')
         .select(
-          'id, account_name, bank_name, account_number, currency, alias, opening_balance, opening_balance_date'
+          'id, account_name, bank_name, account_number, currency, alias, opening_balance, opening_balance_date, coa_id'
         )
         .eq('is_active', true)
         .order('account_name');
@@ -1260,7 +1265,7 @@ export function BankReconciliationEnhanced({
           supabase
             .from('journal_entries')
             .select(
-              'id, source_module, reference_id, reference_number, description, entry_date, entry_number, is_posted, is_reversed'
+              'id, source_module, reference_id, reference_number, description, entry_date, entry_number, is_posted, is_reversed, is_cancelled'
             )
             .in('id', batchIds)
         );
@@ -1288,11 +1293,12 @@ export function BankReconciliationEnhanced({
         const isDirectRecorded =
           !row.manually_unlinked &&
           Boolean(row.matched_entry_id) &&
-          (row.matching_status === 'confirmed' || row.reconciliation_status === 'recorded');
+          row.reconciliation_status === 'recorded' &&
+          allocations.length === 0;
         const validAllocations = allocations.filter((allocation) => {
           if (!allocation.journal_entry_id) return false;
           const journal = entryMap.get(allocation.journal_entry_id);
-          if (!journal || !journal.is_posted || journal.is_reversed) return false;
+          if (!journal || !journal.is_posted || journal.is_reversed || journal.is_cancelled) return false;
           return true;
         });
 
@@ -1305,7 +1311,7 @@ export function BankReconciliationEnhanced({
           const ft = fundTransferMap.get(row.matched_fund_transfer_id);
           if (ft && !row.manually_unlinked && ft.status === 'posted' && ft.journal_entry_id) {
             const ftJournal = entryMap.get(ft.journal_entry_id);
-            if (ftJournal && ftJournal.is_posted && !ftJournal.is_reversed) {
+            if (ftJournal && ftJournal.is_posted && !ftJournal.is_reversed && !ftJournal.is_cancelled) {
               const isFromLine = row.id === ft.from_bank_statement_line_id;
               const isToLine = row.id === ft.to_bank_statement_line_id;
               if (isFromLine || isToLine) {
@@ -1361,21 +1367,24 @@ export function BankReconciliationEnhanced({
         const allocatedAmount =
           validAllocations.reduce((sum, allocation) => sum + allocation.allocation_amount, 0) +
           (legacyFundAllocation ? legacyFundAllocation.allocation_amount : 0) +
-          (isDirectRecorded && allocations.length === 0 && !legacyFundAllocation ? bankAmount : 0);
+          (isDirectRecorded && !legacyFundAllocation ? bankAmount : 0);
         const remainingAmount = Math.max(0, bankAmount - allocatedAmount);
         const isSuggested =
           (row.matching_status === 'suggested' ||
             row.reconciliation_status === 'needs_review' ||
             row.reconciliation_status === 'suggested') &&
           allocatedAmount <= BANK_ALLOCATION_EPSILON;
-        const status = isSuggested
+        const status: StatementLine['status'] = isSuggested
           ? 'suggested'
           : isDirectRecorded
             ? 'recorded'
-            : (() => {
-                const status = canonicalBankReconciliationStatus(bankAmount, allocatedAmount);
-                return status;
-              })();
+            : row.reconciliation_status === 'partially_reconciled' ||
+              (allocatedAmount > BANK_ALLOCATION_EPSILON && remainingAmount > BANK_ALLOCATION_EPSILON)
+            ? 'partially_reconciled'
+            : row.reconciliation_status === 'matched' ||
+              allocatedAmount >= bankAmount - BANK_ALLOCATION_EPSILON
+            ? 'matched'
+            : 'unmatched';
         const firstExpense = allocations.find((a) => a.document_type === 'expense');
         const firstReceipt = allocations.find((a) => a.document_type === 'receipt');
         const firstPayment = allocations.find((a) => a.document_type === 'payment');
@@ -2838,6 +2847,9 @@ export function BankReconciliationEnhanced({
     setDirectorSummary(null);
     setLinkToExpense(false);
     setLinkJournalEntry(false);
+    setJournalSearchQuery('');
+    setSelectedJournalId('');
+    setJournalAllocationAmount(0);
     setLinkToSupplierPayment(false);
     setLinkToTaxPayment(false);
     setLinkSettleBills(false);
@@ -3711,118 +3723,500 @@ export function BankReconciliationEnhanced({
     }
   };
 
-  const loadAvailableJournals = async (line: StatementLine) => {
+  const loadAvailableJournals = async (line: StatementLine, searchOverride?: string) => {
+    setLoadingJournals(true);
     try {
-      const amount = line.debit > 0 ? line.debit : line.credit;
+      const bank = bankAccounts.find((b) => b.id === (line.bank_account_id || selectedBank));
+      let bankCoaId = bank?.coa_id;
+      if (!bankCoaId && selectedBank) {
+        const { data: bData } = await supabase
+          .from('bank_accounts')
+          .select('coa_id')
+          .eq('id', selectedBank)
+          .maybeSingle();
+        bankCoaId = bData?.coa_id;
+      }
 
-      const transactionDate = new Date(line.date);
-      const startSearch = new Date(transactionDate);
-      startSearch.setDate(startSearch.getDate() - 7);
-      const endSearch = new Date(transactionDate);
-      endSearch.setDate(endSearch.getDate() + 7);
+      if (!bankCoaId) {
+        setAvailableJournals([]);
+        return;
+      }
 
-      const { data: journals, error } = await supabase
-        .from('journal_entries')
-        .select(
-          `
+      const isDebit = line.debit > 0;
+      const targetRemaining =
+        line.remainingAmount > 0 ? line.remainingAmount : line.debit || line.credit;
+
+      // Query journal lines on the bank account GL on matching side:
+      // Debit statement (money OUT) -> Credit in journal entry line
+      // Credit statement (money IN) -> Debit in journal entry line
+      let q = supabase
+        .from('journal_entry_lines')
+        .select(`
           id,
-          entry_number,
-          entry_date,
+          journal_entry_id,
+          line_number,
+          debit,
+          credit,
           description,
-          total_debit,
-          total_credit,
-          source_module,
-          reference_number
-        `
-        )
-        .eq('is_posted', true)
-        .eq('is_reversed', false)
-        .gte('entry_date', startSearch.toISOString().split('T')[0])
-        .lte('entry_date', endSearch.toISOString().split('T')[0])
-        .or(`total_debit.eq.${amount},total_credit.eq.${amount}`)
-        .order('entry_date', { ascending: false })
-        .limit(100);
+          journal_entries!inner (
+            id,
+            entry_number,
+            entry_date,
+            description,
+            total_debit,
+            total_credit,
+            source_module,
+            reference_number,
+            is_posted,
+            is_reversed,
+            is_cancelled
+          )
+        `)
+        .eq('account_id', bankCoaId)
+        .eq('journal_entries.is_posted', true)
+        .eq('journal_entries.is_reversed', false)
+        .eq('journal_entries.is_cancelled', false);
 
+      if (isDebit) {
+        q = q.gt('credit', 0);
+      } else {
+        q = q.gt('debit', 0);
+      }
+
+      const { data: lines, error } = await q.order('id', { ascending: false }).limit(300);
       if (error) throw error;
 
-      const linked = await loadLinkedDocumentIds(line.id);
+      // Group by journal entry
+      const journalMap = new Map<string, any>();
+      const journalIds: string[] = [];
 
-      const validJournals: PickerCandidate[] = [];
-      for (const j of journals || []) {
-        if (j.source_module === 'expenses' && j.reference_number) {
-          const expId = j.reference_number.replace('EXP-', '');
-          const { data: exp } = await supabase
-            .from('finance_expenses')
-            .select('id')
-            .eq('id', expId)
-            .maybeSingle();
-          if (!exp) continue;
+      for (const row of lines || []) {
+        const je = Array.isArray(row.journal_entries)
+          ? row.journal_entries[0]
+          : row.journal_entries;
+        if (!je) continue;
+        // Verify journal is balanced
+        if (Math.abs(Number(je.total_debit || 0) - Number(je.total_credit || 0)) > 0.01) continue;
+
+        const lineBankAmount = isDebit ? Number(row.credit || 0) : Number(row.debit || 0);
+        if (lineBankAmount <= 0.01) continue;
+
+        if (!journalMap.has(je.id)) {
+          journalIds.push(je.id);
+          journalMap.set(je.id, {
+            ...je,
+            bankAmountInJournal: lineBankAmount,
+            allocatedAmountInJournal: 0,
+            journalAvailableAmount: lineBankAmount,
+          });
+        } else {
+          const existing = journalMap.get(je.id);
+          existing.bankAmountInJournal += lineBankAmount;
+          existing.journalAvailableAmount += lineBankAmount;
+        }
+      }
+
+      // If user typed a search query, search specifically by entry_number to ensure exact candidates are never missed
+      const rawQuery = searchOverride !== undefined ? searchOverride : journalSearchQuery;
+      const trimmedQuery = (rawQuery || '').trim().toLowerCase();
+
+      if (trimmedQuery && trimmedQuery.length >= 3) {
+        const { data: explicitLines } = await supabase
+          .from('journal_entry_lines')
+          .select(`
+            id,
+            journal_entry_id,
+            line_number,
+            debit,
+            credit,
+            description,
+            journal_entries!inner (
+              id,
+              entry_number,
+              entry_date,
+              description,
+              total_debit,
+              total_credit,
+              source_module,
+              reference_number,
+              is_posted,
+              is_reversed,
+              is_cancelled
+            )
+          `)
+          .eq('account_id', bankCoaId)
+          .eq('journal_entries.is_posted', true)
+          .eq('journal_entries.is_reversed', false)
+          .eq('journal_entries.is_cancelled', false)
+          .ilike('journal_entries.entry_number', `%${trimmedQuery}%`)
+          .limit(50);
+
+        for (const row of explicitLines || []) {
+          const je = Array.isArray(row.journal_entries) ? row.journal_entries[0] : row.journal_entries;
+          if (!je || journalMap.has(je.id)) continue;
+          if (Math.abs(Number(je.total_debit || 0) - Number(je.total_credit || 0)) > 0.01) continue;
+          const lineBankAmount = isDebit ? Number(row.credit || 0) : Number(row.debit || 0);
+          if (lineBankAmount <= 0.01) continue;
+
+          journalIds.push(je.id);
+          journalMap.set(je.id, {
+            ...je,
+            bankAmountInJournal: lineBankAmount,
+            allocatedAmountInJournal: 0,
+            journalAvailableAmount: lineBankAmount,
+          });
+        }
+      }
+
+      // Check existing allocations for these journals (from canonical table AND legacy matched_entry_id)
+      if (journalIds.length > 0) {
+        const [allocsRes, legacyRes] = await Promise.all([
+          supabase
+            .from('bank_statement_allocations')
+            .select('bank_statement_line_id, journal_entry_id, allocation_amount')
+            .in('journal_entry_id', journalIds),
+          supabase
+            .from('bank_statement_lines')
+            .select('id, matched_entry_id, debit_amount, credit_amount')
+            .in('matched_entry_id', journalIds)
+            .neq('reconciliation_status', 'unmatched'),
+        ]);
+
+        const allocatedLinePairs = new Set<string>();
+
+        for (const alloc of allocsRes.data || []) {
+          const j = journalMap.get(alloc.journal_entry_id);
+          if (j) {
+            j.allocatedAmountInJournal += Number(alloc.allocation_amount || 0);
+            allocatedLinePairs.add(`${alloc.journal_entry_id}:${alloc.bank_statement_line_id}`);
+          }
         }
 
-        if (j.source_module === 'receipt' && j.reference_number) {
-          const { data: rv } = await supabase
-            .from('receipt_vouchers')
-            .select('id')
-            .eq('journal_entry_id', j.id)
-            .maybeSingle();
-          if (!rv) continue;
+        // Add legacy matched lines that don't already have a canonical allocation record
+        for (const leg of legacyRes.data || []) {
+          if (!leg.matched_entry_id) continue;
+          const pairKey = `${leg.matched_entry_id}:${leg.id}`;
+          if (allocatedLinePairs.has(pairKey)) continue;
+
+          const j = journalMap.get(leg.matched_entry_id);
+          if (j) {
+            const legAmt = Number(leg.debit_amount || 0) > 0 ? Number(leg.debit_amount) : Number(leg.credit_amount || 0);
+            j.allocatedAmountInJournal += legAmt;
+          }
         }
 
-        if (j.source_module === 'payment' && j.reference_number) {
-          const { data: pv } = await supabase
-            .from('payment_vouchers')
-            .select('id')
-            .eq('journal_entry_id', j.id)
-            .maybeSingle();
-          if (!pv) continue;
+        for (const j of journalMap.values()) {
+          j.journalAvailableAmount = Math.max(
+            0,
+            j.bankAmountInJournal - j.allocatedAmountInJournal
+          );
         }
+      }
 
-        if (j.source_module === 'petty_cash' && j.reference_number) {
-          const refId = j.reference_number.replace('PC-', '');
-          const { data: pc } = await supabase
-            .from('petty_cash_transactions')
-            .select('id')
-            .eq('id', refId)
-            .is('fund_transfer_id', null)
-            .maybeSingle();
-          if (!pc) continue;
-        }
-
-        validJournals.push({
+      const candidateList = Array.from(journalMap.values()).map((j) => {
+        const maxAlloc = Math.min(targetRemaining, j.journalAvailableAmount);
+        const isFullyAllocated = j.journalAvailableAmount <= 0.01;
+        return {
           ...j,
-          _linked: linked.journalIds.has(j.id),
-          _linkedReason: 'Already linked to another bank statement line',
+          maxAllocatable: maxAlloc,
+          _linked: isFullyAllocated,
+          _linkedReason: isFullyAllocated ? 'Fully Allocated' : undefined,
+        };
+      });
+
+      // Filter by search query if provided (search by journal number, narration, date, or amount)
+      let filtered = candidateList;
+      if (trimmedQuery) {
+        filtered = candidateList.filter((j) => {
+          const numMatch = (j.entry_number || '').toLowerCase().includes(trimmedQuery);
+          const descMatch = (j.description || '').toLowerCase().includes(trimmedQuery);
+          const dateMatch = (j.entry_date || '').includes(trimmedQuery);
+          const amountMatch =
+            String(j.bankAmountInJournal).includes(trimmedQuery) ||
+            String(j.total_debit).includes(trimmedQuery) ||
+            String(j.journalAvailableAmount).includes(trimmedQuery);
+          return numMatch || descMatch || dateMatch || amountMatch;
         });
       }
 
-      setAvailableJournals(
-        rankBankCandidates(
-          validJournals as PickerCandidate[],
-          line,
-          (journal) => Number(journal.total_debit || journal.total_credit || 0),
-          (journal) => journal.entry_date
-        )
-      );
+      // Sort: exact available amount match first, date proximity next
+      filtered.sort((a, b) => {
+        const aExact = Math.abs(a.journalAvailableAmount - targetRemaining) <= 0.01 ? 0 : 1;
+        const bExact = Math.abs(b.journalAvailableAmount - targetRemaining) <= 0.01 ? 0 : 1;
+        if (aExact !== bExact) return aExact - bExact;
+
+        const targetDate = new Date(line.date).getTime();
+        const aDiff = Math.abs(new Date(a.entry_date).getTime() - targetDate);
+        const bDiff = Math.abs(new Date(b.entry_date).getTime() - targetDate);
+        return aDiff - bDiff;
+      });
+
+      setAvailableJournals(filtered);
     } catch (error) {
-      console.error('Error loading journals:', error);
+      console.error('Error loading available journals:', error);
       setAvailableJournals([]);
+    } finally {
+      setLoadingJournals(false);
     }
   };
 
-  const handleLinkJournalEntry = async (line: StatementLine, journalId: string) => {
+  const handleLinkJournalEntry = async (
+    line: StatementLine,
+    journalId: string,
+    allocAmount?: number
+  ) => {
     try {
-      await linkBankStatementLine(line.id, 'journal', journalId);
+      const selectedJ = availableJournals.find((j) => j.id === journalId);
+      const maxPossible = selectedJ
+        ? selectedJ.maxAllocatable
+        : line.remainingAmount > 0
+          ? line.remainingAmount
+          : line.debit || line.credit;
+
+      const amount =
+        allocAmount && allocAmount > 0
+          ? Math.min(allocAmount, maxPossible)
+          : maxPossible;
+
+      if (amount <= 0.01) {
+        alert('Invalid allocation amount');
+        return;
+      }
+
+      await linkBankStatementLine(line.id, 'journal', journalId, 'other', amount);
 
       setRecordModal(false);
       setRecordingLine(null);
       setLinkJournalEntry(false);
+      setSelectedJournalId('');
       setAvailableJournals([]);
-      loadStatementLines();
-      alert('Successfully linked to journal entry');
+      await loadStatementLines();
+      setActionFeedback({
+        type: 'success',
+        title: 'Journal Entry linked successfully',
+        details: [
+          { label: 'Amount Allocated', value: formatCurrency(amount, line.currency) },
+          { label: 'Statement Line', value: line.description },
+        ],
+        timestamp: Date.now(),
+      });
     } catch (error: any) {
       console.error('[BankRecon] Error linking journal:', error);
       alert('Error: ' + error.message);
     }
+  };
+
+  const renderJournalEntrySelector = () => {
+    if (!recordingLine) return null;
+    const targetRemaining =
+      recordingLine.remainingAmount > 0
+        ? recordingLine.remainingAmount
+        : recordingLine.debit || recordingLine.credit;
+
+    return (
+      <div className="space-y-3 bg-white p-3 rounded-lg border border-slate-200">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+          <span className="text-gray-600 font-medium">
+            Search and link a posted Journal Entry containing this bank account.
+          </span>
+          <span className="font-medium text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 self-start sm:self-auto">
+            Remaining to Allocate: {formatCurrency(targetRemaining, recordingLine.currency)}
+          </span>
+        </div>
+
+        {/* Search Input */}
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-2.5 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search journal number (e.g. JE2611-0488), narration, date, or amount..."
+            value={journalSearchQuery}
+            onChange={(e) => {
+              const val = e.target.value;
+              setJournalSearchQuery(val);
+              loadAvailableJournals(recordingLine, val);
+            }}
+            className="w-full pl-9 pr-3 py-1.5 text-xs border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+
+        {/* List of candidates */}
+        {loadingJournals ? (
+          <div className="p-4 text-center text-xs text-gray-500">
+            Loading eligible journal entries...
+          </div>
+        ) : availableJournals.length === 0 ? (
+          <div className="p-4 text-center text-xs text-gray-500 bg-gray-50 rounded-lg border border-gray-200">
+            No matching eligible posted journal entries found with matching bank GL account.
+          </div>
+        ) : (
+          <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+            {availableJournals.map((j) => {
+              const isSelected = selectedJournalId === j.id;
+              const isFullyAllocated = j._linked || j.journalAvailableAmount <= 0.01;
+              const isDateMismatch = Boolean(recordingLine?.date && j.entry_date && recordingLine.date !== j.entry_date);
+              const isAmountMismatch = Math.abs(j.journalAvailableAmount - targetRemaining) > 0.01;
+              return (
+                <div
+                  key={j.id}
+                  className={`p-2.5 transition-colors ${
+                    isFullyAllocated
+                      ? 'bg-gray-50/60 opacity-80'
+                      : isSelected
+                      ? 'bg-blue-50/70 border-l-4 border-blue-600'
+                      : 'hover:bg-gray-50'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div
+                      className={`flex-1 ${isFullyAllocated ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                      onClick={() => {
+                        if (isFullyAllocated) return;
+                        setSelectedJournalId(isSelected ? '' : j.id);
+                        const maxAlloc = Math.min(targetRemaining, j.journalAvailableAmount);
+                        setJournalAllocationAmount(maxAlloc);
+                      }}
+                    >
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono font-semibold text-blue-700 text-xs">
+                          {j.entry_number}
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-medium">
+                          {j.source_module === 'manual' ? 'Manual' : j.source_module}
+                        </span>
+                        <span className="text-[11px] text-gray-500">
+                          {new Date(j.entry_date).toLocaleDateString('id-ID')}
+                        </span>
+                        {isFullyAllocated && (
+                          <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold text-[10px]">
+                            Fully Allocated
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-700 mt-1 line-clamp-2">
+                        {j.description || 'No description'}
+                      </div>
+                      <div className="flex items-center gap-3 mt-1.5 text-[11px] flex-wrap">
+                        <span className="text-gray-500">
+                          Bank GL:{' '}
+                          <strong className="font-mono text-gray-800">
+                            {formatCurrency(j.bankAmountInJournal, recordingLine.currency)}
+                          </strong>
+                        </span>
+                        {j.allocatedAmountInJournal > 0 && (
+                          <span className="text-amber-700">
+                            Allocated:{' '}
+                            <strong className="font-mono">
+                              {formatCurrency(
+                                j.allocatedAmountInJournal,
+                                recordingLine.currency
+                              )}
+                            </strong>
+                          </span>
+                        )}
+                        <span className={`${isFullyAllocated ? 'text-gray-500' : 'text-emerald-700'} font-medium`}>
+                          Available:{' '}
+                          <strong className="font-mono">
+                            {formatCurrency(j.journalAvailableAmount, recordingLine.currency)}
+                          </strong>
+                        </span>
+                      </div>
+                      {isAmountMismatch && !isFullyAllocated && (
+                        <div className="text-[11px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 mt-1">
+                          Amount mismatch: Journal Available {formatCurrency(j.journalAvailableAmount, recordingLine.currency)} vs Statement Remaining {formatCurrency(targetRemaining, recordingLine.currency)}
+                        </div>
+                      )}
+                      {isDateMismatch && (
+                        <div className="text-[11px] text-gray-600 bg-gray-50 px-2 py-0.5 rounded border border-gray-200 mt-1">
+                          Date mismatch: Journal {new Date(j.entry_date).toLocaleDateString('id-ID')} vs Statement {new Date(recordingLine.date).toLocaleDateString('id-ID')}
+                        </div>
+                      )}
+                    </div>
+
+                    {!isFullyAllocated ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedJournalId(isSelected ? '' : j.id);
+                          const maxAlloc = Math.min(targetRemaining, j.journalAvailableAmount);
+                          setJournalAllocationAmount(maxAlloc);
+                        }}
+                        className={`px-2.5 py-1 text-xs rounded font-medium ${
+                          isSelected
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'
+                        }`}
+                      >
+                        {isSelected ? 'Selected' : 'Select'}
+                      </button>
+                    ) : (
+                      <span className="px-2 py-1 text-[11px] rounded font-medium bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed">
+                        Fully Allocated
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Allocation amount configuration for selected journal */}
+                  {isSelected && (
+                    <div className="mt-3 pt-2.5 border-t border-blue-200 bg-white p-2.5 rounded border border-blue-100 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-gray-800">Allocation Amount:</span>
+                        <span className="text-gray-500">
+                          Max allocatable:{' '}
+                          <strong className="font-mono text-blue-700">
+                            {formatCurrency(j.maxAllocatable, recordingLine.currency)}
+                          </strong>
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="1"
+                          max={j.maxAllocatable}
+                          step="any"
+                          value={journalAllocationAmount || ''}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setJournalAllocationAmount(Math.min(val, j.maxAllocatable));
+                          }}
+                          className="flex-1 px-2.5 py-1.5 text-xs font-mono font-medium border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                          placeholder="Enter allocation amount"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setJournalAllocationAmount(j.maxAllocatable)}
+                          className="px-2.5 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded border border-gray-300 font-medium"
+                          title="Allocate maximum possible"
+                        >
+                          Max
+                        </button>
+                        <button
+                          type="button"
+                          disabled={
+                            journalAllocationAmount <= 0.01 ||
+                            journalAllocationAmount > j.maxAllocatable + 0.01
+                          }
+                          onClick={() =>
+                            handleLinkJournalEntry(
+                              recordingLine,
+                              j.id,
+                              journalAllocationAmount
+                            )
+                          }
+                          className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded font-medium shadow-sm"
+                        >
+                          Confirm Allocation
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
   };
 
   const loadSupplierPayments = async (line: StatementLine) => {
@@ -4388,7 +4782,9 @@ export function BankReconciliationEnhanced({
       if (activeFilter === 'all') {
         statusMatch = true;
       } else if (activeFilter === 'unmatched') {
-        statusMatch = line.status === 'unmatched' || line.status === 'partially_reconciled';
+        statusMatch = line.status === 'unmatched';
+      } else if (activeFilter === 'partially_reconciled') {
+        statusMatch = line.status === 'partially_reconciled';
       } else if (activeFilter === 'matched') {
         statusMatch = line.status === 'matched' || line.status === 'recorded';
       } else {
@@ -4451,10 +4847,9 @@ export function BankReconciliationEnhanced({
       total: statementLines.length,
       matched: statementLines.filter((l) => l.status === 'matched' || l.status === 'recorded')
         .length,
+      partial: statementLines.filter((l) => l.status === 'partially_reconciled').length,
       suggested: statementLines.filter((l) => l.status === 'suggested').length,
-      unmatched: statementLines.filter(
-        (l) => l.status === 'unmatched' || l.status === 'partially_reconciled'
-      ).length,
+      unmatched: statementLines.filter((l) => l.status === 'unmatched').length,
     };
   }, [statementLines]);
 
@@ -4900,6 +5295,16 @@ export function BankReconciliationEnhanced({
               ✓ Matched ({stats.matched})
             </button>
             <button
+              onClick={() => setActiveFilter('partially_reconciled')}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                activeFilter === 'partially_reconciled'
+                  ? 'bg-amber-600 text-white shadow-sm'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              ⚡ Partial ({stats.partial})
+            </button>
+            <button
               onClick={() => setActiveFilter('suggested')}
               className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
                 activeFilter === 'suggested'
@@ -5320,7 +5725,11 @@ export function BankReconciliationEnhanced({
                               </button>
                               <button
                                 onClick={() => openRecordModal(line)}
-                                className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                                className={`inline-flex items-center gap-1 px-2 py-1 text-xs text-white rounded font-medium ${
+                                  line.status === 'partially_reconciled'
+                                    ? 'bg-amber-600 hover:bg-amber-700'
+                                    : 'bg-blue-600 hover:bg-blue-700'
+                                }`}
                                 title={
                                   line.status === 'partially_reconciled'
                                     ? 'Allocate remaining amount'
@@ -5328,7 +5737,7 @@ export function BankReconciliationEnhanced({
                                 }
                               >
                                 <Plus className="w-3 h-3" />
-                                {line.status === 'partially_reconciled' ? 'Allocate' : 'Record'}
+                                {line.status === 'partially_reconciled' ? 'Add Allocation' : 'Record'}
                               </button>
                             </div>
                           )}
@@ -5788,7 +6197,9 @@ export function BankReconciliationEnhanced({
                         setLinkToSupplierPayment(false);
                         setLinkToTaxPayment(false);
                         setLinkSettleBills(false);
-                        loadAvailableJournals(recordingLine);
+                        setSelectedJournalId('');
+                        setJournalSearchQuery('');
+                        loadAvailableJournals(recordingLine, '');
                       }}
                       className={`py-1.5 px-3 rounded-lg text-xs font-medium ${linkJournalEntry && !linkToSupplierPayment && !linkToTaxPayment && !recordDirectorRelatedParty ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'}`}
                     >
@@ -6508,50 +6919,7 @@ export function BankReconciliationEnhanced({
                     )}
                   </div>
                 ) : linkJournalEntry ? (
-                  <div className="space-y-3">
-                    <p className="text-xs text-gray-500">
-                      Select a journal entry to link to this bank transaction (matching amount, +/-7
-                      days).
-                    </p>
-                    <div className="max-h-48 overflow-y-auto border rounded-lg divide-y">
-                      {visiblePickerCandidates(availableJournals).length === 0 ? (
-                        <div className="p-3 text-center text-gray-500 text-sm">
-                          No matching journal entries found
-                        </div>
-                      ) : (
-                        visiblePickerCandidates(availableJournals).map((j) => (
-                          <button
-                            key={j.id}
-                            onClick={() => handleLinkJournalEntry(recordingLine, j.id)}
-                            disabled={j._linked}
-                            className="w-full p-2 text-left hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed text-sm flex justify-between items-center"
-                          >
-                            <div>
-                              <span className="font-mono font-medium text-blue-600">
-                                {j.entry_number}
-                              </span>
-                              <span className="text-xs ml-2 px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">
-                                {j.source_module === 'manual' ? 'Manual' : j.source_module}
-                              </span>
-                              <div className="text-xs text-gray-500 mt-0.5">{j.description}</div>
-                              <div className="text-xs text-gray-400">
-                                {new Date(j.entry_date).toLocaleDateString('id-ID')}
-                              </div>
-                              {j._linked && (
-                                <div className="text-xs text-amber-700">Already linked</div>
-                              )}
-                            </div>
-                            <span className="font-medium text-green-600">
-                              {formatCurrency(
-                                j.total_debit || j.total_credit,
-                                recordingLine.currency
-                              )}
-                            </span>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  </div>
+                  renderJournalEntrySelector()
                 ) : linkToSupplierPayment ? (
                   <div className="space-y-3">
                     <p className="text-xs text-gray-500">
@@ -6930,7 +7298,9 @@ export function BankReconciliationEnhanced({
                       onClick={() => {
                         setLinkJournalEntry(true);
                         setLinkExistingReceipt(false);
-                        loadAvailableJournals(recordingLine);
+                        setSelectedJournalId('');
+                        setJournalSearchQuery('');
+                        loadAvailableJournals(recordingLine, '');
                       }}
                       className={`py-2 px-3 text-xs font-semibold border-b-2 transition-all ${
                         linkJournalEntry
@@ -7097,50 +7467,7 @@ export function BankReconciliationEnhanced({
                     </div>
                   </div>
                 ) : linkJournalEntry ? (
-                  <div className="space-y-3">
-                    <p className="text-xs text-gray-500">
-                      Select a journal entry to link to this bank transaction (matching amount, +/-7
-                      days).
-                    </p>
-                    <div className="max-h-48 overflow-y-auto border rounded-lg divide-y">
-                      {visiblePickerCandidates(availableJournals).length === 0 ? (
-                        <div className="p-3 text-center text-gray-500 text-sm">
-                          No matching journal entries found
-                        </div>
-                      ) : (
-                        visiblePickerCandidates(availableJournals).map((j) => (
-                          <button
-                            key={j.id}
-                            onClick={() => handleLinkJournalEntry(recordingLine, j.id)}
-                            disabled={j._linked}
-                            className="w-full p-2 text-left hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed text-sm flex justify-between items-center"
-                          >
-                            <div>
-                              <span className="font-mono font-medium text-blue-600">
-                                {j.entry_number}
-                              </span>
-                              <span className="text-xs ml-2 px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">
-                                {j.source_module === 'manual' ? 'Manual' : j.source_module}
-                              </span>
-                              <div className="text-xs text-gray-500 mt-0.5">{j.description}</div>
-                              <div className="text-xs text-gray-400">
-                                {new Date(j.entry_date).toLocaleDateString('id-ID')}
-                              </div>
-                              {j._linked && (
-                                <div className="text-xs text-amber-700">Already linked</div>
-                              )}
-                            </div>
-                            <span className="font-medium text-green-600">
-                              {formatCurrency(
-                                j.total_debit || j.total_credit,
-                                recordingLine.currency
-                              )}
-                            </span>
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  </div>
+                  renderJournalEntrySelector()
                 ) : (
                   <form
                     onSubmit={(e) => {
@@ -8343,13 +8670,30 @@ export function BankReconciliationEnhanced({
                     <h4 className="font-semibold text-blue-900">Linked Transaction</h4>
                   </div>
                   {canManage && (
-                    <button
-                      type="button"
-                      onClick={handleUnlinkTransaction}
-                      className="text-sm text-red-600 hover:text-red-700 font-medium"
-                    >
-                      Unlink
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {editingLine.remainingAmount > 0.01 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const line = editingLine;
+                            setEditModal(false);
+                            setEditingLine(null);
+                            openRecordModal(line);
+                          }}
+                          className="px-2.5 py-1 text-xs bg-amber-600 hover:bg-amber-700 text-white rounded font-medium inline-flex items-center gap-1 shadow-sm"
+                        >
+                          <Plus className="w-3 h-3" />
+                          Add Allocation ({formatCurrency(editingLine.remainingAmount, editingLine.currency)})
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleUnlinkTransaction}
+                        className="text-sm text-red-600 hover:text-red-700 font-medium"
+                      >
+                        Unlink
+                      </button>
+                    </div>
                   )}
                 </div>
 
