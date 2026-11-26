@@ -1667,7 +1667,7 @@ export function Sales() {
                 }
               }
 
-              await supabase
+              const { error: itemUpdateError } = await supabase
                 .from('sales_invoice_items')
                 .update({
                   quantity: newQty,
@@ -1676,6 +1676,7 @@ export function Sales() {
                   total_amount: newQty * item.unit_price,
                 })
                 .eq('id', item.id);
+              if (itemUpdateError) throw itemUpdateError;
             }
           }
 
@@ -1700,64 +1701,20 @@ export function Sales() {
 
           if (updateError) throw updateError;
 
-          // 3. Synchronize General Ledger (Revenue Journal Entry lines)
-          let targetJeId = editingInvoice.journal_entry_id;
-          if (!targetJeId) {
-            const { data: foundJe } = await supabase
-              .from('journal_entries')
-              .select('id')
-              .eq('source_module', 'sales_invoice')
-              .eq('reference_id', editingInvoice.id)
-              .maybeSingle();
-            if (foundJe) targetJeId = foundJe.id;
-          }
+          // Revenue, A/R (1120), Output VAT (2130), Bea Meterai (6950), and
+          // Sales Discount (4200) journal synchronization plus header-total
+          // derivation are handled atomically by database triggers
+          // (post_sales_invoice_journal, validate_sales_invoice_amount_equation,
+          // and derive_journal_header_totals_from_lines) on sales_invoices UPDATE.
 
-          if (targetJeId) {
-            await supabase
-              .from('journal_entries')
-              .update({
-                total_debit: total,
-                total_credit: total,
-                updated_at: new Date().toISOString(),
-              })
-              .eq('id', targetJeId);
-
-            const { data: jeLines } = await supabase
-              .from('journal_entry_lines')
-              .select('id, account_id, debit, credit, chart_of_accounts(code)')
-              .eq('journal_entry_id', targetJeId);
-
-            for (const line of jeLines || []) {
-              const coaCode = (line.chart_of_accounts as any)?.code;
-              if (coaCode === '1120') {
-                // A/R line: Debit = total invoice amount
-                await supabase
-                  .from('journal_entry_lines')
-                  .update({ debit: total, credit: 0 })
-                  .eq('id', line.id);
-              } else if (coaCode === '4100' || coaCode === '4110') {
-                // Sales Revenue line: Credit = subtotal
-                await supabase
-                  .from('journal_entry_lines')
-                  .update({ debit: 0, credit: subtotal })
-                  .eq('id', line.id);
-              } else if (coaCode === '2130') {
-                // PPN Keluaran line: Credit = taxAmount
-                await supabase
-                  .from('journal_entry_lines')
-                  .update({ debit: 0, credit: taxAmount })
-                  .eq('id', line.id);
-              }
-            }
-          }
-
-          // 3b. Synchronize General Ledger (COGS Journal Entry lines if present)
-          const { data: cogsJe } = await supabase
+          // 3. Synchronize General Ledger (COGS Journal Entry lines if present)
+          const { data: cogsJe, error: cogsFetchError } = await supabase
             .from('journal_entries')
             .select('id')
             .eq('source_module', 'sales_invoice_cogs')
             .eq('reference_id', editingInvoice.id)
             .maybeSingle();
+          if (cogsFetchError) throw cogsFetchError;
 
           if (cogsJe) {
             let totalCogs = 0;
@@ -1767,34 +1724,37 @@ export function Sales() {
             }
 
             if (totalCogs > 0) {
-              await supabase
-                .from('journal_entries')
-                .update({
-                  total_debit: totalCogs,
-                  total_credit: totalCogs,
-                  updated_at: new Date().toISOString(),
-                })
-                .eq('id', cogsJe.id);
-
-              const { data: cogsLines } = await supabase
+              const { data: cogsLines, error: cogsLinesFetchError } = await supabase
                 .from('journal_entry_lines')
                 .select('id, account_id, chart_of_accounts(code)')
                 .eq('journal_entry_id', cogsJe.id);
+              if (cogsLinesFetchError) throw cogsLinesFetchError;
 
               for (const line of cogsLines || []) {
                 const coaCode = (line.chart_of_accounts as any)?.code;
                 if (coaCode === '5100') {
-                  await supabase
+                  const { error: cogsDebitErr } = await supabase
                     .from('journal_entry_lines')
                     .update({ debit: totalCogs, credit: 0 })
                     .eq('id', line.id);
+                  if (cogsDebitErr) throw cogsDebitErr;
                 } else if (coaCode === '1130') {
-                  await supabase
+                  const { error: cogsCreditErr } = await supabase
                     .from('journal_entry_lines')
                     .update({ debit: 0, credit: totalCogs })
                     .eq('id', line.id);
+                  if (cogsCreditErr) throw cogsCreditErr;
                 }
               }
+
+              const { error: cogsHeaderErr } = await supabase
+                .from('journal_entries')
+                .update({
+                  total_debit: totalCogs,
+                  total_credit: totalCogs,
+                })
+                .eq('id', cogsJe.id);
+              if (cogsHeaderErr) throw cogsHeaderErr;
             }
           }
 

@@ -474,6 +474,24 @@ function matchDcMovement(movement, approvedDcEvidence) {
       (!directDc || entry.dc.id === directDc.id),
   );
 
+  if (candidates.length === 0 && directDc) {
+    const directBatchCandidates = approvedDcEvidence.filter(
+      (entry) => entry.dc.id === directDc.id,
+    );
+    if (directBatchCandidates.length === 1) {
+      const entry = directBatchCandidates[0];
+      return {
+        status: 'MATCHED_DC',
+        confidence: 'direct DC reference + batch (DC item quantity adjusted)',
+        dc_item_id: entry.item.id,
+        dc_id: entry.dc.id,
+        dc_number: entry.dc.challan_number,
+        sales_order_id: entry.so?.id || null,
+        sales_order_number: entry.so?.so_number || null,
+      };
+    }
+  }
+
   if (!directDc) {
     const dateCandidates = candidates.filter(
       (entry) =>
