@@ -308,7 +308,7 @@ export function Layout({ children }: LayoutProps) {
       {/* Mobile Slide-Over Navigation Drawer */}
       <aside
         className={`fixed top-0 left-0 bottom-0 z-50 w-72 max-w-[85vw] bg-white flex flex-col shadow-2xl
-          transform transition-transform duration-300 ease-out lg:hidden
+          transform transition-transform duration-300 ease-out lg:hidden print:hidden
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
         aria-label="Mobile Navigation Drawer"
       >
@@ -407,7 +407,7 @@ export function Layout({ children }: LayoutProps) {
         ref={sidebarRef}
         onMouseEnter={handleSidebarMouseEnter}
         onMouseLeave={handleSidebarMouseLeave}
-        className={`hidden lg:flex fixed top-0 left-0 z-30 h-full bg-white border-r border-gray-200 flex-col
+        className={`hidden lg:flex fixed top-0 left-0 z-30 h-full bg-white border-r border-gray-200 flex-col print:hidden
           transform transition-[width] duration-200 ease-in-out
           ${isCollapsed ? 'w-16' : 'w-[200px]'}
           ${hoverExpanded ? 'shadow-xl ring-1 ring-black/5 z-30' : ''}`}
@@ -497,8 +497,8 @@ export function Layout({ children }: LayoutProps) {
       </aside>
 
       {/* Main content */}
-      <div className={`flex-1 flex flex-col transition-[padding] duration-200 ${mainPadding} min-w-0 max-w-full overflow-x-hidden`}>
-        <header className="bg-white border-b border-gray-200 sticky top-0 z-20">
+      <div className={`flex-1 flex flex-col transition-[padding] duration-200 ${mainPadding} min-w-0 max-w-full overflow-x-hidden print:pl-0 print:overflow-visible`}>
+        <header className="bg-white border-b border-gray-200 sticky top-0 z-20 print:hidden">
           <div className="flex items-center justify-between px-2.5 sm:px-3 py-1.5">
             {/* Left Controls & Page Header */}
             <div className="flex items-center gap-2 min-w-0">
@@ -719,7 +719,7 @@ export function Layout({ children }: LayoutProps) {
         </header>
 
         {/* Content Area — pb-24 on mobile ensures floating elements and content clear the fixed bottom nav */}
-        <main className="flex-1 p-2.5 sm:p-3 pb-24 lg:pb-3 max-w-full overflow-x-hidden">
+        <main className="flex-1 p-2.5 sm:p-3 pb-24 lg:pb-3 max-w-full overflow-x-hidden print:p-0 print:overflow-visible">
           {children}
         </main>
       </div>
@@ -727,7 +727,7 @@ export function Layout({ children }: LayoutProps) {
       {/* Mobile Bottom Navigation Shortcut Layer */}
       <nav
         aria-label="Mobile Navigation"
-        className="fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-gray-200 px-1 py-1 flex items-center justify-around shadow-[0_-2px_10px_rgba(0,0,0,0.06)] lg:hidden"
+        className="fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-gray-200 px-1 py-1 flex items-center justify-around shadow-[0_-2px_10px_rgba(0,0,0,0.06)] lg:hidden print:hidden"
         style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 4px)' }}
       >
         {/* 1. HOME */}

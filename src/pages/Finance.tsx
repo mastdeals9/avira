@@ -541,10 +541,10 @@ function FinanceContent() {
 
   return (
     <Layout>
-      <div className="flex h-screen bg-gray-50">
+      <div className="flex h-screen bg-gray-50 print:h-auto print:bg-white print:block">
         {/* Left Sidebar - Compact Menu */}
         {!sidebarCollapsed && (
-          <div className="fixed inset-0 z-40 bg-black/30 md:hidden" onClick={() => setSidebarCollapsed(true)} />
+          <div className="fixed inset-0 z-40 bg-black/30 md:hidden print:hidden" onClick={() => setSidebarCollapsed(true)} />
         )}
         {/*
           Sidebar root-cause fix (Priority 7 #5):
@@ -556,7 +556,7 @@ function FinanceContent() {
           was the missing piece for the hamburger to be reliably effective.
         */}
         <div
-          className={`fixed inset-y-0 left-0 z-50 bg-white border-r border-gray-200 flex flex-col md:relative md:z-auto overflow-hidden transition-[width,transform] duration-300 ${
+          className={`fixed inset-y-0 left-0 z-50 bg-white border-r border-gray-200 flex flex-col md:relative md:z-auto overflow-hidden transition-[width,transform] duration-300 print:hidden ${
             sidebarCollapsed
               ? '-translate-x-full md:translate-x-0 md:w-0 md:border-r-0 w-40'
               : 'translate-x-0 w-40 md:w-40'
@@ -621,9 +621,9 @@ function FinanceContent() {
         </div>
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden print:overflow-visible">
           {/* Slim top strip — hamburger + active sub-tab breadcrumb only */}
-          <div className="bg-white border-b border-gray-200 px-2 py-0.5 flex items-center gap-1.5 min-h-[26px]">
+          <div className="bg-white border-b border-gray-200 px-2 py-0.5 flex items-center gap-1.5 min-h-[26px] print:hidden">
             <button
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               className="p-0.5 hover:bg-gray-100 rounded transition-colors"
@@ -638,8 +638,8 @@ function FinanceContent() {
           </div>
 
           {/* Content Area — minimal padding so summary cards sit right under the header */}
-          <div className="flex-1 overflow-auto bg-white">
-            <div className="finance-ui px-2 py-1.5 md:px-2.5 md:py-2">
+          <div className="flex-1 overflow-auto bg-white print:overflow-visible">
+            <div className="finance-ui px-2 py-1.5 md:px-2.5 md:py-2 print:p-0">
               <Suspense fallback={
                 <div className="flex items-center justify-center py-12">
                   <Loader className="w-6 h-6 animate-spin text-blue-600" />
