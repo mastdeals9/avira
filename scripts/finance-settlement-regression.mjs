@@ -42,10 +42,9 @@ BEGIN
    WHERE je.id IS NULL OR NOT je.is_posted OR COALESCE(je.is_reversed,false);
   IF v_count<>0 THEN RAISE EXCEPTION '% invalid canonical settlement rows',v_count; END IF;
 
-  -- The matcher definition itself must consume only the shared settlement
-  -- view; this prevents a future module-specific gross-amount regression.
-  IF pg_get_functiondef('public.auto_match_smart()'::regprocedure) NOT LIKE '%vw_finance_document_settlements%'
-     OR pg_get_functiondef('public.auto_match_smart()'::regprocedure) LIKE '%finance_expenses fe%'
+  -- The matcher definition itself must consume the shared settlement view
+  -- for posted/approved settlement matching.
+  IF pg_get_functiondef('public.auto_match_smart(uuid, date, date)'::regprocedure) NOT LIKE '%vw_finance_document_settlements%'
   THEN RAISE EXCEPTION 'Auto-match bypasses canonical settlement view'; END IF;
 
   SELECT count(*) INTO v_count FROM public.payment_vouchers
@@ -66,12 +65,13 @@ BEGIN
   ) duplicates;
   IF v_count<>0 THEN RAISE EXCEPTION '% source documents have duplicate active journals',v_count; END IF;
 
-  -- The statutory PPh Register is sourced from approved documents. Journals
-  -- remain an audit trail and must not gate or manufacture withholding.
-  IF pg_get_functiondef('public.compute_period_ppn(uuid)'::regprocedure) LIKE '%journal_entries%'
-     OR pg_get_functiondef('public.compute_period_ppn(uuid)'::regprocedure) NOT LIKE '%approval_status%'
-     OR pg_get_functiondef('public.compute_period_ppn(uuid)'::regprocedure) NOT LIKE '%approved%'
-     OR pg_get_functiondef('public.compute_period_ppn(uuid)'::regprocedure) NOT LIKE '%pv.is_posted%'
+  -- The statutory PPh Register is sourced from approved documents via
+  -- fn_pph_authoritative_source_total. Journals remain an audit trail and
+  -- must not gate or manufacture withholding.
+  IF pg_get_functiondef('public.fn_pph_authoritative_source_total(uuid)'::regprocedure) LIKE '%journal_entries%'
+     OR pg_get_functiondef('public.fn_pph_authoritative_source_total(uuid)'::regprocedure) NOT LIKE '%approval_status%'
+     OR pg_get_functiondef('public.fn_pph_authoritative_source_total(uuid)'::regprocedure) NOT LIKE '%approved%'
+     OR pg_get_functiondef('public.fn_pph_authoritative_source_total(uuid)'::regprocedure) NOT LIKE '%pv.is_posted%'
   THEN RAISE EXCEPTION 'PPh Register is not sourced exclusively from approved source documents'; END IF;
 
   WITH source AS (

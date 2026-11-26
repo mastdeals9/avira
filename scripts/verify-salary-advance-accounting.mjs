@@ -19,6 +19,7 @@ DECLARE
   v_before_ap numeric; v_after_salary_ap numeric; v_after_settlement_ap numeric; v_after_final_ap numeric;
   v_before_bank numeric; v_after_bank numeric; v_before_salary_expense numeric; v_after_salary_expense numeric;
   v_tb_dr numeric; v_tb_cr numeric; v_count bigint; v_paid numeric;
+  v_bpjs_ded numeric := 0; v_net_ap numeric; v_rem_salary numeric;
 BEGIN
   SELECT id INTO v_staff FROM public.finance_staff_master WHERE status='active' ORDER BY created_at,id LIMIT 1;
   SELECT id,coa_id INTO v_bank,v_bank_coa FROM public.bank_accounts
@@ -64,6 +65,9 @@ BEGIN
     'description','Rollback Gross Salary accounting verification','approval_status','pending_approval',
     'transaction_currency','IDR','exchange_rate',1,'pph_amount',0,'created_by',v_user,'document_urls','[]'::jsonb));
   PERFORM public.approve_finance_expense(v_salary,v_user);
+  SELECT COALESCE(bpjs_employee_deduction,0) INTO v_bpjs_ded FROM public.finance_expenses WHERE id=v_salary;
+  v_net_ap := 2500000 - v_bpjs_ded;
+  v_rem_salary := v_net_ap - 500000;
   SELECT id INTO v_salary_je FROM public.journal_entries WHERE reference_id=v_salary
     AND source_module IN('expense','expenses') AND is_posted AND NOT COALESCE(is_reversed,false)
     ORDER BY created_at DESC LIMIT 1;
@@ -71,12 +75,17 @@ BEGIN
    WHERE jel.journal_entry_id=v_salary_je AND coa.code='6100' AND jel.debit=2500000;
   IF NOT FOUND THEN RAISE EXCEPTION 'Gross salary was not debited to 6100'; END IF;
   PERFORM 1 FROM public.journal_entry_lines jel JOIN public.chart_of_accounts coa ON coa.id=jel.account_id
-   WHERE jel.journal_entry_id=v_salary_je AND coa.code='2110' AND jel.credit=2500000;
-  IF NOT FOUND THEN RAISE EXCEPTION 'Gross Salary Payable was not credited to 2110'; END IF;
+   WHERE jel.journal_entry_id=v_salary_je AND coa.code='2110' AND jel.credit=v_net_ap;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Net Salary Payable (%) was not credited to 2110', v_net_ap; END IF;
+  IF v_bpjs_ded > 0 THEN
+    PERFORM 1 FROM public.journal_entry_lines jel JOIN public.chart_of_accounts coa ON coa.id=jel.account_id
+     WHERE jel.journal_entry_id=v_salary_je AND coa.code IN ('2134','2135') AND jel.credit=v_bpjs_ded;
+    IF NOT FOUND THEN RAISE EXCEPTION 'BPJS deduction (%) was not credited to 2134/2135', v_bpjs_ded; END IF;
+  END IF;
   SELECT COALESCE(sum(jel.credit-jel.debit),0) INTO v_after_salary_ap FROM public.journal_entry_lines jel
     JOIN public.journal_entries je ON je.id=jel.journal_entry_id JOIN public.chart_of_accounts coa ON coa.id=jel.account_id
     WHERE je.is_posted AND NOT COALESCE(je.is_reversed,false) AND coa.code='2110';
-  IF v_after_salary_ap-v_before_ap<>2500000 THEN RAISE EXCEPTION 'Salary Payable after payroll is %',v_after_salary_ap-v_before_ap; END IF;
+  IF v_after_salary_ap-v_before_ap<>v_net_ap THEN RAISE EXCEPTION 'Salary Payable after payroll is %',v_after_salary_ap-v_before_ap; END IF;
 
   v_apply:=public.apply_salary_advances_to_expense(v_salary,true);
   IF (v_apply->>'total_applied')::numeric<>500000 OR (v_apply->>'remaining_salary')::numeric<>2000000 THEN
@@ -99,32 +108,32 @@ BEGIN
   SELECT COALESCE(sum(jel.credit-jel.debit),0) INTO v_after_settlement_ap FROM public.journal_entry_lines jel
     JOIN public.journal_entries je ON je.id=jel.journal_entry_id JOIN public.chart_of_accounts coa ON coa.id=jel.account_id
     WHERE je.is_posted AND NOT COALESCE(je.is_reversed,false) AND coa.code='2110';
-  IF v_after_settlement_ap-v_before_ap<>2000000 THEN RAISE EXCEPTION 'Net Salary Payable is %',v_after_settlement_ap-v_before_ap; END IF;
+  IF v_after_settlement_ap-v_before_ap<>v_rem_salary THEN RAISE EXCEPTION 'Net Salary Payable is %',v_after_settlement_ap-v_before_ap; END IF;
   PERFORM 1 FROM public.journal_entries WHERE id=v_salary_je AND is_posted AND NOT COALESCE(is_reversed,false);
   IF NOT FOUND THEN RAISE EXCEPTION 'Gross Salary journal disappeared after settlement'; END IF;
 
   v_final_saved:=public.save_payment_voucher_with_purpose(NULL,jsonb_build_object(
     'voucher_date',current_date,'staff_id',v_staff,'payment_method','bank_transfer','bank_account_id',v_bank,
-    'amount',2000000,'invoice_amount',2000000,'payment_amount',2000000,'payment_currency','IDR',
-    'invoice_currency','IDR','exchange_rate',1,'bank_amount',2000000,'actual_bank_debit',2000000,
+    'amount',v_rem_salary,'invoice_amount',v_rem_salary,'payment_amount',v_rem_salary,'payment_currency','IDR',
+    'invoice_currency','IDR','exchange_rate',1,'bank_amount',v_rem_salary,'actual_bank_debit',v_rem_salary,
     'description','Rollback Net Salary Payment verification','created_by',v_user,'document_urls','[]'::jsonb),
-    jsonb_build_array(jsonb_build_object('finance_expense_id',v_salary,'amount',2000000,'currency','IDR')),'general');
+    jsonb_build_array(jsonb_build_object('finance_expense_id',v_salary,'amount',v_rem_salary,'currency','IDR')),'general');
   v_final:=(v_final_saved->>'id')::uuid; PERFORM public.post_payment_voucher(v_final,v_user);
   SELECT journal_entry_id INTO v_final_je FROM public.payment_vouchers WHERE id=v_final;
-  PERFORM 1 FROM public.journal_entry_lines WHERE journal_entry_id=v_final_je AND account_id=v_bank_coa AND credit=2000000;
-  IF NOT FOUND THEN RAISE EXCEPTION 'Final bank payment is not 2000000'; END IF;
+  PERFORM 1 FROM public.journal_entry_lines WHERE journal_entry_id=v_final_je AND account_id=v_bank_coa AND credit=v_rem_salary;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Final bank payment is not %', v_rem_salary; END IF;
   SELECT COALESCE(sum(jel.credit-jel.debit),0) INTO v_after_final_ap FROM public.journal_entry_lines jel
     JOIN public.journal_entries je ON je.id=jel.journal_entry_id JOIN public.chart_of_accounts coa ON coa.id=jel.account_id
     WHERE je.is_posted AND NOT COALESCE(je.is_reversed,false) AND coa.code='2110';
   IF v_after_final_ap<>v_before_ap THEN RAISE EXCEPTION 'Salary Payable did not return to opening balance'; END IF;
   SELECT paid_amount INTO v_paid FROM public.finance_expenses WHERE id=v_salary;
-  IF v_paid<>2500000 THEN RAISE EXCEPTION 'Employee/AP paid amount is %',v_paid; END IF;
+  IF v_paid<>v_net_ap THEN RAISE EXCEPTION 'Employee/AP paid amount is %',v_paid; END IF;
   PERFORM 1 FROM public.get_outstanding_expense_bills(current_date) WHERE id=v_salary;
   IF FOUND THEN RAISE EXCEPTION 'Fully settled salary remains in Accounts Payable'; END IF;
   SELECT COALESCE(sum(jel.credit-jel.debit),0) INTO v_after_bank FROM public.journal_entry_lines jel
     JOIN public.journal_entries je ON je.id=jel.journal_entry_id WHERE je.is_posted AND NOT COALESCE(je.is_reversed,false)
     AND jel.account_id=v_bank_coa;
-  IF v_after_bank-v_before_bank<>2500000 THEN RAISE EXCEPTION 'Bank cash outflow is %',v_after_bank-v_before_bank; END IF;
+  IF v_after_bank-v_before_bank<>v_net_ap THEN RAISE EXCEPTION 'Bank cash outflow is %',v_after_bank-v_before_bank; END IF;
   SELECT COALESCE(sum(jel.debit-jel.credit),0) INTO v_after_salary_expense FROM public.journal_entry_lines jel
     JOIN public.journal_entries je ON je.id=jel.journal_entry_id JOIN public.chart_of_accounts coa ON coa.id=jel.account_id
     WHERE je.is_posted AND NOT COALESCE(je.is_reversed,false) AND coa.code='6100';
