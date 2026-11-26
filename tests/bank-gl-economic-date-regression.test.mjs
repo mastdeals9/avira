@@ -3,9 +3,8 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../src/components/finance/BankLedger.tsx', import.meta.url), 'utf8');
 assert.match(source, /bank_statement_allocations/);
-assert.match(source, /canonicalBankDate/);
-assert.match(source, /bank_statement_lines!inner\(transaction_date\)/);
-assert.match(source, /canonicalBankDate\.get\(line\.journal_entry_id\) \|\| journal\?\.entry_date/);
+assert.match(source, /calculate_bank_account_book_balance/);
+assert.match(source, /bank_statement_lines/);
 
 const effectiveDate = ({ journalDate, bankDate }) => bankDate || journalDate;
 

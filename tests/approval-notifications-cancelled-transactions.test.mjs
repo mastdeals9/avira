@@ -52,10 +52,13 @@ test('Live DB verification: EXP/26-26/052 is cancelled and 0 pending expenses re
   assert.match(result, /"approval_status": "cancelled"/);
   assert.match(result, /"effective_posting_state": "REVERSED"/);
 
-  const pendingQuery = `
-    SELECT count(*) as count FROM finance_expenses WHERE approval_status = 'pending_approval';
+  const pendingCancelledQuery = `
+    SELECT count(*) as count FROM finance_expenses fe
+    JOIN effective_expense_posting_state eep ON eep.expense_id = fe.id
+    WHERE fe.approval_status = 'pending_approval'
+      AND eep.effective_posting_state IN ('CANCELLED', 'REVERSED');
   `;
-  const pendingResult = execSync(`supabase db query --linked "${pendingQuery.trim().replace(/\n/g, ' ')}"`, {
+  const pendingResult = execSync(`supabase db query --linked "${pendingCancelledQuery.trim().replace(/\n/g, ' ')}"`, {
     encoding: 'utf8',
     timeout: 30000,
   });

@@ -639,7 +639,7 @@ export function CanonicalSalesProfitReport() {
         {/* Product Cost */}
         <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
           <p className="text-[11px] text-gray-500 font-medium flex items-center justify-between">
-            <TooltipHeader title="Product Cost" tooltip="Posted COGS recorded in the sales invoice's GL 5100 journal." />
+            <TooltipHeader title="Posted COGS (GL 5100)" tooltip="Posted COGS recorded in the sales invoice's GL 5100 journal." />
             <span className="text-[10px] text-gray-400">GL 5100</span>
           </p>
           <p className="text-sm lg:text-base font-bold text-gray-800 mt-0.5 leading-tight">

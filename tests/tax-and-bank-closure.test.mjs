@@ -26,8 +26,19 @@ test('2. Tax NTPN migration clears mistaken company NPWP 0268760261042000 from n
   assert.match(migrationSql, /WHERE id = 'c7940eda-2fbc-4ae0-8aa7-036daf314ede'\s+AND trim\(COALESCE\(ntpn, ''\)\) = '0268760261042000'/);
 });
 
+const taxPaymentsUi = readFileSync(
+  new URL('../src/components/finance/tax/TaxPaymentsPanel.tsx', import.meta.url),
+  'utf8',
+);
+
 test('3. Bank reconciliation keeps suggested matches distinct from confirmed matches', () => {
   assert.match(bankRecSource, /matching_status/);
   assert.match(bankRecSource, /needs_review/);
   assert.match(bankRecSource, /manually_unlinked/);
+});
+
+test('4. TaxPaymentsPanel distinguishes ntpn_format_valid from ntpn_verified and shows Pending Evidence', () => {
+  assert.match(taxPaymentsUi, /ntpn_format_valid/);
+  assert.match(taxPaymentsUi, /ntpn_verified/);
+  assert.match(taxPaymentsUi, /Pending Evidence/);
 });

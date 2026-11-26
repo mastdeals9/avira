@@ -38,6 +38,10 @@ interface Payment {
   amount: number;
   billing_code: string | null;
   ntpn: string | null;
+  ntpn_format_valid?: boolean;
+  ntpn_verified?: boolean;
+  bank_verified?: boolean;
+  document_attached?: boolean;
   payment_reference: string | null;
   government_reference: string | null;
   status: string;
@@ -111,7 +115,7 @@ export function TaxPaymentsPanel({ onOpenJournal }: TaxPaymentsPanelProps) {
         .order('alias', { nullsFirst: false })
         .order('account_name'),
       supabase.from('tax_payments')
-        .select('id, tax_period_id, tax_type, payment_date, amount, billing_code, ntpn, payment_reference, government_reference, status, journal_entry_id, bank_account_id, notes')
+        .select('id, tax_period_id, tax_type, payment_date, amount, billing_code, ntpn, ntpn_format_valid, ntpn_verified, bank_verified, document_attached, payment_reference, government_reference, status, journal_entry_id, bank_account_id, notes')
         .order('payment_date', { ascending: false })
         .limit(500),
     ]);
@@ -609,7 +613,15 @@ export function TaxPaymentsPanel({ onOpenJournal }: TaxPaymentsPanelProps) {
                     <td className="px-2.5 py-1.5">{bank ? bankLabel(bank) : '—'}</td>
                     <td className="px-2.5 py-1.5 text-right tabular-nums">Rp {Number(p.amount).toLocaleString('id-ID')}</td>
                     <td className="px-2.5 py-1.5 text-[11px]">
-                      {p.ntpn && <div><span className="text-gray-400">NTPN:</span> {p.ntpn}</div>}
+                      {p.ntpn && (
+                        <div>
+                          <span className="text-gray-400">NTPN:</span> {p.ntpn}{' '}
+                          <span className={p.ntpn_verified ? 'text-emerald-700 font-medium' : 'text-amber-700'}>
+                            ({p.ntpn_verified ? 'DJP Verified' : p.ntpn_format_valid ? 'Format Valid · Pending Evidence' : 'Pending Evidence'})
+                          </span>
+                        </div>
+                      )}
+                      {!p.ntpn && <div className="text-amber-700">NTPN: Pending Evidence</div>}
                       {p.billing_code && <div><span className="text-gray-400">Billing:</span> {p.billing_code}</div>}
                       {p.payment_reference && <div><span className="text-gray-400">Ref:</span> {p.payment_reference}</div>}
                       {!p.ntpn && !p.billing_code && !p.payment_reference && '—'}

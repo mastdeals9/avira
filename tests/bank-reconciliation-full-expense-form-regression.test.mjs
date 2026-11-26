@@ -164,7 +164,7 @@ test('5. Successful expense creation links bank statement line with suggested ma
   // Invokes callback
   assert.match(
     expenseUi,
-    /onExpenseSavedFromBankReconciliation\?\.\(newExpense\s*as\s*FinanceExpense,\s*selectedBankTransactionId\)/,
+    /onExpenseSavedFromBankReconciliation\?\.\((?:newExpense\s*as\s*FinanceExpense|finalExpense),\s*selectedBankTransactionId\)/,
     'ExpenseManager must invoke onExpenseSavedFromBankReconciliation callback'
   );
 });

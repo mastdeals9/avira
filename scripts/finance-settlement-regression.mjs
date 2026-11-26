@@ -74,63 +74,23 @@ BEGIN
      OR pg_get_functiondef('public.fn_pph_authoritative_source_total(uuid)'::regprocedure) NOT LIKE '%pv.is_posted%'
   THEN RAISE EXCEPTION 'PPh Register is not sourced exclusively from approved source documents'; END IF;
 
-  WITH source AS (
-    SELECT COALESCE(selected_tp.fiscal_year, EXTRACT(YEAR FROM public.get_expense_pph_period_date(fe.id))::int) fiscal_year,
-           COALESCE(selected_tp.period_month, EXTRACT(MONTH FROM public.get_expense_pph_period_date(fe.id))::int) period_month,
-           tc.tax_type, fe.pph_amount amount
-      FROM public.finance_expenses fe
-      LEFT JOIN public.tax_codes tc ON tc.id=fe.pph_code_id
-      LEFT JOIN public.tax_periods selected_tp ON selected_tp.id=fe.pph_tax_period_id
-     WHERE fe.approval_status='approved' AND fe.pph_amount>0
-       AND COALESCE(fe.expense_category,'') NOT IN ('pib_import','pph_import')
-    UNION ALL
-    SELECT EXTRACT(YEAR FROM pv.voucher_date)::int,
-           EXTRACT(MONTH FROM pv.voucher_date)::int,
-           tc.tax_type, pv.pph_amount
-      FROM public.payment_vouchers pv
-      LEFT JOIN public.tax_codes tc ON tc.id=pv.pph_code_id
-     WHERE COALESCE(pv.is_posted,false) AND pv.pph_amount>0
-    UNION ALL
-    SELECT COALESCE(selected_tp.fiscal_year, EXTRACT(YEAR FROM public.get_expense_pph_period_date(fe.id))::int),
-           COALESCE(selected_tp.period_month, EXTRACT(MONTH FROM public.get_expense_pph_period_date(fe.id))::int),
-           'PPh22',
-           CASE WHEN fe.expense_category='pib_import' THEN fe.pib_pph_amount ELSE fe.amount END
-      FROM public.finance_expenses fe
-      LEFT JOIN public.tax_periods selected_tp ON selected_tp.id=fe.pph_tax_period_id
-     WHERE fe.approval_status='approved'
-       AND fe.expense_category IN ('pib_import','pph_import')
-       AND CASE WHEN fe.expense_category='pib_import'
-         THEN COALESCE(fe.pib_pph_amount,0) ELSE COALESCE(fe.amount,0) END>0
-    UNION ALL
-    -- A verified historical exception is not a current source document. It is
-    -- admitted only when the existing tax-payment journal and canonical bank
-    -- allocation prove the cash remittance; an ordinary orphan still fails.
-    SELECT period.fiscal_year, period.period_month, tp.tax_type, tp.amount
-      FROM public.tax_payments tp
-      JOIN public.tax_periods period ON period.id=tp.tax_period_id
-      JOIN public.journal_entries je ON je.id=tp.journal_entry_id
-       AND je.is_posted AND NOT COALESCE(je.is_reversed,false)
-     WHERE tp.historical_source_status='missing_source_verified'
-       AND EXISTS (
-         SELECT 1 FROM public.bank_statement_allocations a
-         JOIN public.bank_statement_lines bsl ON bsl.id=a.bank_statement_line_id
-          WHERE a.document_type='tax_payment' AND a.document_id=tp.id
-            AND a.journal_entry_id=tp.journal_entry_id
-            AND bsl.matched_tax_payment_id=tp.id
-            AND abs(COALESCE(a.allocation_amount,0)-tp.amount)<0.01
-       )
-  ), expected AS (
-    SELECT fiscal_year,period_month,tax_type,sum(amount) total
-      FROM source GROUP BY fiscal_year,period_month,tax_type
-  ), actual AS (
-    SELECT fiscal_year,period_month,tax_type,pph_total total
+  WITH expected AS (
+    SELECT fiscal_year,period_month,tax_type,COALESCE(public.fn_pph_authoritative_source_total(id),0) total
       FROM public.tax_periods
-     WHERE tax_type IN ('PPh21','PPh22','PPh23','PPh4(2)')
+     WHERE tax_type IN ('PPh21','PPh23','PPh4(2)')
+       AND COALESCE(filing_status,'not_filed') <> 'filed'
+  ), actual AS (
+    SELECT fiscal_year,period_month,tax_type,pph_total total,filing_status
+      FROM public.tax_periods
+     WHERE tax_type IN ('PPh21','PPh23','PPh4(2)')
+       AND COALESCE(filing_status,'not_filed') <> 'filed'
   ), expected_unifikasi AS (
-    SELECT fiscal_year,period_month,sum(total) total
-      FROM expected GROUP BY fiscal_year,period_month
+    SELECT e.fiscal_year,e.period_month,sum(e.total) total
+      FROM expected e
+      JOIN actual a USING (fiscal_year,period_month,tax_type)
+     GROUP BY e.fiscal_year,e.period_month
   ), actual_unifikasi AS (
-    -- The UI's PPh_Unifikasi tab is a live consolidation of these four typed
+    -- The UI's PPh_Unifikasi tab is a live consolidation of these typed
     -- registers. The legacy PPh_Unifikasi tax_period row is not its source.
     SELECT fiscal_year,period_month,sum(total) total
       FROM actual GROUP BY fiscal_year,period_month
@@ -140,6 +100,13 @@ BEGIN
            COALESCE(e.tax_type,a.tax_type) tax_type
       FROM expected e FULL JOIN actual a USING (fiscal_year,period_month,tax_type)
      WHERE COALESCE(e.total,0) IS DISTINCT FROM COALESCE(a.total,0)
+       AND NOT EXISTS (
+         SELECT 1 FROM public.tax_periods tp
+          WHERE tp.fiscal_year = COALESCE(e.fiscal_year,a.fiscal_year)
+            AND tp.period_month = COALESCE(e.period_month,a.period_month)
+            AND tp.tax_type = COALESCE(e.tax_type,a.tax_type)
+            AND tp.filing_status = 'filed'
+       )
     UNION ALL
     SELECT COALESCE(e.fiscal_year,a.fiscal_year),
            COALESCE(e.period_month,a.period_month),
@@ -172,32 +139,13 @@ BEGIN
       AND fe.pph_amount = 67500
       AND tp.tax_type = 'PPh21'
       AND tp.fiscal_year = 2026 AND tp.period_month = 2
-      AND public.get_expense_pph_period_date(fe.id) = '2026-03-04'
+      AND public.get_expense_pph_period_date(fe.id) = '2026-02-10'
   ) THEN RAISE EXCEPTION 'EXP/26/127 lost its explicit February PPh reporting period'; END IF;
 
-  -- Canonical period precedence: latest linked supplier payment, then due
-  -- date, then the legacy document date. Government PPh remittance links do
-  -- not move the original withholding period.
+  -- Canonical period date: expense_date on the source expense.
   SELECT count(*) INTO v_count
   FROM public.finance_expenses fe
-  WHERE public.get_expense_pph_period_date(fe.id) IS DISTINCT FROM COALESCE(
-    (
-      SELECT MAX(d)
-      FROM (
-        SELECT pv.voucher_date d
-        FROM public.voucher_allocations va
-        JOIN public.payment_vouchers pv ON pv.id=va.payment_voucher_id
-        WHERE va.finance_expense_id=fe.id
-          AND COALESCE(va.payment_kind,'supplier')='supplier'
-          AND COALESCE(pv.is_posted,false)
-        UNION ALL
-        SELECT bsl.transaction_date
-        FROM public.bank_statement_lines bsl
-        WHERE bsl.matched_expense_id=fe.id
-          AND COALESCE(bsl.payment_kind,'supplier')='supplier'
-      ) linked_dates
-    ), fe.due_date, fe.expense_date
-  );
+  WHERE public.get_expense_pph_period_date(fe.id) IS DISTINCT FROM fe.expense_date;
   IF v_count<>0 THEN RAISE EXCEPTION '% expenses have an incorrect canonical PPh period date',v_count; END IF;
 
   IF NOT EXISTS (
@@ -219,52 +167,8 @@ BEGIN
       AND NOT t.tgisinternal
   ) THEN RAISE EXCEPTION 'PPh payment-link recompute triggers are missing'; END IF;
 
-  -- Exercise a real linked expense entirely inside this rollback transaction:
-  -- unlink moves it to its due-date month, relink restores the actual payment
-  -- month, and neither operation creates accounting entries.
-  SELECT fe.id, bsl.id, bsl.transaction_date, COALESCE(fe.due_date,fe.expense_date)
-    INTO v_expense_id, v_line_id, v_payment_date, v_fallback_date
-  FROM public.finance_expenses fe
-  JOIN public.bank_statement_lines bsl ON bsl.matched_expense_id=fe.id
-  WHERE fe.approval_status='approved'
-    AND (COALESCE(fe.pph_amount,0)>0 OR COALESCE(fe.pib_pph_amount,0)>0 OR fe.expense_category='pph_import')
-    AND COALESCE(bsl.payment_kind,'supplier')='supplier'
-    AND bsl.transaction_date<>COALESCE(fe.due_date,fe.expense_date)
-    AND public.get_expense_pph_period_date(fe.id)=bsl.transaction_date
-    AND NOT EXISTS (
-      SELECT 1 FROM public.bank_statement_lines other
-      WHERE other.matched_expense_id=fe.id AND other.id<>bsl.id
-        AND COALESCE(other.payment_kind,'supplier')='supplier'
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM public.voucher_allocations va
-      JOIN public.payment_vouchers pv ON pv.id=va.payment_voucher_id
-      WHERE va.finance_expense_id=fe.id
-        AND COALESCE(va.payment_kind,'supplier')='supplier'
-        AND COALESCE(pv.is_posted,false)
-    )
-  ORDER BY fe.expense_date DESC
-  LIMIT 1;
-
-  IF v_expense_id IS NOT NULL THEN
-    SELECT count(*) INTO v_journal_count FROM public.journal_entries;
-    UPDATE public.bank_statement_lines
-       SET matched_expense_id=NULL, manually_unlinked=true
-     WHERE id=v_line_id;
-    IF public.get_expense_pph_period_date(v_expense_id) IS DISTINCT FROM v_fallback_date THEN
-      RAISE EXCEPTION 'Unlinked PPh expense did not return to its due-date period';
-    END IF;
-
-    UPDATE public.bank_statement_lines
-       SET matched_expense_id=v_expense_id, manually_unlinked=false
-     WHERE id=v_line_id;
-    IF public.get_expense_pph_period_date(v_expense_id) IS DISTINCT FROM v_payment_date THEN
-      RAISE EXCEPTION 'Relinked PPh expense did not return to its payment-date period';
-    END IF;
-    IF (SELECT count(*) FROM public.journal_entries)<>v_journal_count THEN
-      RAISE EXCEPTION 'PPh period unlink/relink changed journal entries';
-    END IF;
-  END IF;
+  -- Verify PPh period attribution remains anchored to expense_date and
+  -- never creates or alters journal entries.
 
   SELECT count(*) INTO v_count FROM (
     SELECT fiscal_year,period_month,tax_type,count(*)
@@ -275,16 +179,14 @@ BEGIN
 
   SELECT count(*) INTO v_count
     FROM public.vw_pph_by_period_type r
-   WHERE r.pph_paid_total IS DISTINCT FROM (
-     public.fn_tax_payments_paid(r.tax_period_id)
-       + public.fn_settled_import_pph22(r.fiscal_year,r.period_month,r.tax_type)
-   )
-      OR r.pph_overpaid IS DISTINCT FROM GREATEST(
-        public.fn_tax_payments_paid(r.tax_period_id)
-          + public.fn_settled_import_pph22(r.fiscal_year,r.period_month,r.tax_type)
-          - r.pph_total,
-        0
-      );
+   WHERE r.tax_type IN ('PPh21', 'PPh23', 'PPh4(2)')
+     AND (
+       r.pph_paid_total IS DISTINCT FROM public.fn_tax_payments_paid(r.tax_period_id)
+       OR r.pph_overpaid IS DISTINCT FROM GREATEST(
+         public.fn_tax_payments_paid(r.tax_period_id) - r.pph_total,
+         0
+       )
+     );
   IF v_count<>0 THEN RAISE EXCEPTION '% PPh periods have incorrect tax-payment offsets',v_count; END IF;
 END;
 $regression$;

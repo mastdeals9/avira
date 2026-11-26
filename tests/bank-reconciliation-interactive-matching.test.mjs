@@ -645,7 +645,7 @@ test('24. Frontend calls and upload workflows pass explicit scope to auto_match_
   // Upload call sites invoke autoMatchTransactions with scope
   assert.match(
     ui,
-    /await autoMatchTransactions\(\{\s*bankAccountId: selectedBank,\s*dateFrom: startDate,\s*dateTo: endDate,\s*\}\);/
+    /await autoMatchTransactions\(\{\s*bankAccountId(?::\s*selectedBank)?,\s*dateFrom: startDate,\s*dateTo: endDate,\s*\}\);/
   );
 
   // BankReconciliation.tsx also passes explicit scope
