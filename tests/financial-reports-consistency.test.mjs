@@ -53,6 +53,8 @@ test('1. Live DB: Balance Sheet reconciles account-by-account to Trial Balance a
 
 test('2. Live DB: get_pnl_summary_detailed matches YTD GL and classifies Bizpark & NULL-group expenses consistently', () => {
   const rows = dbQuery(`
+    SELECT set_config('request.jwt.claim.sub',(SELECT id::text FROM public.user_profiles WHERE role='admin' AND is_active=true LIMIT 1),true),
+           set_config('request.jwt.claim.role','authenticated',true);
     SELECT
       (SELECT net_income::numeric FROM public.get_pnl_summary_detailed('2026-01-01', '2026-11-26', 16000)) AS rpc_net,
       (SELECT operating_expenses::numeric FROM public.get_pnl_summary_detailed('2026-01-01', '2026-11-26', 16000)) AS rpc_opex,
