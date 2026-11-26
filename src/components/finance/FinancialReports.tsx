@@ -266,12 +266,12 @@ export function FinancialReports({ initialReport = 'trial_balance', onDrillDown 
 
   const renderPnLRow = (item: PnLLineItem, displayAmount = item.amount) => (
     <tr key={item.code} className="hover:bg-slate-50 border-b border-gray-100">
-      <td className="py-1 pl-6 pr-2 font-mono text-[10px] text-slate-500 w-16">{item.code}</td>
-      <td className="py-1 px-2 text-xs text-slate-800"><DrillLink code={item.code} name={item.name} /></td>
-      <td className={`py-1 px-3 text-right text-xs tabular-nums whitespace-nowrap w-40 ${displayAmount < 0 ? 'text-red-700' : 'text-slate-900'}`}>
+      <td className="py-1 pl-6 pr-2 font-mono text-[10px] text-slate-500 w-16 print:py-0.5 print:text-[8.5px]">{item.code}</td>
+      <td className="py-1 px-2 text-xs text-slate-800 print:py-0.5 print:text-[9.5px]"><DrillLink code={item.code} name={item.name} /></td>
+      <td className={`py-1 px-3 text-right text-xs tabular-nums whitespace-nowrap w-40 print:py-0.5 print:text-[9.5px] ${displayAmount < 0 ? 'text-red-700' : 'text-slate-900'}`}>
         {fmtAccounting(displayAmount)}
       </td>
-      <td className="py-1 px-3 text-right text-[10px] text-slate-500 tabular-nums w-20">
+      <td className="py-1 px-3 text-right text-[10px] text-slate-500 tabular-nums w-20 print:py-0.5 print:text-[8.5px]">
         {pctStr(Math.abs(displayAmount), pnlModel.netRevenue)}
       </td>
     </tr>
@@ -293,29 +293,40 @@ export function FinancialReports({ initialReport = 'trial_balance', onDrillDown 
       {reportType === 'trial_balance' && (
         <div className="bg-white rounded border border-gray-200 overflow-hidden print:border-0 print:rounded-none">
           <ReportToolbar />
-          <StatementHeader
-            title="Trial Balance"
-            subtitle={`For the period ${fmtDate(dateRange.startDate)} to ${fmtDate(dateRange.endDate)}`}
-          />
+          <div className="print:hidden">
+            <StatementHeader
+              title="Trial Balance"
+              subtitle={`For the period ${fmtDate(dateRange.startDate)} to ${fmtDate(dateRange.endDate)}`}
+            />
+          </div>
           <div className="overflow-x-auto print:overflow-visible">
-            <table className="w-full text-xs border-collapse print:text-[9px]">
-              <thead className="bg-slate-800 text-white print:bg-slate-100 print:text-slate-900 print:border-y print:border-slate-800">
-                <tr>
-                  <th className="px-2 py-1.5 text-left font-semibold w-16 print:py-1">Code</th>
-                  <th className="px-2 py-1.5 text-left font-semibold print:py-1">Account Name</th>
-                  <th className="px-2 py-1.5 text-right font-semibold" colSpan={2}>Opening Balance</th>
-                  <th className="px-2 py-1.5 text-right font-semibold" colSpan={2}>Period Movements</th>
-                  <th className="px-2 py-1.5 text-right font-semibold" colSpan={2}>Closing Balance</th>
+            <table className="w-full text-xs border-collapse print:text-[8.5px]">
+              <thead className="bg-slate-800 text-white print:bg-white print:text-slate-900">
+                <tr className="hidden print:table-row">
+                  <th colSpan={8} className="pb-2 text-center border-b-2 border-slate-800 bg-white">
+                    <div className="text-xs font-bold uppercase text-slate-900">{companyName}</div>
+                    <div className="text-sm font-bold uppercase text-slate-900">Trial Balance</div>
+                    <div className="text-[9px] font-normal text-slate-600">
+                      For the period {fmtDate(dateRange.startDate)} to {fmtDate(dateRange.endDate)} &nbsp;|&nbsp; {basisLabel}
+                    </div>
+                  </th>
+                </tr>
+                <tr className="print:bg-slate-100 print:border-y print:border-slate-800">
+                  <th className="px-2 py-1.5 text-left font-semibold w-14 print:py-0.5 print:px-1">Code</th>
+                  <th className="px-2 py-1.5 text-left font-semibold print:py-0.5 print:px-1">Account Name</th>
+                  <th className="px-2 py-1.5 text-right font-semibold print:py-0.5 print:px-1" colSpan={2}>Opening Balance</th>
+                  <th className="px-2 py-1.5 text-right font-semibold print:py-0.5 print:px-1" colSpan={2}>Period Movements</th>
+                  <th className="px-2 py-1.5 text-right font-semibold print:py-0.5 print:px-1" colSpan={2}>Closing Balance</th>
                 </tr>
                 <tr className="bg-slate-700 text-slate-200 print:bg-slate-50 print:text-slate-700 print:border-b print:border-slate-400">
-                  <th className="px-2 py-1" />
-                  <th className="px-2 py-1" />
-                  <th className="px-2 py-1 text-right font-medium w-28">Debit</th>
-                  <th className="px-2 py-1 text-right font-medium w-28">Credit</th>
-                  <th className="px-2 py-1 text-right font-medium w-28">Debit</th>
-                  <th className="px-2 py-1 text-right font-medium w-28">Credit</th>
-                  <th className="px-2 py-1 text-right font-medium w-28">Debit</th>
-                  <th className="px-2 py-1 text-right font-medium w-28">Credit</th>
+                  <th className="px-2 py-1 print:py-0.5" />
+                  <th className="px-2 py-1 print:py-0.5" />
+                  <th className="px-2 py-1 text-right font-medium w-28 print:w-22 print:py-0.5 print:px-1">Debit</th>
+                  <th className="px-2 py-1 text-right font-medium w-28 print:w-22 print:py-0.5 print:px-1">Credit</th>
+                  <th className="px-2 py-1 text-right font-medium w-28 print:w-22 print:py-0.5 print:px-1">Debit</th>
+                  <th className="px-2 py-1 text-right font-medium w-28 print:w-22 print:py-0.5 print:px-1">Credit</th>
+                  <th className="px-2 py-1 text-right font-medium w-28 print:w-22 print:py-0.5 print:px-1">Debit</th>
+                  <th className="px-2 py-1 text-right font-medium w-28 print:w-22 print:py-0.5 print:px-1">Credit</th>
                 </tr>
               </thead>
               <tbody>
@@ -323,8 +334,8 @@ export function FinancialReports({ initialReport = 'trial_balance', onDrillDown 
                   const isCollapsed = collapsedSections.has(sec.id);
                   return (
                     <Fragment key={sec.id}>
-                      <tr className="bg-slate-100 text-slate-900 cursor-pointer select-none border-t border-slate-300" onClick={() => toggleSection(sec.id)}>
-                        <td className="px-2 py-1.5 font-bold uppercase tracking-wider text-[10px]" colSpan={2}>
+                      <tr className="bg-slate-100 text-slate-900 cursor-pointer select-none border-t border-slate-300 print-keep-with-next" onClick={() => toggleSection(sec.id)}>
+                        <td className="px-2 py-1.5 font-bold uppercase tracking-wider text-[10px] print:py-0.5 print:px-1 print:text-[8.5px]" colSpan={2}>
                           <span className="inline-flex items-center gap-1">
                             <span className="print:hidden">
                               {isCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -332,34 +343,34 @@ export function FinancialReports({ initialReport = 'trial_balance', onDrillDown 
                             {sec.label}
                           </span>
                         </td>
-                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500">{isCollapsed ? fmtAccounting(sec.openingDr) : ''}</td>
-                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500">{isCollapsed ? fmtAccounting(sec.openingCr) : ''}</td>
-                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500">{isCollapsed ? fmtAccounting(sec.periodDr) : ''}</td>
-                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500">{isCollapsed ? fmtAccounting(sec.periodCr) : ''}</td>
-                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500">{isCollapsed ? fmtAccounting(sec.closingDr) : ''}</td>
-                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500">{isCollapsed ? fmtAccounting(sec.closingCr) : ''}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500 print:py-0.5 print:px-1">{isCollapsed ? fmtAccounting(sec.openingDr) : ''}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500 print:py-0.5 print:px-1">{isCollapsed ? fmtAccounting(sec.openingCr) : ''}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500 print:py-0.5 print:px-1">{isCollapsed ? fmtAccounting(sec.periodDr) : ''}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500 print:py-0.5 print:px-1">{isCollapsed ? fmtAccounting(sec.periodCr) : ''}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500 print:py-0.5 print:px-1">{isCollapsed ? fmtAccounting(sec.closingDr) : ''}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-slate-500 print:py-0.5 print:px-1">{isCollapsed ? fmtAccounting(sec.closingCr) : ''}</td>
                       </tr>
                       {!isCollapsed && sec.rows.map(r => (
                         <tr key={r.code} className="hover:bg-slate-50 border-t border-gray-100">
-                          <td className="px-2 py-1 font-mono text-[10px] text-slate-500">{r.code}</td>
-                          <td className="px-2 py-1 text-slate-800"><DrillLink code={r.code} name={r.name} /></td>
-                          <td className="px-2 py-1 text-right tabular-nums">{fmtAccounting(r.openingDr)}</td>
-                          <td className="px-2 py-1 text-right tabular-nums">{fmtAccounting(r.openingCr)}</td>
-                          <td className="px-2 py-1 text-right tabular-nums">{fmtAccounting(r.periodDr)}</td>
-                          <td className="px-2 py-1 text-right tabular-nums">{fmtAccounting(r.periodCr)}</td>
-                          <td className="px-2 py-1 text-right tabular-nums">{fmtAccounting(r.closingDr)}</td>
-                          <td className="px-2 py-1 text-right tabular-nums">{fmtAccounting(r.closingCr)}</td>
+                          <td className="px-2 py-1 font-mono text-[10px] text-slate-500 print:py-0.5 print:px-1 print:text-[8px]">{r.code}</td>
+                          <td className="px-2 py-1 text-slate-800 print:py-0.5 print:px-1"><DrillLink code={r.code} name={r.name} /></td>
+                          <td className="px-2 py-1 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(r.openingDr)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(r.openingCr)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(r.periodDr)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(r.periodCr)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(r.closingDr)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(r.closingCr)}</td>
                         </tr>
                       ))}
                       {!isCollapsed && (
-                        <tr className="bg-slate-50 font-semibold border-t border-slate-300">
-                          <td className="px-2 py-1.5 text-right text-[10px] uppercase" colSpan={2}>Total {sec.label}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">{fmtAccounting(sec.openingDr)}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">{fmtAccounting(sec.openingCr)}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">{fmtAccounting(sec.periodDr)}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">{fmtAccounting(sec.periodCr)}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">{fmtAccounting(sec.closingDr)}</td>
-                          <td className="px-2 py-1.5 text-right tabular-nums">{fmtAccounting(sec.closingCr)}</td>
+                        <tr className="bg-slate-50 font-semibold border-t border-slate-300 print-keep-with-prev">
+                          <td className="px-2 py-1.5 text-right text-[10px] uppercase print:py-0.5 print:px-1 print:text-[8.5px]" colSpan={2}>Total {sec.label}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(sec.openingDr)}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(sec.openingCr)}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(sec.periodDr)}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(sec.periodCr)}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(sec.closingDr)}</td>
+                          <td className="px-2 py-1.5 text-right tabular-nums print:py-0.5 print:px-1">{fmtAccounting(sec.closingCr)}</td>
                         </tr>
                       )}
                     </Fragment>

@@ -415,5 +415,15 @@ button {
     break-inside: avoid;
     page-break-inside: avoid;
   }
+
+  .print-keep-with-next {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  .print-keep-with-prev {
+    break-before: avoid;
+    page-break-before: avoid;
+  }
 }
 
