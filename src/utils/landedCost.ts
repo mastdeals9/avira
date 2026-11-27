@@ -188,6 +188,13 @@ export function calculateExpenseLandedCostAmount(expense: LandedCostExpenseInput
   }
 
   if (expense.expense_category === 'pib_import') {
+    const expDate = (expense.expense_date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    if (expDate >= BPOM_LANDED_COST_CUTOVER_DATE && expense.include_in_landed_cost !== true) {
+      return {
+        amount: 0,
+        isCapitalizable: false,
+      };
+    }
     return {
       amount: Number(expense.pib_bm_amount || 0),
       isCapitalizable: true,

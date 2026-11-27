@@ -80,6 +80,12 @@ test('1. TypeScript & SQL landed-cost engines produce identical results across a
   assert.equal(tsRes.otherImportCosts, 0);
   assert.equal(tsRes.containerLandedCostPool, 620000);
 
+  // Direct calculateExpenseLandedCostAmount parity for post-cutover & pre-cutover PIB inclusion states
+  assert.equal(tsMod.calculateExpenseLandedCostAmount({ id: 'dp1', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 120000, expense_date: '2026-11-27', include_in_landed_cost: true, approval_status: 'approved' }).amount, 120000);
+  assert.equal(tsMod.calculateExpenseLandedCostAmount({ id: 'dp2', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 120000, expense_date: '2026-11-27', include_in_landed_cost: false, approval_status: 'approved' }).amount, 0);
+  assert.equal(tsMod.calculateExpenseLandedCostAmount({ id: 'dp3', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 120000, expense_date: '2026-11-27', include_in_landed_cost: null, approval_status: 'approved' }).amount, 0);
+  assert.equal(tsMod.calculateExpenseLandedCostAmount({ id: 'dp4', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 120000, expense_date: '2026-11-20', include_in_landed_cost: false, approval_status: 'approved' }).amount, 120000);
+
   // Verify SQL calculate_expense_landed_cost_amount matches TS for every item
   const sqlRows = dbQuery(`
     BEGIN;
@@ -126,6 +132,9 @@ test('2. Live DB (rolled back): all 12 historical-protection, PIB, FIFO, concurr
       v_c_hist uuid;
       v_c_post uuid;
       v_b_hist_unlocked uuid;
+      v_b_hist_2 uuid;
+      v_hist_layer_2 uuid;
+      v_hist_adj_1 uuid;
       v_b_post_unlocked uuid;
       v_b_post_locked uuid;
       v_b_fifo uuid;
@@ -158,7 +167,10 @@ test('2. Live DB (rolled back): all 12 historical-protection, PIB, FIFO, concurr
       SELECT total_debit INTO v_je_0508_amt FROM public.journal_entries WHERE entry_number = 'JE2611-0508';
       SELECT total_debit INTO v_je_0509_amt FROM public.journal_entries WHERE entry_number = 'JE2611-0509';
 
-      -- 1. Historical pre-cutover container & batch (even with cost_locked = false!) must NOT be auto-recalculated
+      -- 1. Historical pre-cutover container with TWO batches (even with cost_locked = false!) & unlinked cost layer
+      SELECT id INTO v_pi_id FROM public.purchase_invoices LIMIT 1;
+      SELECT id INTO v_pii_id FROM public.purchase_invoice_items WHERE purchase_invoice_id = v_pi_id LIMIT 1;
+
       INSERT INTO public.import_containers (container_ref, supplier_id, import_date, allocation_method, other_import_costs)
       VALUES ('TEST-HIST-C1', v_supp_id, DATE '2026-11-20', 'invoice_value', 0)
       RETURNING id INTO v_c_hist;
@@ -171,9 +183,32 @@ test('2. Live DB (rolled back): all 12 historical-protection, PIB, FIFO, concurr
         'TEST-HIST-UNLOCKED', v_prod_id, DATE '2026-11-20', 100, 100,
         10000, 10000, 10000, v_c_hist, false
       ) RETURNING id INTO v_b_hist_unlocked;
+
+      INSERT INTO public.batches (
+        batch_number, product_id, import_date, import_quantity, current_stock,
+        import_price, cost_per_unit, landed_cost_per_unit, import_container_id, cost_locked
+      ) VALUES (
+        'TEST-HIST-UNLOCKED-2', v_prod_id, DATE '2026-11-20', 100, 100,
+        10000, 10000, 10000, v_c_hist, false
+      ) RETURNING id INTO v_b_hist_2;
       PERFORM set_config('app.canonical_stock_engine', 'off', true);
 
-      -- Enter a new expense linked to the historical container -> must NOT overwrite historical batch
+      -- Unlinked cost layer (import_container_id IS NULL) on second historical batch must NOT be auto-backfilled
+      INSERT INTO public.purchase_invoice_receiving_allocations (
+        purchase_invoice_id, purchase_invoice_item_id, batch_id, received_quantity, status, received_at, operation_id
+      ) VALUES (
+        v_pi_id, v_pii_id, v_b_hist_2, 100, 'received', TIMESTAMPTZ '2026-11-20 09:00:00+00', gen_random_uuid()
+      ) RETURNING id INTO v_pira_1;
+
+      INSERT INTO public.purchase_batch_cost_layers (
+        receiving_allocation_id, purchase_invoice_id, purchase_invoice_item_id, batch_id,
+        quantity, currency, exchange_rate, transaction_unit_cost, functional_unit_cost, functional_total_cost,
+        landed_cost_amount, final_functional_unit_cost, import_container_id
+      ) VALUES (
+        v_pira_1, v_pi_id, v_pii_id, v_b_hist_2, 100, 'IDR', 1, 10000, 10000, 1000000, 0, 10000, NULL
+      ) RETURNING id INTO v_hist_layer_2;
+
+      -- Enter a new expense linked to the historical container -> must NOT overwrite either historical batch or backfill layer metadata
       INSERT INTO public.finance_expenses (
         expense_category, amount, expense_date, description, import_container_id,
         include_in_landed_cost, approval_status
@@ -181,14 +216,29 @@ test('2. Live DB (rolled back): all 12 historical-protection, PIB, FIFO, concurr
         'freight_import', 50000, DATE '2026-11-27', 'Late freight on historical container', v_c_hist, true, 'approved'
       );
 
-      IF (SELECT landed_cost_per_unit FROM public.batches WHERE id = v_b_hist_unlocked) IS DISTINCT FROM 10000 THEN
-        RAISE EXCEPTION 'Historical pre-cutover batch was silently modified! Got %', (SELECT landed_cost_per_unit FROM public.batches WHERE id = v_b_hist_unlocked);
+      IF (SELECT landed_cost_per_unit FROM public.batches WHERE id = v_b_hist_unlocked) IS DISTINCT FROM 10000
+         OR (SELECT landed_cost_per_unit FROM public.batches WHERE id = v_b_hist_2) IS DISTINCT FROM 10000 THEN
+        RAISE EXCEPTION 'Historical pre-cutover batch was silently modified!';
       END IF;
-      IF NOT EXISTS (
-        SELECT 1 FROM public.pending_batch_cost_adjustments
-         WHERE batch_id = v_b_hist_unlocked AND status = 'pending'
-      ) THEN
+      IF (SELECT import_container_id FROM public.purchase_batch_cost_layers WHERE id = v_hist_layer_2) IS NOT NULL THEN
+        RAISE EXCEPTION 'Historical cost-layer import_container_id was unexpectedly modified!';
+      END IF;
+
+      -- Approve ONLY the first historical batch adjustment -> second historical batch & its layer & pending row must stay untouched
+      SELECT id INTO v_hist_adj_1 FROM public.pending_batch_cost_adjustments
+       WHERE batch_id = v_b_hist_unlocked AND status = 'pending';
+      IF v_hist_adj_1 IS NULL THEN
         RAISE EXCEPTION 'Expected pending adjustment record for protected pre-cutover batch';
+      END IF;
+      PERFORM public.approve_pending_batch_cost_adjustment(v_hist_adj_1);
+      IF (SELECT landed_cost_per_unit FROM public.batches WHERE id = v_b_hist_unlocked) <> 10250 THEN
+        RAISE EXCEPTION 'Expected approved historical batch 1 = 10250, got %', (SELECT landed_cost_per_unit FROM public.batches WHERE id = v_b_hist_unlocked);
+      END IF;
+      IF (SELECT landed_cost_per_unit FROM public.batches WHERE id = v_b_hist_2) <> 10000 THEN
+        RAISE EXCEPTION 'Second historical batch in same container was unexpectedly recalculated!';
+      END IF;
+      IF (SELECT import_container_id FROM public.purchase_batch_cost_layers WHERE id = v_hist_layer_2) IS NOT NULL THEN
+        RAISE EXCEPTION 'Second historical batch cost-layer metadata was unexpectedly modified after sibling approval!';
       END IF;
 
       -- 2, 3, 4, 5, 6, 7. Post-cutover container with unlocked & locked batches, broker, petty cash, PIB true/false/NULL

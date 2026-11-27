@@ -585,7 +585,7 @@ DECLARE
   v_old_unit_cost numeric;
   v_is_protected boolean;
   v_protect_reason text;
-  v_allow_hist_override boolean := (COALESCE(current_setting('app.allow_historical_batch_recalc', true), '') = 'on');
+  v_approved_hist_batch_id uuid := NULLIF(COALESCE(current_setting('app.approved_historical_batch_id', true), ''), '')::uuid;
 BEGIN
   IF auth.role() = 'anon' THEN
     RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
@@ -605,10 +605,19 @@ BEGIN
   v_shared_pool := public.calculate_container_landed_cost_pool(p_container_id);
   v_method := COALESCE(v_container.allocation_method, 'invoice_value');
 
+  -- Only backfill import_container_id on post-cutover batches or the individually approved historical batch
   UPDATE public.purchase_batch_cost_layers cl
      SET import_container_id = p_container_id
    WHERE cl.import_container_id IS NULL
-     AND cl.batch_id IN (SELECT b.id FROM public.batches b WHERE b.import_container_id = p_container_id);
+     AND cl.batch_id IN (
+       SELECT b.id
+         FROM public.batches b
+        WHERE b.import_container_id = p_container_id
+          AND (
+            COALESCE(b.import_date, b.created_at::date) >= DATE '2026-11-27'
+            OR b.id = v_approved_hist_batch_id
+          )
+     );
 
   -- PIB Bea Masuk pool: post-cutover (>= 2026-11-27) requires include_in_landed_cost = true;
   -- pre-cutover (< 2026-11-27) preserves historical treatment.
@@ -666,7 +675,7 @@ BEGIN
        ORDER BY cl.created_at, cl.id
        FOR UPDATE OF cl
     LOOP
-      IF l.cost_locked OR (l.is_historical AND NOT v_allow_hist_override) THEN
+      IF l.cost_locked OR (l.is_historical AND l.batch_id IS DISTINCT FROM v_approved_hist_batch_id) THEN
         CONTINUE;
       END IF;
 
@@ -714,7 +723,7 @@ BEGIN
       IF NOT FOUND THEN CONTINUE; END IF;
 
       v_is_protected := COALESCE(v_batch_rec.cost_locked, false)
-        OR (COALESCE(v_batch_rec.import_date, v_batch_rec.created_at::date) < DATE '2026-11-27' AND NOT v_allow_hist_override);
+        OR (COALESCE(v_batch_rec.import_date, v_batch_rec.created_at::date) < DATE '2026-11-27' AND v_batch_rec.id IS DISTINCT FROM v_approved_hist_batch_id);
 
       IF v_is_protected THEN
         v_protect_reason := CASE
@@ -890,7 +899,7 @@ BEGIN
     );
     v_old_unit_cost := ROUND(COALESCE(l.landed_cost_per_unit, l.cost_per_unit, 0), 2);
 
-    v_is_protected := l.cost_locked OR (l.is_historical AND NOT v_allow_hist_override);
+    v_is_protected := l.cost_locked OR (l.is_historical AND l.id IS DISTINCT FROM v_approved_hist_batch_id);
 
     IF v_is_protected THEN
       v_protect_reason := CASE
@@ -960,7 +969,7 @@ DECLARE
   v_old_unit_cost numeric;
   v_is_protected boolean;
   v_protect_reason text;
-  v_allow_hist_override boolean := (COALESCE(current_setting('app.allow_historical_batch_recalc', true), '') = 'on');
+  v_approved_hist_batch_id uuid := NULLIF(COALESCE(current_setting('app.approved_historical_batch_id', true), ''), '')::uuid;
 BEGIN
   SELECT * INTO v_b FROM public.batches WHERE id = p_batch_id FOR UPDATE;
   IF NOT FOUND THEN RETURN; END IF;
@@ -982,7 +991,7 @@ BEGIN
   v_old_unit_cost := ROUND(COALESCE(v_b.landed_cost_per_unit, v_b.cost_per_unit, 0), 2);
 
   v_is_protected := COALESCE(v_b.cost_locked, false)
-    OR (COALESCE(v_b.import_date, v_b.created_at::date) < DATE '2026-11-27' AND NOT v_allow_hist_override);
+    OR (COALESCE(v_b.import_date, v_b.created_at::date) < DATE '2026-11-27' AND v_b.id IS DISTINCT FROM v_approved_hist_batch_id);
 
   IF v_is_protected THEN
     v_protect_reason := CASE
@@ -1071,7 +1080,7 @@ BEGIN
   SELECT * INTO v_b FROM public.batches WHERE id = v_adj.batch_id FOR UPDATE;
   v_was_locked := COALESCE(v_b.cost_locked, false);
 
-  PERFORM set_config('app.allow_historical_batch_recalc', 'on', true);
+  PERFORM set_config('app.approved_historical_batch_id', v_adj.batch_id::text, true);
   PERFORM set_config('app.allow_historical_cogs_adjustment', 'on', true);
 
   IF v_was_locked THEN
@@ -1088,7 +1097,7 @@ BEGIN
     UPDATE public.batches SET cost_locked = true, cost_locked_at = now() WHERE id = v_adj.batch_id;
   END IF;
 
-  PERFORM set_config('app.allow_historical_batch_recalc', 'off', true);
+  PERFORM set_config('app.approved_historical_batch_id', '', true);
   PERFORM set_config('app.allow_historical_cogs_adjustment', 'off', true);
 
   UPDATE public.pending_batch_cost_adjustments
@@ -1105,7 +1114,7 @@ BEGIN
     'proposed_unit_cost', v_adj.proposed_unit_cost
   );
 EXCEPTION WHEN OTHERS THEN
-  PERFORM set_config('app.allow_historical_batch_recalc', 'off', true);
+  PERFORM set_config('app.approved_historical_batch_id', '', true);
   PERFORM set_config('app.allow_historical_cogs_adjustment', 'off', true);
   RAISE;
 END;
