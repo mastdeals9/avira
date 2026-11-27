@@ -17,6 +17,7 @@ interface IntegrityMetric {
   label: string;
   viewName: string;
   count: number;
+  historicalOnly?: boolean;
 }
 
 const INITIAL_METRICS: IntegrityMetric[] = [
@@ -52,7 +53,16 @@ export function IntegrityMonitor() {
             throw new Error(`Failed loading ${metric.label}: ${queryError.message}`);
           }
 
-          return { ...metric, count: count ?? 0 };
+          let historicalOnly = false;
+          if (metric.key === 'negative_cash_anomalies' && (count ?? 0) > 0) {
+            const { count: currentDeficitCount } = await supabase
+              .from(metric.viewName)
+              .select('*', { count: 'exact', head: true })
+              .eq('is_current_closing_deficit', true);
+            historicalOnly = (currentDeficitCount ?? 0) === 0;
+          }
+
+          return { ...metric, count: count ?? 0, historicalOnly };
         })
       );
 
@@ -140,9 +150,13 @@ export function IntegrityMonitor() {
                   </td>
                   <td className="px-2 py-1.5 text-right text-sm font-semibold text-gray-900">{metric.count || 'No records found'}</td>
                   <td className="px-2 py-1.5 text-sm">
-                    <FinanceBadge status={hasIssue ? 'pending' : 'approved'}>
+                    <FinanceBadge status={hasIssue ? (metric.historicalOnly ? 'info' : 'pending') : 'approved'}>
                       {hasIssue ? <AlertTriangle className="h-3 w-3" /> : <ShieldCheck className="h-3 w-3" />}
-                      {hasIssue ? 'Issue detected' : 'No records found'}
+                      {hasIssue
+                        ? metric.historicalOnly
+                          ? 'Historical warning (closing positive)'
+                          : 'Issue detected'
+                        : 'No records found'}
                     </FinanceBadge>
                   </td>
                 </tr>
@@ -165,7 +179,9 @@ export function IntegrityMonitor() {
                   {detailRows.map((row, index) => {
                     const href = detailHref(row);
                     const record = row.entry_number || row.transaction_number || row.journal_entry_id || row.journal_line_id || `Record ${index + 1}`;
-                    const summary = row.description || row.reference_number || row.source_module || '';
+                    const summary = row.diagnostic_scope
+                      ? `${row.code ?? ''} (${row.diagnostic_scope === 'historical_running_balance_warning' ? 'Historical running-balance event; current closing positive' : 'Current closing deficit'})`
+                      : (row.description || row.reference_number || row.source_module || '');
                     return <tr key={String(row.journal_line_id || row.journal_entry_id || row.petty_cash_transaction_id || index)}><td className="px-2 py-1.5 text-gray-900">{String(record)}</td><td className="max-w-xs px-2 py-1.5 text-gray-600">{String(summary)}</td><td className="px-2 py-1.5">{href ? <a href={href} className="inline-flex items-center gap-1 text-blue-700 hover:underline" title="Open underlying record">Open <ExternalLink className="h-3 w-3" /></a> : <span className="text-gray-400">—</span>}</td></tr>;
                   })}
                 </tbody>
