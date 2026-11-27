@@ -3962,6 +3962,13 @@ export function ExpenseManager({
                           {(postingState === 'ACTIVE' || postingState === 'PENDING' || postingState === 'REJECTED') && (
                             <FinanceActionButton action="edit" onClick={() => handleEdit(expense)} />
                           )}
+                          {expense.approval_status === 'approved' && postingState === 'ACTIVE' && (
+                            <FinanceActionButton
+                              action="reverse"
+                              label="Unpost"
+                              onClick={() => void handleCancelPostingRequest(expense)}
+                            />
+                          )}
                           {isAdmin && simplifiedStatus.approval === 'Pending' && (
                             <>
                               <span className="w-px h-4 bg-gray-200 mx-0.5" aria-hidden="true" />
@@ -4055,8 +4062,18 @@ export function ExpenseManager({
                       label="View"
                       onClick={() => void handleViewExpense(expense)}
                     />
-                    {(postingState === 'ACTIVE' || postingState === 'PENDING' || postingState === 'REJECTED') && (
+                    {canManage && (postingState === 'ACTIVE' || postingState === 'PENDING' || postingState === 'REJECTED') && (
                       <FinanceActionButton action="edit" onClick={() => handleEdit(expense)} />
+                    )}
+                    {canManage && expense.approval_status === 'approved' && postingState === 'ACTIVE' && (
+                      <FinanceActionButton
+                        action="reverse"
+                        label="Unpost"
+                        onClick={() => void handleCancelPostingRequest(expense)}
+                      />
+                    )}
+                    {canManage && (postingState === 'PENDING' || postingState === 'REJECTED') && (
+                      <FinanceActionButton action="delete" label="Delete" onClick={() => handleDelete(expense.id)} />
                     )}
                     <button
                       type="button"
@@ -6538,9 +6555,9 @@ export function ExpenseManager({
         );
       })()}
 
-      {/* Cancel Posting modal */}
+      {/* Unpost / Cancel Posting modal */}
       {cancelPostingModalOpen && cancelPostingTarget && (
-        <Modal isOpen={cancelPostingModalOpen} onClose={closeCancelPostingModal} title="Cancel Expense Posting" size="sm">
+        <Modal isOpen={cancelPostingModalOpen} onClose={closeCancelPostingModal} title="Unpost Expense" size="sm">
           <div className="space-y-4">
             <div className={`${cancelPostingBlock ? 'bg-red-50 border-red-200 text-red-800' : 'bg-orange-50 border-orange-200 text-orange-800'} border rounded-lg p-3 text-sm`}>
               <p className="font-semibold mb-1">{cancelPostingTarget.expense_category} — {formatCurrency(calculateCanonicalExpenseTotal(cancelPostingTarget), getExpenseCurrency(cancelPostingTarget))}</p>
@@ -6548,7 +6565,7 @@ export function ExpenseManager({
                 <p>{cancelPostingBlock.message}</p>
               ) : (
                 <>
-                  <p>This preserves the original journal, creates its auditable reversal, and returns the expense to Pending Approval.</p>
+                  <p>This preserves the original journal, creates its auditable reversal journal, and marks the expense cancelled.</p>
                   <p className="mt-1 text-xs flex items-center gap-1"><Lock className="w-3 h-3" /> Available only for unpaid expenses in an open accounting period.</p>
                 </>
               )}
@@ -6556,11 +6573,11 @@ export function ExpenseManager({
             {!cancelPostingBlock && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Reason <span className="text-red-500">*</span></label>
-                <textarea name="cancel_posting_reason" aria-label="Reason for cancelling posting..."
+                <textarea name="cancel_posting_reason" aria-label="Reason for unposting..."
                   value={cancelPostingReason}
                   onChange={e => setCancelPostingReason(e.target.value)}
                   rows={3}
-                  placeholder="Reason for cancelling posting..."
+                  placeholder="Reason for unposting..."
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-orange-500"
                 />
               </div>
@@ -6593,7 +6610,7 @@ export function ExpenseManager({
                   className="h-7 px-2 text-xs bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50 flex items-center gap-1.5"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
-                  {cancelPostingLoading ? 'Cancelling...' : 'Cancel Posting'}
+                  {cancelPostingLoading ? 'Unposting...' : 'Unpost Expense'}
                 </button>
               )}
             </div>
