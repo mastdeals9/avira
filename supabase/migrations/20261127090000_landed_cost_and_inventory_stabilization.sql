@@ -4,22 +4,40 @@
 -- Stabilization-only DDL migration (NO historical data mutations, NO blanket
 -- recalculations, NO changes to JE2611-0507 / JE2611-0508 / JE2611-0509).
 --
--- 1. Unifies landed-cost calculation rules across expenses, petty cash,
---    containers, direct batches, cost layers, and COGS propagation.
---    - Effective-date cutover (2026-11-27) for BPOM/SKI fees when
---      include_in_landed_cost = true; false/NULL remain excluded; historical
---      BPOM/SKI treatment (< 2026-11-27) is preserved.
---    - Excludes pending, draft, cancelled, and rejected records.
+-- Effective Cutover: 2026-11-27
+--
+-- 1. Absolute Historical-Data Protection:
+--    - Pre-cutover batches (import_date / created_at < 2026-11-27), their cost
+--      layers, and pre-cutover sales invoices (invoice_date < 2026-11-27) are
+--      protected from automatic recalculation even when cost_locked = false.
+--    - Any future expense/petty-cash change affecting a protected batch is
+--      recorded in public.pending_batch_cost_adjustments for explicit
+--      authorized approval (admin / accounts) with full audit trail.
+--
+-- 2. Unified Landed-Cost Engine:
+--    - Canonical helper calculate_expense_landed_cost_amount(...) shared by
+--      container pool and direct batch calculations.
+--    - Requires approval_status = 'approved' (excludes pending, draft,
+--      cancelled, rejected).
+--    - Requires include_in_landed_cost = true (false / NULL excluded).
+--    - BPOM/SKI fees: excluded < 2026-11-27; included >= 2026-11-27 only when
+--      include_in_landed_cost = true.
+--    - PIB Bea Masuk (pib_import): requires include_in_landed_cost = true for
+--      post-cutover expenses (>= 2026-11-27); pre-cutover historical treatment
+--      is preserved.
+--    - Petty cash linked via finance_expense_id is never double-counted.
 --    - Legacy other_import_costs applies only to pre-cutover containers.
--- 2. Protects cost_locked = true batches from automatic overwrites and records
---    pending differences in public.pending_batch_cost_adjustments for
---    explicitly authorized approval via approve_pending_batch_cost_adjustment.
--- 3. Adds advisory locks, change-detection in triggers, and idempotent COGS
---    propagation to prevent duplicate journal entries.
+--
+-- 3. COGS Propagation Safety & Concurrency:
+--    - Advisory locks at both batch level and invoice level.
+--    - Detects and raises on insufficient FIFO layer quantity (no silent
+--      partial COGS).
+--    - Never automatically rewrites pre-cutover sales invoice COGS.
+--    - Idempotent COGS true-up prevents duplicate journals.
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 1. Pending Batch Cost Adjustments Table (for cost_locked = true batches)
+-- 1. Pending Batch Cost Adjustments Table & Permissions
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.pending_batch_cost_adjustments (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -46,7 +64,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_batch_cost_adjustments_active
   )
   WHERE status = 'pending';
 
+CREATE INDEX IF NOT EXISTS idx_pending_batch_cost_adjustments_status
+  ON public.pending_batch_cost_adjustments (status, created_at DESC);
+
 ALTER TABLE public.pending_batch_cost_adjustments ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.pending_batch_cost_adjustments FROM PUBLIC, anon;
+GRANT SELECT, INSERT, UPDATE ON public.pending_batch_cost_adjustments TO authenticated, service_role;
 
 DO $$
 BEGIN
@@ -60,7 +84,7 @@ BEGIN
       ON public.pending_batch_cost_adjustments
       FOR SELECT
       TO authenticated
-      USING (public.inventory_v1_actor_allowed(ARRAY['admin', 'accounts', 'warehouse']::text[]));
+      USING ((SELECT public.inventory_v1_actor_allowed(ARRAY['admin', 'accounts', 'warehouse']::text[])));
   END IF;
 
   IF NOT EXISTS (
@@ -73,21 +97,23 @@ BEGIN
       ON public.pending_batch_cost_adjustments
       FOR ALL
       TO authenticated
-      USING (public.inventory_v1_actor_allowed(ARRAY['admin', 'accounts']::text[]))
-      WITH CHECK (public.inventory_v1_actor_allowed(ARRAY['admin', 'accounts']::text[]));
+      USING ((SELECT public.inventory_v1_actor_allowed(ARRAY['admin', 'accounts']::text[])))
+      WITH CHECK ((SELECT public.inventory_v1_actor_allowed(ARRAY['admin', 'accounts']::text[])));
   END IF;
 END $$;
 
 -- -----------------------------------------------------------------------------
--- 2. Canonical Landed-Cost Category & Amount Helpers
+-- 2. Canonical Landed-Cost Category & Amount Helpers (STABLE, no CURRENT_DATE in IMMUTABLE)
 -- -----------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.is_capitalizable_landed_cost_category(text);
+
 CREATE OR REPLACE FUNCTION public.is_capitalizable_landed_cost_category(
   p_category text,
   p_effective_date date DEFAULT NULL
 )
 RETURNS boolean
 LANGUAGE sql
-IMMUTABLE
+STABLE
 SET search_path TO 'public', 'pg_temp'
 AS $function$
   SELECT CASE
@@ -117,13 +143,18 @@ CREATE OR REPLACE FUNCTION public.calculate_expense_landed_cost_amount(
 )
 RETURNS numeric
 LANGUAGE sql
-IMMUTABLE
+STABLE
 SET search_path TO 'public', 'pg_temp'
 AS $function$
   SELECT CASE
     WHEN COALESCE(p_approval_status, '') <> 'approved' THEN 0::numeric
     WHEN lower(replace(COALESCE(p_category, ''), ' ', '_')) = 'pib_import' THEN
-      COALESCE(p_pib_bm_amount, 0)
+      CASE
+        WHEN COALESCE(p_effective_date, CURRENT_DATE) >= DATE '2026-11-27'
+             AND COALESCE(p_include_in_landed_cost, false) = false
+        THEN 0::numeric
+        ELSE COALESCE(p_pib_bm_amount, 0)
+      END
     WHEN COALESCE(p_include_in_landed_cost, false) = false THEN 0::numeric
     WHEN NOT public.is_capitalizable_landed_cost_category(p_category, p_effective_date) THEN 0::numeric
     WHEN lower(replace(COALESCE(p_category, ''), ' ', '_')) = 'import_broker' THEN
@@ -173,15 +204,15 @@ AS $function$
   WHERE fe.batch_id = p_batch_id
     AND fe.approval_status = 'approved'
     AND (
-      fe.expense_category = 'pib_import'
-      OR fe.include_in_landed_cost = true
+      fe.include_in_landed_cost = true
+      OR (fe.expense_category = 'pib_import' AND COALESCE(fe.expense_date, fe.created_at::date, CURRENT_DATE) < DATE '2026-11-27')
     );
 $function$;
 
 CREATE OR REPLACE FUNCTION public.calculate_container_landed_cost_pool(p_container_id uuid)
 RETURNS numeric
 LANGUAGE plpgsql
-SECURITY DEFINER
+STABLE SECURITY DEFINER
 SET search_path TO 'public', 'pg_temp'
 AS $function$
 DECLARE
@@ -211,8 +242,8 @@ BEGIN
     AND fe.include_in_landed_cost = true
     AND fe.approval_status = 'approved';
 
-  -- Petty-cash transactions linked to this container (guarded against double-counting
-  -- if linked to an already-capitalized finance_expense on the same container).
+  -- Petty-cash transactions linked to this container (never double-counted if linked
+  -- to an approved, included finance_expense on the same container).
   SELECT COALESCE(SUM(pct.amount), 0)
   INTO v_petty
   FROM public.petty_cash_transactions pct
@@ -235,8 +266,7 @@ BEGIN
       )
     );
 
-  -- Legacy other_import_costs: only for historical pre-cutover containers (< 2026-11-27)
-  -- and never duplicated by linked vouchers on new containers.
+  -- Legacy other_import_costs: only for pre-cutover containers (< 2026-11-27)
   SELECT CASE
            WHEN COALESCE(ic.import_date, ic.created_at::date, CURRENT_DATE) < DATE '2026-11-27'
            THEN COALESCE(ic.other_import_costs, 0)
@@ -251,7 +281,7 @@ END;
 $function$;
 
 -- -----------------------------------------------------------------------------
--- 4. Transactional, Idempotent COGS Propagation
+-- 4. Transactional, Idempotent COGS Propagation (Batch + Invoice Serialized)
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.propagate_batch_cost_change(p_batch_id uuid)
 RETURNS jsonb
@@ -289,6 +319,7 @@ DECLARE
   v_layer_consume numeric;
   v_item_fifo_cogs numeric;
   v_item_layer_alloc jsonb;
+  v_allow_hist_cogs boolean := (COALESCE(current_setting('app.allow_historical_cogs_adjustment', true), '') = 'on');
 BEGIN
   IF current_setting('app.in_cogs_propagation', true) = 'on' THEN
     RETURN jsonb_build_object('success', true, 'message', 'Propagation already active in current session');
@@ -334,8 +365,13 @@ BEGIN
      WHERE sii.batch_id = p_batch_id
        AND NOT COALESCE(si.is_draft, false)
        AND public.is_reportable_sales_invoice(si.document_status, si.is_draft, si.notes)
+       AND (v_allow_hist_cogs OR COALESCE(si.invoice_date, si.created_at::date) >= DATE '2026-11-27')
      ORDER BY si.invoice_date ASC, si.id ASC
   LOOP
+    -- Serialize at invoice level so concurrent multi-batch updates cannot race on the same invoice
+    PERFORM pg_advisory_xact_lock(hashtext('propagate_invoice_cogs:' || v_inv.id::text));
+    PERFORM 1 FROM public.sales_invoices WHERE id = v_inv.id FOR UPDATE;
+
     FOR v_item IN
       SELECT sii.id, sii.quantity, COALESCE(sii.cogs_total_cost, 0) AS old_cogs
         FROM public.sales_invoice_items sii
@@ -372,6 +408,12 @@ BEGIN
 
           v_rem_to_consume := v_rem_to_consume - v_layer_consume;
         END LOOP;
+
+        IF v_rem_to_consume > 0.00001 THEN
+          RAISE EXCEPTION 'Insufficient FIFO layer quantity for batch % on invoice % (shortage: %)',
+            v_batch.batch_number, v_inv.invoice_number, ROUND(v_rem_to_consume, 4)
+            USING ERRCODE = 'P0001';
+        END IF;
       ELSE
         v_item_fifo_cogs := v_rem_to_consume * COALESCE(v_batch.landed_cost_per_unit, v_batch.cost_per_unit, 0);
       END IF;
@@ -513,7 +555,7 @@ END;
 $function$;
 
 -- -----------------------------------------------------------------------------
--- 5. Lock-Aware Container & Direct Batch Recalculation
+-- 5. Historical-Protected & Lock-Aware Container / Batch Recalculation
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.reallocate_container_costs(p_container_id uuid)
 RETURNS void
@@ -541,8 +583,9 @@ DECLARE
   v_new_unit_cost numeric;
   v_new_alloc numeric;
   v_old_unit_cost numeric;
-  v_prop_duty numeric;
-  v_prop_shared numeric;
+  v_is_protected boolean;
+  v_protect_reason text;
+  v_allow_hist_override boolean := (COALESCE(current_setting('app.allow_historical_batch_recalc', true), '') = 'on');
 BEGIN
   IF auth.role() = 'anon' THEN
     RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
@@ -553,7 +596,7 @@ BEGIN
 
   PERFORM pg_advisory_xact_lock(hashtext('reallocate_container:' || p_container_id::text));
 
-  SELECT id, allocation_method INTO v_container
+  SELECT id, allocation_method, import_date, created_at INTO v_container
     FROM public.import_containers
    WHERE id = p_container_id;
 
@@ -567,7 +610,16 @@ BEGIN
    WHERE cl.import_container_id IS NULL
      AND cl.batch_id IN (SELECT b.id FROM public.batches b WHERE b.import_container_id = p_container_id);
 
-  SELECT COALESCE(SUM(COALESCE(fe.pib_bm_amount, 0)), 0)
+  -- PIB Bea Masuk pool: post-cutover (>= 2026-11-27) requires include_in_landed_cost = true;
+  -- pre-cutover (< 2026-11-27) preserves historical treatment.
+  SELECT COALESCE(SUM(
+    CASE
+      WHEN COALESCE(fe.expense_date, fe.created_at::date, CURRENT_DATE) >= DATE '2026-11-27'
+           AND COALESCE(fe.include_in_landed_cost, false) = false
+      THEN 0
+      ELSE COALESCE(fe.pib_bm_amount, 0)
+    END
+  ), 0)
     INTO v_pib_bm_pool
     FROM public.finance_expenses fe
    WHERE fe.import_container_id = p_container_id
@@ -598,7 +650,7 @@ BEGIN
      WHERE cl.import_container_id = p_container_id
        AND (COALESCE(b.duty_charges, 0) > 0 OR COALESCE(b.actual_duty_charges, 0) > 0 OR b.batch_number = '4002/1101/25/A-0512B');
 
-    -- Process unlocked batches' layers first
+    -- Process ONLY unlocked AND post-cutover (or explicitly authorized) batches' layers
     FOR l IN
       SELECT cl.id, cl.batch_id, cl.quantity,
              COALESCE(NULLIF(b.import_price, 0), cl.functional_unit_cost) AS functional_unit_cost,
@@ -606,14 +658,15 @@ BEGIN
              b.actual_duty_charges AS batch_actual_duty,
              b.exchange_rate_usd_to_idr AS batch_fx,
              b.batch_number,
-             COALESCE(b.cost_locked, false) AS cost_locked
+             COALESCE(b.cost_locked, false) AS cost_locked,
+             (COALESCE(b.import_date, b.created_at::date) < DATE '2026-11-27') AS is_historical
         FROM public.purchase_batch_cost_layers cl
         JOIN public.batches b ON b.id = cl.batch_id
        WHERE cl.import_container_id = p_container_id
        ORDER BY cl.created_at, cl.id
        FOR UPDATE OF cl
     LOOP
-      IF l.cost_locked THEN
+      IF l.cost_locked OR (l.is_historical AND NOT v_allow_hist_override) THEN
         CONTINUE;
       END IF;
 
@@ -652,7 +705,6 @@ BEGIN
        WHERE id = l.id;
     END LOOP;
 
-    -- Synchronize unlocked batches OR record pending adjustments for locked batches
     FOR v_batch_id IN
       SELECT DISTINCT cl.batch_id
         FROM public.purchase_batch_cost_layers cl
@@ -661,8 +713,15 @@ BEGIN
       SELECT * INTO v_batch_rec FROM public.batches WHERE id = v_batch_id FOR UPDATE;
       IF NOT FOUND THEN CONTINUE; END IF;
 
-      IF COALESCE(v_batch_rec.cost_locked, false) THEN
-        -- Compute proposed unit cost & shared allocation without modifying locked layers or batch
+      v_is_protected := COALESCE(v_batch_rec.cost_locked, false)
+        OR (COALESCE(v_batch_rec.import_date, v_batch_rec.created_at::date) < DATE '2026-11-27' AND NOT v_allow_hist_override);
+
+      IF v_is_protected THEN
+        v_protect_reason := CASE
+          WHEN COALESCE(v_batch_rec.cost_locked, false) THEN 'Container landed-cost pool changed while batch is cost_locked'
+          ELSE 'Pre-cutover historical batch (< 2026-11-27) protected from automatic recalculation'
+        END;
+
         SELECT
           SUM(
             ROUND(
@@ -709,13 +768,14 @@ BEGIN
             v_batch_id, p_container_id, 'import_containers',
             v_old_unit_cost, v_new_unit_cost,
             COALESCE(v_batch_rec.import_cost_allocated, 0), v_new_alloc,
-            'pending', 'Container landed-cost pool changed while batch is cost_locked'
+            'pending', v_protect_reason
           )
           ON CONFLICT (batch_id, COALESCE(import_container_id, '00000000-0000-0000-0000-000000000000'::uuid))
           WHERE status = 'pending'
           DO UPDATE SET
             proposed_unit_cost = EXCLUDED.proposed_unit_cost,
             proposed_landed_cost_allocated = EXCLUDED.proposed_landed_cost_allocated,
+            reason = EXCLUDED.reason,
             created_at = now();
         ELSE
           UPDATE public.pending_batch_cost_adjustments
@@ -807,7 +867,8 @@ BEGIN
   FOR l IN
     SELECT id, import_price, import_quantity, duty_charges, actual_duty_charges,
            freight_charges, other_charges, landed_cost_per_unit, cost_per_unit,
-           import_cost_allocated, COALESCE(cost_locked, false) AS cost_locked
+           import_cost_allocated, COALESCE(cost_locked, false) AS cost_locked,
+           (COALESCE(import_date, created_at::date) < DATE '2026-11-27') AS is_historical
       FROM public.batches
      WHERE import_container_id = p_container_id
      FOR UPDATE
@@ -829,7 +890,14 @@ BEGIN
     );
     v_old_unit_cost := ROUND(COALESCE(l.landed_cost_per_unit, l.cost_per_unit, 0), 2);
 
-    IF l.cost_locked THEN
+    v_is_protected := l.cost_locked OR (l.is_historical AND NOT v_allow_hist_override);
+
+    IF v_is_protected THEN
+      v_protect_reason := CASE
+        WHEN l.cost_locked THEN 'Container landed-cost pool changed while batch is cost_locked'
+        ELSE 'Pre-cutover historical batch (< 2026-11-27) protected from automatic recalculation'
+      END;
+
       IF ABS(v_new_unit_cost - v_old_unit_cost) >= 0.01 OR ABS(v_new_alloc - COALESCE(l.import_cost_allocated, 0)) >= 0.01 THEN
         INSERT INTO public.pending_batch_cost_adjustments (
           batch_id, import_container_id, source_table,
@@ -841,13 +909,14 @@ BEGIN
           l.id, p_container_id, 'import_containers',
           v_old_unit_cost, v_new_unit_cost,
           COALESCE(l.import_cost_allocated, 0), v_new_alloc,
-          'pending', 'Container landed-cost pool changed while batch is cost_locked'
+          'pending', v_protect_reason
         )
         ON CONFLICT (batch_id, COALESCE(import_container_id, '00000000-0000-0000-0000-000000000000'::uuid))
         WHERE status = 'pending'
         DO UPDATE SET
           proposed_unit_cost = EXCLUDED.proposed_unit_cost,
           proposed_landed_cost_allocated = EXCLUDED.proposed_landed_cost_allocated,
+          reason = EXCLUDED.reason,
           created_at = now();
       ELSE
         UPDATE public.pending_batch_cost_adjustments
@@ -889,6 +958,9 @@ DECLARE
   v_b record;
   v_new_unit_cost numeric;
   v_old_unit_cost numeric;
+  v_is_protected boolean;
+  v_protect_reason text;
+  v_allow_hist_override boolean := (COALESCE(current_setting('app.allow_historical_batch_recalc', true), '') = 'on');
 BEGIN
   SELECT * INTO v_b FROM public.batches WHERE id = p_batch_id FOR UPDATE;
   IF NOT FOUND THEN RETURN; END IF;
@@ -909,7 +981,15 @@ BEGIN
   );
   v_old_unit_cost := ROUND(COALESCE(v_b.landed_cost_per_unit, v_b.cost_per_unit, 0), 2);
 
-  IF COALESCE(v_b.cost_locked, false) THEN
+  v_is_protected := COALESCE(v_b.cost_locked, false)
+    OR (COALESCE(v_b.import_date, v_b.created_at::date) < DATE '2026-11-27' AND NOT v_allow_hist_override);
+
+  IF v_is_protected THEN
+    v_protect_reason := CASE
+      WHEN COALESCE(v_b.cost_locked, false) THEN 'Direct batch landed-cost changed while batch is cost_locked'
+      ELSE 'Pre-cutover historical batch (< 2026-11-27) protected from automatic recalculation'
+    END;
+
     IF ABS(v_new_unit_cost - v_old_unit_cost) >= 0.01 OR ABS(v_direct_cost - COALESCE(v_b.import_cost_allocated, 0)) >= 0.01 THEN
       INSERT INTO public.pending_batch_cost_adjustments (
         batch_id, import_container_id, source_table,
@@ -921,13 +1001,14 @@ BEGIN
         p_batch_id, NULL, 'finance_expenses',
         v_old_unit_cost, v_new_unit_cost,
         COALESCE(v_b.import_cost_allocated, 0), v_direct_cost,
-        'pending', 'Direct batch landed-cost changed while batch is cost_locked'
+        'pending', v_protect_reason
       )
       ON CONFLICT (batch_id, COALESCE(import_container_id, '00000000-0000-0000-0000-000000000000'::uuid))
       WHERE status = 'pending'
       DO UPDATE SET
         proposed_unit_cost = EXCLUDED.proposed_unit_cost,
         proposed_landed_cost_allocated = EXCLUDED.proposed_landed_cost_allocated,
+        reason = EXCLUDED.reason,
         created_at = now();
     ELSE
       UPDATE public.pending_batch_cost_adjustments
@@ -954,7 +1035,7 @@ END;
 $function$;
 
 -- -----------------------------------------------------------------------------
--- 6. Controlled Approval Workflow for Locked Batch Cost Adjustments
+-- 6. Controlled Approval Workflow for Locked / Historical Batch Adjustments
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.approve_pending_batch_cost_adjustment(p_adjustment_id uuid)
 RETURNS jsonb
@@ -966,13 +1047,12 @@ DECLARE
   v_adj public.pending_batch_cost_adjustments%ROWTYPE;
   v_b public.batches%ROWTYPE;
   v_was_locked boolean;
-  v_prop jsonb;
 BEGIN
   IF auth.role() = 'anon' THEN
     RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
   ELSIF auth.role() = 'authenticated'
     AND NOT public.inventory_v1_actor_allowed(ARRAY['admin', 'accounts']::text[]) THEN
-    RAISE EXCEPTION 'Permission denied: only admin or accounts can approve locked batch cost adjustments' USING ERRCODE = '42501';
+    RAISE EXCEPTION 'Permission denied: only admin or accounts can approve pending batch cost adjustments' USING ERRCODE = '42501';
   END IF;
 
   SELECT * INTO v_adj
@@ -991,7 +1071,9 @@ BEGIN
   SELECT * INTO v_b FROM public.batches WHERE id = v_adj.batch_id FOR UPDATE;
   v_was_locked := COALESCE(v_b.cost_locked, false);
 
-  -- Temporarily unlock only within this authorized transaction, recalculate, then restore lock
+  PERFORM set_config('app.allow_historical_batch_recalc', 'on', true);
+  PERFORM set_config('app.allow_historical_cogs_adjustment', 'on', true);
+
   IF v_was_locked THEN
     UPDATE public.batches SET cost_locked = false WHERE id = v_adj.batch_id;
   END IF;
@@ -1006,6 +1088,9 @@ BEGIN
     UPDATE public.batches SET cost_locked = true, cost_locked_at = now() WHERE id = v_adj.batch_id;
   END IF;
 
+  PERFORM set_config('app.allow_historical_batch_recalc', 'off', true);
+  PERFORM set_config('app.allow_historical_cogs_adjustment', 'off', true);
+
   UPDATE public.pending_batch_cost_adjustments
      SET status = 'approved',
          reviewed_at = now(),
@@ -1019,6 +1104,10 @@ BEGIN
     'previous_unit_cost', v_adj.previous_unit_cost,
     'proposed_unit_cost', v_adj.proposed_unit_cost
   );
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('app.allow_historical_batch_recalc', 'off', true);
+  PERFORM set_config('app.allow_historical_cogs_adjustment', 'off', true);
+  RAISE;
 END;
 $function$;
 
@@ -1142,3 +1231,24 @@ BEGIN
   RETURN COALESCE(NEW, OLD);
 END;
 $function$;
+
+-- -----------------------------------------------------------------------------
+-- 8. Explicit Function Execution Grants
+-- -----------------------------------------------------------------------------
+REVOKE ALL ON FUNCTION public.approve_pending_batch_cost_adjustment(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.approve_pending_batch_cost_adjustment(uuid) TO authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.reallocate_container_costs(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.reallocate_container_costs(uuid) TO authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.recalculate_batch_landed_cost(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.recalculate_batch_landed_cost(uuid) TO authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.propagate_batch_cost_change(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.propagate_batch_cost_change(uuid) TO authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.calculate_container_landed_cost_pool(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.calculate_container_landed_cost_pool(uuid) TO authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.calculate_batch_direct_landed_cost(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.calculate_batch_direct_landed_cost(uuid) TO authenticated, service_role;

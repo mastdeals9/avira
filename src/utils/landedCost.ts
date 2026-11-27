@@ -103,6 +103,7 @@ export interface LandedCostExpenseInput {
   voucher_number?: string | null;
   invoice_number?: string | null;
   expense_date?: string | null;
+  approval_status?: string | null;
   ppn_amount?: number | null;
   pph_amount?: number | null;
   stamp_duty_amount?: number | null;
@@ -121,8 +122,10 @@ export interface LandedCostPettyCashInput {
   amount: number;
   description?: string | null;
   transaction_date?: string | null;
+  approval_status?: string | null;
   expense_category?: string | null;
   include_in_landed_cost?: boolean | null;
+  finance_expense_id?: string | null;
 }
 
 export interface ContainerLandedCostInput {
@@ -130,6 +133,7 @@ export interface ContainerLandedCostInput {
   linkedPettyCash: LandedCostPettyCashInput[];
   inclusionMap?: Record<string, boolean>;
   otherImportCosts?: number | null;
+  containerDate?: string | null;
 }
 
 export interface ContainerLandedCostBreakdown {
@@ -165,6 +169,13 @@ export function calculateExpenseLandedCostAmount(expense: LandedCostExpenseInput
   amount: number;
   isCapitalizable: boolean;
 } {
+  if (expense.approval_status != null && expense.approval_status !== 'approved') {
+    return {
+      amount: 0,
+      isCapitalizable: false,
+    };
+  }
+
   const isCapitalizable = isCapitalizableLandedCostCategory(
     expense.expense_category,
     expense.expense_date,
@@ -207,12 +218,18 @@ export function calculateContainerLandedCostPool(
     linkedPettyCash = [],
     inclusionMap = {},
     otherImportCosts = 0,
+    containerDate = null,
   } = input;
 
   let selectedLandedExpensesTotal = 0;
   let excludedOperationalExpensesTotal = 0;
+  const capitalizedExpenseIds = new Set<string>();
 
   for (const exp of linkedExpenses) {
+    if (exp.approval_status != null && exp.approval_status !== 'approved') {
+      continue;
+    }
+
     if (exp.expense_category === 'pib_import') {
       continue; // Handled separately in PIB breakdown
     }
@@ -223,9 +240,10 @@ export function calculateContainerLandedCostPool(
     if (isCapitalizable) {
       if (isSelected) {
         selectedLandedExpensesTotal += amount;
+        capitalizedExpenseIds.add(exp.id);
       }
     } else {
-      // Non-capitalizable (e.g. BPOM/SKI fees)
+      // Non-capitalizable (e.g. pre-cutover BPOM/SKI fees)
       if (isSelected) {
         excludedOperationalExpensesTotal += Number(exp.amount || 0);
       }
@@ -234,6 +252,13 @@ export function calculateContainerLandedCostPool(
 
   let selectedLandedPettyCashTotal = 0;
   for (const pc of linkedPettyCash) {
+    if (pc.approval_status != null && pc.approval_status !== 'approved') {
+      continue;
+    }
+    if (pc.finance_expense_id && capitalizedExpenseIds.has(pc.finance_expense_id)) {
+      continue; // Never double-count petty cash linked to an already-capitalized finance expense
+    }
+
     const isSelected = inclusionMap[pc.id] ?? (pc.include_in_landed_cost === true);
     const isCapitalizable = isCapitalizableLandedCostCategory(
       pc.expense_category || pc.transaction_type,
@@ -251,16 +276,28 @@ export function calculateContainerLandedCostPool(
     }
   }
 
-  const pibExpenses = linkedExpenses.filter((e) => e.expense_category === 'pib_import');
+  const pibExpenses = linkedExpenses.filter(
+    (e) =>
+      e.expense_category === 'pib_import' &&
+      (e.approval_status == null || e.approval_status === 'approved'),
+  );
   const pibDutyTotal = pibExpenses.reduce((sum, e) => {
-    const isSelected = inclusionMap[e.id] ?? (e.include_in_landed_cost === true);
+    const expDate = (e.expense_date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const isSelected =
+      expDate < BPOM_LANDED_COST_CUTOVER_DATE
+        ? (inclusionMap[e.id] ?? (e.include_in_landed_cost !== false))
+        : (inclusionMap[e.id] ?? (e.include_in_landed_cost === true));
     return isSelected ? sum + Number(e.pib_bm_amount || 0) : sum;
   }, 0);
   const pibPpnTotal = pibExpenses.reduce((sum, e) => sum + Number(e.pib_ppn_amount || 0), 0);
   const pibPphTotal = pibExpenses.reduce((sum, e) => sum + Number(e.pib_pph_amount || 0), 0);
   const pibPaymentTotal = pibExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
-  const normalizedOtherImportCosts = Math.round(Number(otherImportCosts || 0) * 100) / 100;
+  const isLegacyContainer =
+    containerDate != null && containerDate.slice(0, 10) < BPOM_LANDED_COST_CUTOVER_DATE;
+  const normalizedOtherImportCosts = isLegacyContainer
+    ? Math.round(Number(otherImportCosts || 0) * 100) / 100
+    : 0;
   const selectedLandedLinkedTotal = Math.round((selectedLandedExpensesTotal + selectedLandedPettyCashTotal) * 100) / 100;
 
   const rawPool = selectedLandedLinkedTotal + pibDutyTotal + normalizedOtherImportCosts;
