@@ -87,6 +87,35 @@ interface OutstandingPurchaseInvoice {
   suppliers?: { company_name: string } | null;
 }
 
+interface ApControlCategorySummary {
+  ap_category_code: string;
+  ap_category_label: string;
+  is_supplier_subledger: boolean;
+  sort_order: number;
+  line_count: number;
+  total_debit: number;
+  total_credit: number;
+  net_ap_balance: number;
+}
+
+interface ApControlReconciliationLine {
+  journal_entry_line_id: string;
+  journal_entry_id: string;
+  entry_number: string;
+  entry_date: string;
+  source_module: string;
+  reference_number: string | null;
+  journal_description: string | null;
+  line_description: string | null;
+  supplier_name: string | null;
+  staff_name: string | null;
+  payee_name: string | null;
+  expense_voucher_number: string | null;
+  debit: number;
+  credit: number;
+  net_ap_balance: number;
+}
+
 interface PayablesManagerProps {
   canManage: boolean;
 }
@@ -103,6 +132,10 @@ export function PayablesManager({ canManage }: PayablesManagerProps) {
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [outstandingExpenseBills, setOutstandingExpenseBills] = useState<OutstandingExpenseBill[]>([]);
   const [outstandingPurchaseInvoices, setOutstandingPurchaseInvoices] = useState<OutstandingPurchaseInvoice[]>([]);
+  const [apReconciliationSummary, setApReconciliationSummary] = useState<ApControlCategorySummary[]>([]);
+  const [apDrilldownCategory, setApDrilldownCategory] = useState<ApControlCategorySummary | null>(null);
+  const [apDrilldownLines, setApDrilldownLines] = useState<ApControlReconciliationLine[]>([]);
+  const [loadingApDrilldown, setLoadingApDrilldown] = useState(false);
   const [loading, setLoading] = useState(true);
   const [billModalOpen, setBillModalOpen] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
@@ -135,8 +168,51 @@ export function PayablesManager({ canManage }: PayablesManagerProps) {
 
   const loadData = async () => {
     setLoading(true);
-    await Promise.all([loadBills(), loadPayments(), loadBankAccounts(), loadOutstandingExpenseBills(), loadOutstandingPurchaseInvoices()]);
+    await Promise.all([
+      loadBills(),
+      loadPayments(),
+      loadBankAccounts(),
+      loadOutstandingExpenseBills(),
+      loadOutstandingPurchaseInvoices(),
+      loadApReconciliationSummary(),
+    ]);
     setLoading(false);
+  };
+
+  const loadApReconciliationSummary = async () => {
+    try {
+      const { data, error } = await supabase.rpc('get_ap_control_reconciliation_summary', {
+        p_as_of_date: dateRange.endDate,
+      });
+      if (error) throw error;
+      setApReconciliationSummary((data || []) as ApControlCategorySummary[]);
+    } catch (error) {
+      console.warn('AP control reconciliation summary unavailable:', error);
+      setApReconciliationSummary([]);
+    }
+  };
+
+  const openApCategoryDrilldown = async (category: ApControlCategorySummary) => {
+    setApDrilldownCategory(category);
+    setLoadingApDrilldown(true);
+    try {
+      const { data, error } = await supabase
+        .from('vw_ap_control_reconciliation')
+        .select(
+          'journal_entry_line_id, journal_entry_id, entry_number, entry_date, source_module, reference_number, journal_description, line_description, supplier_name, staff_name, payee_name, expense_voucher_number, debit, credit, net_ap_balance'
+        )
+        .eq('ap_category_code', category.ap_category_code)
+        .lte('entry_date', dateRange.endDate)
+        .order('entry_date', { ascending: false })
+        .limit(200);
+      if (error) throw error;
+      setApDrilldownLines((data || []) as ApControlReconciliationLine[]);
+    } catch (error) {
+      console.error('Error loading AP control drilldown lines:', error);
+      setApDrilldownLines([]);
+    } finally {
+      setLoadingApDrilldown(false);
+    }
   };
 
   const loadOutstandingExpenseBills = async () => {
@@ -707,6 +783,87 @@ export function PayablesManager({ canManage }: PayablesManagerProps) {
         </div>
       </div>
 
+      {/* GL 2110 AP Control Reconciliation Summary */}
+      {apReconciliationSummary.length > 0 && (() => {
+        const gl2110Total = apReconciliationSummary.reduce((sum, r) => sum + Number(r.net_ap_balance || 0), 0);
+        const supplierTradeAp = apReconciliationSummary
+          .filter(r => r.is_supplier_subledger)
+          .reduce((sum, r) => sum + Number(r.net_ap_balance || 0), 0);
+        const unassignedAp = Number(
+          apReconciliationSummary.find(r => r.ap_category_code === '7_other_unassigned_ap')?.net_ap_balance || 0
+        );
+        const nonSupplierAp = gl2110Total - supplierTradeAp - unassignedAp;
+        const formatRp = (val: number) =>
+          `Rp ${val.toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+        return (
+          <div className="bg-white rounded-lg border border-gray-200 p-3 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-semibold text-gray-800 uppercase tracking-wide">
+                  AP Control Reconciliation (GL 2110 as of {dateRange.endDate})
+                </h3>
+                <p className="text-[11px] text-gray-500">
+                  Reconciles full GL 2110 control balance across Supplier Trade AP and Non-Supplier / Statutory AP.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs">
+                <div className="bg-slate-50 border border-slate-200 rounded px-2.5 py-1">
+                  <span className="text-[10px] text-slate-500 block">GL 2110 Control</span>
+                  <span className="font-mono font-semibold text-slate-900">{formatRp(gl2110Total)}</span>
+                </div>
+                <div className="bg-blue-50 border border-blue-200 rounded px-2.5 py-1">
+                  <span className="text-[10px] text-blue-600 block">Supplier Trade AP</span>
+                  <span className="font-mono font-semibold text-blue-800">{formatRp(supplierTradeAp)}</span>
+                </div>
+                <div className="bg-amber-50 border border-amber-200 rounded px-2.5 py-1">
+                  <span className="text-[10px] text-amber-700 block">Non-Supplier AP</span>
+                  <span className="font-mono font-semibold text-amber-800">{formatRp(nonSupplierAp)}</span>
+                </div>
+                <div className={`border rounded px-2.5 py-1 ${Math.abs(unassignedAp) < 0.01 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}>
+                  <span className={`text-[10px] block ${Math.abs(unassignedAp) < 0.01 ? 'text-emerald-700' : 'text-red-700'}`}>Unassigned</span>
+                  <span className={`font-mono font-semibold ${Math.abs(unassignedAp) < 0.01 ? 'text-emerald-800' : 'text-red-800'}`}>{formatRp(unassignedAp)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-xs">
+                <thead className="bg-gray-50 border-y border-gray-200">
+                  <tr>
+                    <th className="px-2 py-1 text-left font-semibold text-gray-600">Category</th>
+                    <th className="px-2 py-1 text-right font-semibold text-gray-600">Lines</th>
+                    <th className="px-2 py-1 text-right font-semibold text-gray-600">Net GL 2110</th>
+                    <th className="px-2 py-1 text-right font-semibold text-gray-600">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {apReconciliationSummary.map((cat) => (
+                    <tr key={cat.ap_category_code} className="hover:bg-gray-50">
+                      <td className="px-2 py-1 text-gray-800 font-medium">{cat.ap_category_label}</td>
+                      <td className="px-2 py-1 text-right font-mono text-gray-600">{cat.line_count}</td>
+                      <td className="px-2 py-1 text-right font-mono font-semibold text-gray-900">
+                        {formatRp(Number(cat.net_ap_balance || 0))}
+                      </td>
+                      <td className="px-2 py-1 text-right">
+                        <button
+                          type="button"
+                          onClick={() => openApCategoryDrilldown(cat)}
+                          disabled={Number(cat.line_count) === 0}
+                          className="text-[11px] font-medium text-blue-600 hover:text-blue-800 disabled:text-gray-400"
+                        >
+                          Drill Down
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Compact tab strip */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex gap-0.5">
@@ -1239,6 +1396,54 @@ export function PayablesManager({ canManage }: PayablesManagerProps) {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        isOpen={!!apDrilldownCategory}
+        onClose={() => {
+          setApDrilldownCategory(null);
+          setApDrilldownLines([]);
+        }}
+        title={apDrilldownCategory ? `GL 2110 Drill-Down — ${apDrilldownCategory.ap_category_label}` : 'GL 2110 Drill-Down'}
+      >
+        <div className="space-y-3">
+          {loadingApDrilldown ? (
+            <p className="text-xs text-gray-500">Loading journal lines...</p>
+          ) : apDrilldownLines.length === 0 ? (
+            <p className="text-xs text-gray-500">No journal lines found for this category.</p>
+          ) : (
+            <div className="max-h-96 overflow-auto border border-gray-200 rounded">
+              <table className="min-w-full text-xs">
+                <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
+                  <tr>
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Date</th>
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Journal</th>
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-600">Source / Party</th>
+                    <th className="px-2 py-1.5 text-right font-semibold text-gray-600">Net GL 2110</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {apDrilldownLines.map((line) => (
+                    <tr key={line.journal_entry_line_id}>
+                      <td className="px-2 py-1 whitespace-nowrap text-gray-600">{formatDate(line.entry_date)}</td>
+                      <td className="px-2 py-1">
+                        <div className="font-mono font-medium text-gray-900">{line.entry_number}</div>
+                        <div className="text-[11px] text-gray-500">{line.reference_number || line.expense_voucher_number || line.source_module}</div>
+                      </td>
+                      <td className="px-2 py-1 text-gray-700">
+                        <div>{line.supplier_name || line.staff_name || line.payee_name || line.source_module}</div>
+                        <div className="text-[11px] text-gray-500 truncate max-w-xs">{line.line_description || line.journal_description}</div>
+                      </td>
+                      <td className="px-2 py-1 text-right font-mono font-semibold text-gray-900 whitespace-nowrap">
+                        Rp {Number(line.net_ap_balance || 0).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </Modal>
     </div>
   );

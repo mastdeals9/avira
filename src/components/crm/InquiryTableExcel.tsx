@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import * as XLSX from 'xlsx';
 import {
@@ -7,6 +7,18 @@ import {
   Download, FileSpreadsheet, ArrowUpDown, ArrowDown, XCircle, Plus, ChevronRight, Layers, Clock, CheckCircle2, Calculator, Search, ExternalLink, Loader, Upload
 } from 'lucide-react';
 import { Modal } from '../Modal';
+import { SearchableSelect } from '../SearchableSelect';
+import { updateCachedInquiry } from './inquiries/useCrmInquiries';
+import {
+  type CellCoord,
+  type CrmCustomerOption,
+  type NavDirection,
+  INQUIRY_EDITABLE_COLUMNS,
+  getNextCellCoord,
+  parseClipboardGrid,
+  buildPasteUpdates,
+  groupInquiriesByCustomer,
+} from './inquiries/inquiryGridUtils';
 import { GmailLikeComposer } from './GmailLikeComposer';
 import { TaskFormModal } from '../tasks/TaskFormModal';
 import { OurSideChips } from './OurSideChips';
@@ -181,6 +193,22 @@ export function InquiryTableExcel({
   const [sortConfig, setSortConfig] = useState<{ column: string; direction: 'asc' | 'desc' | null }>({ column: 'inquiry_date', direction: 'desc' });
   const [editingCell, setEditingCell] = useState<{ id: string; field: string } | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [activeCell, setActiveCell] = useState<CellCoord | null>(null);
+  const [crmCustomers, setCrmCustomers] = useState<CrmCustomerOption[]>([]);
+  const [cellSaveState, setCellSaveState] = useState<Record<string, 'saving' | 'saved' | 'error'>>({});
+  const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
+  const [pasteErrors, setPasteErrors] = useState<Array<{ rowId: string; field: string; message: string }>>([]);
+  const [groupByCustomer, setGroupByCustomer] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('crm_inquiry_group_by_customer') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [expandedCustomerGroups, setExpandedCustomerGroups] = useState<Set<string>>(new Set());
+  const saveQueueRef = useRef<Map<string, Promise<void>>>(new Map());
+  const cellNodeRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const latestFieldValuesRef = useRef<Map<string, any>>(new Map());
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [selectedInquiryForEmail, setSelectedInquiryForEmail] = useState<Inquiry | null>(null);
   const [selectedInquiriesForEmail, setSelectedInquiriesForEmail] = useState<Inquiry[]>([]);
@@ -298,6 +326,37 @@ export function InquiryTableExcel({
   useEffect(() => {
     applyFiltersAndSort();
   }, [inquiries, filters, productSearch, quickFilter, sortConfig]);
+
+  // Load CRM customer master (crm_contacts) once for inline customer dropdown & paste resolution
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('crm_contacts')
+          .select('id, company_name, contact_person, email, phone')
+          .order('company_name', { ascending: true });
+        if (!error && mounted && Array.isArray(data)) {
+          setCrmCustomers(data as CrmCustomerOption[]);
+        }
+      } catch (err) {
+        console.error('Error loading CRM customers for grid dropdown:', err);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const customerSelectOptions = useMemo(
+    () =>
+      crmCustomers.map((c) => ({
+        value: c.id,
+        label: c.company_name,
+        keywords: [c.contact_person || '', c.email || '', c.phone || ''].filter(Boolean),
+      })),
+    [crmCustomers]
+  );
 
   useEffect(() => {
     loadInquiryDocuments();
@@ -1246,42 +1305,293 @@ export function InquiryTableExcel({
 
   const startEditing = (inquiry: Inquiry, field: keyof Inquiry) => {
     if (!canManage) return;
-    setEditingCell({ id: inquiry.id, field: field as string });
-    setEditValue(String(inquiry[field] || ''));
+    const f = field as string;
+    setActiveCell({ rowId: inquiry.id, field: f });
+    setEditingCell({ id: inquiry.id, field: f });
+    setEditValue(inquiry[field] === null || inquiry[field] === undefined ? '' : String(inquiry[field]));
   };
+
+  const commitFieldPatch = useCallback(
+    async (inquiry: Inquiry, rawPatch: Record<string, any>) => {
+      const entries = Object.entries(rawPatch);
+      if (entries.length === 0) return;
+
+      const prevSnapshot: Record<string, any> = {};
+      const keys: string[] = [];
+      for (const [field, newVal] of entries) {
+        prevSnapshot[field] = (inquiry as any)[field] ?? null;
+        const cellKey = `${inquiry.id}:${field}`;
+        keys.push(cellKey);
+        latestFieldValuesRef.current.set(cellKey, newVal);
+      }
+
+      updateCachedInquiry({ id: inquiry.id, ...rawPatch });
+      setCellSaveState((prev) => {
+        const next = { ...prev };
+        keys.forEach((k) => {
+          next[k] = 'saving';
+        });
+        return next;
+      });
+      setCellErrors((prev) => {
+        const next = { ...prev };
+        keys.forEach((k) => {
+          delete next[k];
+        });
+        return next;
+      });
+
+      const previousJob = saveQueueRef.current.get(inquiry.id) || Promise.resolve();
+      const nextJob = previousJob
+        .catch(() => {})
+        .then(async () => {
+          try {
+            const { error } = await supabase
+              .from('crm_inquiries')
+              .update(rawPatch)
+              .eq('id', inquiry.id);
+
+            if (error) throw error;
+
+            setCellSaveState((prev) => {
+              const next = { ...prev };
+              keys.forEach((k) => {
+                if (next[k] === 'saving') next[k] = 'saved';
+              });
+              return next;
+            });
+
+            window.setTimeout(() => {
+              setCellSaveState((prev) => {
+                const next = { ...prev };
+                let changed = false;
+                keys.forEach((k) => {
+                  if (next[k] === 'saved') {
+                    delete next[k];
+                    changed = true;
+                  }
+                });
+                return changed ? next : prev;
+              });
+            }, 2000);
+          } catch (err: any) {
+            console.error('Background autosave failed:', err);
+            const rollbackPatch: Record<string, any> = {};
+            for (const [field, attemptedVal] of entries) {
+              const cellKey = `${inquiry.id}:${field}`;
+              if (latestFieldValuesRef.current.get(cellKey) === attemptedVal) {
+                rollbackPatch[field] = prevSnapshot[field];
+                latestFieldValuesRef.current.set(cellKey, prevSnapshot[field]);
+              }
+            }
+            if (Object.keys(rollbackPatch).length > 0) {
+              updateCachedInquiry({ id: inquiry.id, ...rollbackPatch });
+            }
+            const errMsg = err?.message || 'Save failed';
+            setCellSaveState((prev) => {
+              const next = { ...prev };
+              keys.forEach((k) => {
+                next[k] = 'error';
+              });
+              return next;
+            });
+            setCellErrors((prev) => {
+              const next = { ...prev };
+              keys.forEach((k) => {
+                next[k] = errMsg;
+              });
+              return next;
+            });
+            showToast({
+              type: 'error',
+              title: 'Autosave failed',
+              message: `${inquiry.inquiry_number}: ${errMsg}`,
+            });
+          }
+        });
+
+      saveQueueRef.current.set(inquiry.id, nextJob);
+      await nextJob;
+    },
+    []
+  );
+
+  const visibleEditableFields = useMemo(
+    () =>
+      INQUIRY_EDITABLE_COLUMNS.filter((col) => {
+        if (!isColumnVisible(col.field)) return false;
+        if (col.field === 'purchase_price' && !canSeePPrice) return false;
+        if (col.field === 'offered_price' && (!canSeeQuoteColumn || isSalesRole)) return false;
+        return true;
+      }).map((c) => c.field),
+    [columnVisibility, canSeePPrice, canSeeQuoteColumn, isSalesRole]
+  );
+
+  const customerGroups = useMemo(() => {
+    if (!groupByCustomer) return [];
+    return groupInquiriesByCustomer(filteredData);
+  }, [filteredData, groupByCustomer]);
+
+  const visibleRowIds = useMemo(() => {
+    if (!groupByCustomer) {
+      return filteredData.map((r) => r.id);
+    }
+    const ids: string[] = [];
+    for (const grp of customerGroups) {
+      if (grp.items.length === 1 || expandedCustomerGroups.has(grp.groupKey)) {
+        for (const item of grp.items) {
+          ids.push(item.id);
+        }
+      }
+    }
+    return ids;
+  }, [groupByCustomer, filteredData, customerGroups, expandedCustomerGroups]);
+
+  const toggleCustomerGroup = useCallback((groupKey: string) => {
+    setExpandedCustomerGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+      } else {
+        next.add(groupKey);
+      }
+      return next;
+    });
+  }, []);
+
+  const focusCell = useCallback((coord: CellCoord | null) => {
+    if (!coord) return;
+    setActiveCell(coord);
+    window.requestAnimationFrame(() => {
+      const node = cellNodeRefs.current.get(`${coord.rowId}:${coord.field}`);
+      node?.focus();
+    });
+  }, []);
+
+  const navigateFromCell = useCallback(
+    (current: CellCoord, direction: NavDirection, enterEdit = false) => {
+      const next = getNextCellCoord(visibleRowIds, visibleEditableFields, current, direction);
+      if (!next) return;
+      if (enterEdit) {
+        const targetInq = filteredData.find((r) => r.id === next.rowId);
+        if (targetInq) {
+          startEditing(targetInq, next.field as keyof Inquiry);
+          return;
+        }
+      }
+      setEditingCell(null);
+      focusCell(next);
+    },
+    [visibleRowIds, visibleEditableFields, filteredData, focusCell]
+  );
+
+  const commitActiveEdit = useCallback(
+    (moveDirection?: NavDirection) => {
+      if (!editingCell) return;
+      const inquiry = filteredData.find((r) => r.id === editingCell.id);
+      const currentCoord: CellCoord = { rowId: editingCell.id, field: editingCell.field };
+      setEditingCell(null);
+
+      if (inquiry) {
+        const colDef = INQUIRY_EDITABLE_COLUMNS.find((c) => c.field === editingCell.field);
+        const trimmed = editValue.trim();
+
+        if (colDef?.required && trimmed === '') {
+          setCellErrors((prev) => ({
+            ...prev,
+            [`${inquiry.id}:${editingCell.field}`]: `${colDef.label} is required`,
+          }));
+        } else {
+          let parsedValue: any = trimmed === '' ? null : editValue;
+          let valid = true;
+          if (colDef?.type === 'number') {
+            if (trimmed === '') {
+              parsedValue = null;
+            } else {
+              const num = Number(trimmed.replace(/[$,\s]/g, ''));
+              if (!Number.isFinite(num) || num < 0) {
+                valid = false;
+                setCellErrors((prev) => ({
+                  ...prev,
+                  [`${inquiry.id}:${editingCell.field}`]: `Invalid ${colDef.label}`,
+                }));
+              } else {
+                parsedValue = num;
+              }
+            }
+          }
+          const prevVal = (inquiry as any)[editingCell.field] ?? null;
+          if (valid && parsedValue !== prevVal) {
+            void commitFieldPatch(inquiry, { [editingCell.field]: parsedValue });
+          }
+        }
+      }
+
+      if (moveDirection) {
+        navigateFromCell(currentCoord, moveDirection, moveDirection === 'next' || moveDirection === 'prev');
+      } else {
+        focusCell(currentCoord);
+      }
+    },
+    [editingCell, editValue, filteredData, commitFieldPatch, navigateFromCell, focusCell]
+  );
 
   const saveEdit = async () => {
-    if (!editingCell) return;
-
-    try {
-      const { error } = await supabase
-        .from('crm_inquiries')
-        .update({ [editingCell.field]: editValue || null })
-        .eq('id', editingCell.id);
-
-      if (error) throw error;
-      setEditingCell(null);
-      onRefresh();
-    } catch (error) {
-      console.error('Error updating field:', error);
-      showToast({ type: 'error', title: 'Error', message: 'Failed to update. Please try again.' });
-    }
+    commitActiveEdit();
   };
 
+  const handleGridPaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLTableSectionElement>) => {
+      if (!canManage || !activeCell) return;
+      const rawText = e.clipboardData.getData('text/plain');
+      if (!rawText) return;
+      const isMultiCell = rawText.includes('\t') || rawText.includes('\n');
+      if (editingCell && !isMultiCell) return;
 
+      e.preventDefault();
+      const matrix = parseClipboardGrid(rawText);
+      const { patches, errors } = buildPasteUpdates(
+        visibleRowIds,
+        visibleEditableFields,
+        activeCell,
+        matrix,
+        crmCustomers
+      );
+
+      setPasteErrors(errors);
+      if (errors.length > 0) {
+        const errMap: Record<string, string> = {};
+        errors.forEach((err) => {
+          errMap[`${err.rowId}:${err.field}`] = err.message;
+        });
+        setCellErrors((prev) => ({ ...prev, ...errMap }));
+        showToast({
+          type: 'warning',
+          title: `${errors.length} pasted cell(s) had validation errors`,
+          message: errors[0].message,
+        });
+      }
+
+      if (patches.length === 0) return;
+
+      const byId = new Map(filteredData.map((r) => [r.id, r]));
+      const chunkSize = 10;
+      for (let i = 0; i < patches.length; i += chunkSize) {
+        const chunk = patches.slice(i, i + chunkSize);
+        await Promise.all(
+          chunk.map(({ rowId, patch }) => {
+            const target = byId.get(rowId);
+            return target ? commitFieldPatch(target, patch) : Promise.resolve();
+          })
+        );
+      }
+    },
+    [canManage, activeCell, editingCell, visibleRowIds, visibleEditableFields, crmCustomers, filteredData, commitFieldPatch]
+  );
 
   const updatePriority = async (inquiry: Inquiry, newPriority: string) => {
-    try {
-      const { error } = await supabase
-        .from('crm_inquiries')
-        .update({ priority: newPriority })
-        .eq('id', inquiry.id);
-
-      if (error) throw error;
-      onRefresh();
-    } catch (error) {
-      console.error('Error updating priority:', error);
-    }
+    if (inquiry.priority === newPriority) return;
+    await commitFieldPatch(inquiry, { priority: newPriority });
   };
 
   const updatePipelineStatus = async (inquiry: Inquiry, newStatus: string) => {
@@ -1290,18 +1600,8 @@ export function InquiryTableExcel({
       setLostReasonModalOpen(true);
       return;
     }
-
-    try {
-      const { error } = await supabase
-        .from('crm_inquiries')
-        .update({ pipeline_status: newStatus })
-        .eq('id', inquiry.id);
-
-      if (error) throw error;
-      onRefresh();
-    } catch (error) {
-      console.error('Error updating pipeline status:', error);
-    }
+    if ((inquiry.pipeline_status || 'new') === newStatus) return;
+    await commitFieldPatch(inquiry, { pipeline_status: newStatus });
   };
 
   const formatRequirementType = (requirementType: 'price' | 'coa' | 'sample' | 'agency_letter' | 'others') => {
@@ -1857,6 +2157,143 @@ export function InquiryTableExcel({
     }
   };
 
+  const savingCellCount = Object.values(cellSaveState).filter((s) => s === 'saving').length;
+  const errorCellCount = Object.values(cellSaveState).filter((s) => s === 'error').length;
+
+  const getCellChromeClass = (rowId: string, field: string) => {
+    const key = `${rowId}:${field}`;
+    const isActive = activeCell?.rowId === rowId && activeCell?.field === field;
+    const status = cellSaveState[key];
+    const hasErr = Boolean(cellErrors[key]) || status === 'error';
+    if (hasErr) return 'ring-2 ring-inset ring-red-500 bg-red-50/60';
+    if (status === 'saving') return 'ring-2 ring-inset ring-amber-400 bg-amber-50/40';
+    if (isActive) return 'ring-2 ring-inset ring-blue-500 bg-blue-50/40';
+    if (status === 'saved') return 'ring-1 ring-inset ring-emerald-400 bg-emerald-50/20';
+    return '';
+  };
+
+  const renderExcelTextCell = (
+    inquiry: Inquiry,
+    field: keyof Inquiry,
+    displayNode: React.ReactNode,
+    options?: { inputType?: 'text' | 'date'; placeholder?: string; className?: string }
+  ) => {
+    const fieldName = field as string;
+    const isEditing = editingCell?.id === inquiry.id && editingCell?.field === fieldName;
+    const cellKey = `${inquiry.id}:${fieldName}`;
+    const errMsg = cellErrors[cellKey];
+
+    if (isEditing) {
+      return (
+        <input
+          name="value"
+          aria-label={fieldName}
+          type={options?.inputType || 'text'}
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onBlur={() => commitActiveEdit()}
+          onKeyDown={(e) => {
+            if (e.key === 'Tab') {
+              e.preventDefault();
+              commitActiveEdit(e.shiftKey ? 'prev' : 'next');
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              commitActiveEdit('down');
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setEditingCell(null);
+              focusCell({ rowId: inquiry.id, field: fieldName });
+            } else if (e.key === 'ArrowUp' && options?.inputType !== 'date') {
+              e.preventDefault();
+              commitActiveEdit('up');
+            } else if (e.key === 'ArrowDown' && options?.inputType !== 'date') {
+              e.preventDefault();
+              commitActiveEdit('down');
+            }
+          }}
+          placeholder={options?.placeholder}
+          className={`w-full px-1.5 py-0.5 border border-blue-500 rounded bg-white focus:outline-none text-xs ${options?.className || ''}`}
+          autoFocus
+        />
+      );
+    }
+
+    return (
+      <div
+        ref={(el) => {
+          if (el) cellNodeRefs.current.set(cellKey, el);
+          else cellNodeRefs.current.delete(cellKey);
+        }}
+        tabIndex={canManage ? 0 : -1}
+        role="gridcell"
+        title={errMsg || undefined}
+        onClick={() => {
+          if (!canManage) return;
+          startEditing(inquiry, field);
+        }}
+        onFocus={() => setActiveCell({ rowId: inquiry.id, field: fieldName })}
+        onKeyDown={(e) => {
+          if (!canManage) return;
+          const coord: CellCoord = { rowId: inquiry.id, field: fieldName };
+          if (e.key === 'Tab') {
+            e.preventDefault();
+            navigateFromCell(coord, e.shiftKey ? 'prev' : 'next', true);
+          } else if (e.key === 'Enter' || e.key === 'F2') {
+            e.preventDefault();
+            startEditing(inquiry, field);
+          } else if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            navigateFromCell(coord, 'right');
+          } else if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            navigateFromCell(coord, 'left');
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            navigateFromCell(coord, 'down');
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            navigateFromCell(coord, 'up');
+          }
+        }}
+        className={`min-h-[24px] px-1.5 py-0.5 rounded outline-none ${
+          canManage ? 'cursor-pointer hover:bg-yellow-50/70' : ''
+        } ${options?.className || ''}`}
+      >
+        {displayNode}
+      </div>
+    );
+  };
+
+  type GridRenderEntry =
+    | { kind: 'group'; groupKey: string; companyName: string; isUnlinked: boolean; items: Inquiry[] }
+    | { kind: 'row'; inquiry: Inquiry; isChild: boolean };
+
+  const gridRenderEntries: GridRenderEntry[] = useMemo(() => {
+    if (!groupByCustomer) {
+      return filteredData.map((inquiry) => ({ kind: 'row', inquiry, isChild: false }));
+    }
+    const entries: GridRenderEntry[] = [];
+    for (const grp of customerGroups) {
+      if (grp.items.length === 1) {
+        entries.push({ kind: 'row', inquiry: grp.items[0], isChild: false });
+      } else {
+        entries.push({
+          kind: 'group',
+          groupKey: grp.groupKey,
+          companyName: grp.companyName,
+          isUnlinked: grp.isUnlinked,
+          items: grp.items,
+        });
+        if (expandedCustomerGroups.has(grp.groupKey)) {
+          for (const child of grp.items) {
+            entries.push({ kind: 'row', inquiry: child, isChild: true });
+          }
+        }
+      }
+    }
+    return entries;
+  }, [groupByCustomer, filteredData, customerGroups, expandedCustomerGroups]);
+
   return (
     <div className="space-y-4">
       {/* Compact toolbar — Export/Import dropdowns + Columns + Add Inquiry + search + count */}
@@ -2161,6 +2598,74 @@ export function InquiryTableExcel({
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Excel-like Table Controls: Grouping Toggle + Background Autosave Status */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setGroupByCustomer((prev) => {
+                const next = !prev;
+                try {
+                  localStorage.setItem('crm_inquiry_group_by_customer', String(next));
+                } catch {
+                  // ignore storage quota errors
+                }
+                return next;
+              });
+            }}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs font-medium transition ${
+              groupByCustomer
+                ? 'bg-blue-50 border-blue-300 text-blue-700'
+                : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+            }`}
+            title="Group multiple inquiries under each customer with expand/collapse"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Group by Customer</span>
+          </button>
+          <span className="text-[11px] text-gray-500 hidden sm:inline">
+            Click any cell to edit · Tab / Enter / Arrows to navigate · Ctrl/Cmd+V to paste from Excel
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs">
+          {savingCellCount > 0 ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-medium">
+              <Loader className="w-3 h-3 animate-spin" />
+              Saving ({savingCellCount})…
+            </span>
+          ) : errorCellCount > 0 ? (
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-red-50 border border-red-200 text-red-700 font-medium">
+              <XCircle className="w-3 h-3" />
+              {errorCellCount} cell error{errorCellCount > 1 ? 's' : ''}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 font-medium">
+              <CheckCircle2 className="w-3 h-3" />
+              Autosave active
+            </span>
+          )}
+        </div>
+      </div>
+
+      {pasteErrors.length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start justify-between gap-2 text-xs text-red-800">
+          <div>
+            <span className="font-semibold">{pasteErrors.length} pasted cell(s) failed validation:</span>{' '}
+            {pasteErrors.slice(0, 3).map((e) => `${e.field}: ${e.message}`).join(' · ')}
+            {pasteErrors.length > 3 ? ` (+${pasteErrors.length - 3} more)` : ''}
+          </div>
+          <button
+            type="button"
+            onClick={() => setPasteErrors([])}
+            className="text-red-600 hover:text-red-800 font-semibold shrink-0"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -2519,19 +3024,56 @@ export function InquiryTableExcel({
                 )}
               </tr>
             </thead>
-            <tbody>
-              {filteredData.length === 0 ? (
+            <tbody onPaste={handleGridPaste}>
+              {gridRenderEntries.length === 0 ? (
                 <tr>
                   <td colSpan={20} className="px-3 py-8 text-center text-gray-500">
                     No inquiries found
                   </td>
                 </tr>
               ) : (
-                filteredData.map((inquiry) => (
+                gridRenderEntries.map((entry) => {
+                  if (entry.kind === 'group') {
+                    const isExpanded = expandedCustomerGroups.has(entry.groupKey);
+                    return (
+                      <tr
+                        key={entry.groupKey}
+                        className="bg-slate-100/80 border-b border-gray-300 hover:bg-slate-200/60 transition"
+                      >
+                        <td colSpan={20} className="px-3 py-1.5">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => toggleCustomerGroup(entry.groupKey)}
+                              aria-label={isExpanded ? `Collapse ${entry.companyName}` : `Expand ${entry.companyName}`}
+                              className="p-0.5 rounded hover:bg-slate-300/70 text-slate-700 transition"
+                            >
+                              {isExpanded ? (
+                                <ChevronDown className="w-4 h-4" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4" />
+                              )}
+                            </button>
+                            <span className="font-semibold text-gray-900 text-xs">{entry.companyName}</span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-800">
+                              {entry.items.length} inquiries
+                            </span>
+                            {entry.isUnlinked && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-800">
+                                Unlinked
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }
+                  const inquiry = entry.inquiry;
+                  return (
                   <React.Fragment key={inquiry.id}>
                   <tr
-                    className={`border-b border-gray-200 hover:bg-blue-50 transition ${
-                      selectedRows.has(inquiry.id) ? 'bg-blue-100' : ''
+                    className={`border-b border-gray-200 hover:bg-blue-50/50 transition ${
+                      selectedRows.has(inquiry.id) ? 'bg-blue-100' : entry.isChild ? 'bg-slate-50/40' : ''
                     }`}
                   >
                     <td className="px-3 py-2 border-r border-gray-200">
@@ -2579,232 +3121,206 @@ export function InquiryTableExcel({
                       </div>
                     </td>
 
-                    {isColumnVisible('inquiry_date') && <td className="px-3 py-1.5 border-r border-gray-200 text-gray-600 whitespace-nowrap">
-                      {new Date(inquiry.inquiry_date).toLocaleDateString('en-GB', {
-                        day: '2-digit',
-                        month: 'short',
-                        year: 'numeric'
-                      })}
-                    </td>}
+                    {isColumnVisible('inquiry_date') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 text-gray-600 whitespace-nowrap ${getCellChromeClass(inquiry.id, 'inquiry_date')}`}>
+                        {renderExcelTextCell(
+                          inquiry,
+                          'inquiry_date',
+                          new Date(inquiry.inquiry_date).toLocaleDateString('en-GB', {
+                            day: '2-digit',
+                            month: 'short',
+                            year: 'numeric',
+                          }),
+                          { inputType: 'date', className: 'text-xs' }
+                        )}
+                      </td>
+                    )}
 
-                    {/* Customer */}
-                    {isColumnVisible('company_name') && <td className="px-3 py-1.5 border-r border-gray-200">
-                      <div
-                        className={`font-medium text-sm ${(inquiry.crm_contact_id || inquiry.customer_id) && onOpenCustomer ? 'text-gray-900 hover:text-blue-700 cursor-pointer hover:underline' : 'text-gray-900'}`}
-                        onClick={() => (inquiry.crm_contact_id || inquiry.customer_id) && onOpenCustomer?.(inquiry.crm_contact_id || inquiry.customer_id!)}
-                        title={(inquiry.crm_contact_id || inquiry.customer_id) && onOpenCustomer ? 'Click to view customer' : undefined}
-                      >
-                        {inquiry.company_name}
-                      </div>
-                      {inquiry.contact_person && (
-                        <div className="text-xs text-gray-500 mt-0.5">{inquiry.contact_person}</div>
-                      )}
-                      {inquiry.contact_phone && (
-                        <div className="flex items-center gap-1 mt-0.5">
-                          <a
-                            href={`https://wa.me/${inquiry.contact_phone.replace(/[^0-9]/g, '')}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center gap-1 text-xs text-green-600 hover:text-green-700 hover:underline"
-                            title="Open WhatsApp"
-                          >
-                            <MessageSquare className="w-3 h-3" />
-                            {inquiry.contact_phone}
-                          </a>
-                        </div>
-                      )}
-                    </td>}
-
-                    {isColumnVisible('product_name') && <td className="px-3 py-1.5 border-r border-gray-200 font-medium">
-                      {editingCell?.id === inquiry.id && editingCell?.field === 'product_name' ? (
-                        <input name="value" aria-label="Value"
-                          type="text"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveEdit();
-                            if (e.key === 'Escape') setEditingCell(null);
-                          }}
-                          className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none"
-                          autoFocus
-                        />
-                      ) : (
-                        <div
-                          onDoubleClick={() => startEditing(inquiry, 'product_name')}
-                          className="cursor-text hover:bg-yellow-50 px-2 py-1 rounded"
-                        >
-                          {inquiry.product_name}
-                        </div>
-                      )}
-                    </td>}
-
-                    {isColumnVisible('specification') && <td className="px-3 py-1.5 border-r border-gray-200 text-gray-600 text-xs">
-                      {editingCell?.id === inquiry.id && editingCell?.field === 'specification' ? (
-                        <input name="value" aria-label="Value"
-                          type="text"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveEdit();
-                            if (e.key === 'Escape') setEditingCell(null);
-                          }}
-                          className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none text-xs"
-                          autoFocus
-                        />
-                      ) : (
-                        <div
-                          onDoubleClick={() => startEditing(inquiry, 'specification')}
-                          className="cursor-text hover:bg-yellow-50 px-2 py-1 rounded"
-                        >
-                          {inquiry.specification || '-'}
-                        </div>
-                      )}
-                    </td>}
-
-                    {isColumnVisible('quantity') && <td className="px-3 py-1.5 border-r border-gray-200">
-                      {editingCell?.id === inquiry.id && editingCell?.field === 'quantity' ? (
-                        <input name="value" aria-label="Value"
-                          type="text"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveEdit();
-                            if (e.key === 'Escape') setEditingCell(null);
-                          }}
-                          className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none"
-                          autoFocus
-                        />
-                      ) : (
-                        <div
-                          onDoubleClick={() => startEditing(inquiry, 'quantity')}
-                          className="cursor-text hover:bg-yellow-50 px-2 py-1 rounded"
-                        >
-                          {inquiry.quantity}
-                        </div>
-                      )}
-                    </td>}
-
-                    {isColumnVisible('supplier_name') && <td className="px-3 py-1.5 border-r border-gray-200">
-                      {editingCell?.id === inquiry.id && editingCell?.field === 'supplier_name' ? (
-                        <input name="value" aria-label="Value"
-                          type="text"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveEdit();
-                            if (e.key === 'Escape') setEditingCell(null);
-                          }}
-                          className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none"
-                          autoFocus
-                        />
-                      ) : (
-                        <div
-                          onDoubleClick={() => startEditing(inquiry, 'supplier_name')}
-                          className="cursor-text hover:bg-yellow-50 px-2 py-1 rounded"
-                        >
-                          <div>{inquiry.supplier_name || '-'}</div>
-                          {inquiry.supplier_country && (
-                            <div className="text-xs text-gray-500">{inquiry.supplier_country}</div>
-                          )}
-                        </div>
-                      )}
-                    </td>}
-
-                    {/* ACE ERP No */}
-                    {isColumnVisible('aceerp_no') && <td className="px-3 py-1.5 border-r border-gray-200">
-                      {editingCell?.id === inquiry.id && editingCell?.field === 'aceerp_no' ? (
-                        <input name="value" aria-label="Value"
-                          type="text"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveEdit();
-                            if (e.key === 'Escape') setEditingCell(null);
-                          }}
-                          className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none"
-                          autoFocus
-                        />
-                      ) : (
-                        <div
-                          onDoubleClick={() => canManage && startEditing(inquiry, 'aceerp_no')}
-                          className={canManage ? "cursor-text hover:bg-yellow-50 px-2 py-1 rounded font-mono" : "px-2 py-1 font-mono"}
-                        >
-                          {inquiry.aceerp_no || (canManage ? <span className="text-gray-400 text-xs">Click to add</span> : '-')}
-                        </div>
-                      )}
-                    </td>}
-
-                    {/* Purchase Price (Admin Only) */}
-                    {canSeePPrice && isColumnVisible('purchase_price') && (
-                      <td className="px-3 py-1.5 border-r border-gray-200 font-mono">
-                        {editingCell?.id === inquiry.id && editingCell?.field === 'purchase_price' ? (
-                          <input name="value" aria-label="Click to add"
-                            type="text"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={saveEdit}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') saveEdit();
-                              if (e.key === 'Escape') setEditingCell(null);
-                            }}
-                            className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none text-xs"
-                            autoFocus
-                            placeholder="Click to add"
-                          />
+                    {/* Customer (Editable via existing CRM SearchableSelect) */}
+                    {isColumnVisible('company_name') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 ${getCellChromeClass(inquiry.id, 'company_name')}`}>
+                        {editingCell?.id === inquiry.id && editingCell?.field === 'company_name' ? (
+                          <div className="min-w-[200px]">
+                            <SearchableSelect
+                              value={inquiry.crm_contact_id || ''}
+                              onChange={(selectedContactId) => {
+                                const selected = crmCustomers.find((c) => c.id === selectedContactId);
+                                setEditingCell(null);
+                                if (selected) {
+                                  void commitFieldPatch(inquiry, {
+                                    crm_contact_id: selected.id,
+                                    company_name: selected.company_name,
+                                  });
+                                }
+                                focusCell({ rowId: inquiry.id, field: 'company_name' });
+                              }}
+                              options={customerSelectOptions}
+                              placeholder="Search CRM customer..."
+                            />
+                          </div>
                         ) : (
                           <div
-                            onDoubleClick={() => startEditing(inquiry, 'purchase_price')}
-                            className="cursor-text hover:bg-yellow-50 px-2 py-1 rounded text-xs"
+                            ref={(el) => {
+                              const key = `${inquiry.id}:company_name`;
+                              if (el) cellNodeRefs.current.set(key, el);
+                              else cellNodeRefs.current.delete(key);
+                            }}
+                            tabIndex={canManage ? 0 : -1}
+                            role="gridcell"
+                            onClick={() => canManage && startEditing(inquiry, 'company_name')}
+                            onFocus={() => setActiveCell({ rowId: inquiry.id, field: 'company_name' })}
+                            onKeyDown={(e) => {
+                              if (!canManage) return;
+                              const coord: CellCoord = { rowId: inquiry.id, field: 'company_name' };
+                              if (e.key === 'Tab') {
+                                e.preventDefault();
+                                navigateFromCell(coord, e.shiftKey ? 'prev' : 'next', true);
+                              } else if (e.key === 'Enter' || e.key === 'F2') {
+                                e.preventDefault();
+                                startEditing(inquiry, 'company_name');
+                              } else if (e.key === 'ArrowRight') {
+                                e.preventDefault();
+                                navigateFromCell(coord, 'right');
+                              } else if (e.key === 'ArrowLeft') {
+                                e.preventDefault();
+                                navigateFromCell(coord, 'left');
+                              } else if (e.key === 'ArrowDown') {
+                                e.preventDefault();
+                                navigateFromCell(coord, 'down');
+                              } else if (e.key === 'ArrowUp') {
+                                e.preventDefault();
+                                navigateFromCell(coord, 'up');
+                              }
+                            }}
+                            className="px-1 py-0.5 rounded hover:bg-yellow-50/70 cursor-pointer outline-none"
                           >
-                            {inquiry.purchase_price ?
-                              `$${inquiry.purchase_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}` :
-                              <span className="text-gray-400">Click to add</span>
-                            }
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-medium text-xs text-gray-900">
+                                {inquiry.company_name || <span className="text-gray-400 italic">Select customer...</span>}
+                              </span>
+                              {(inquiry.crm_contact_id || inquiry.customer_id) && onOpenCustomer && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenCustomer(inquiry.crm_contact_id || inquiry.customer_id!);
+                                  }}
+                                  className="text-gray-400 hover:text-blue-600 p-0.5 rounded shrink-0"
+                                  title="Open customer details"
+                                >
+                                  <ExternalLink className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                            {inquiry.contact_person && (
+                              <div className="text-[11px] text-gray-500">{inquiry.contact_person}</div>
+                            )}
+                            {inquiry.contact_phone && (
+                              <div className="flex items-center gap-1">
+                                <a
+                                  href={`https://wa.me/${inquiry.contact_phone.replace(/[^0-9]/g, '')}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="inline-flex items-center gap-1 text-[11px] text-green-600 hover:text-green-700 hover:underline"
+                                  title="Open WhatsApp"
+                                >
+                                  <MessageSquare className="w-2.5 h-2.5" />
+                                  {inquiry.contact_phone}
+                                </a>
+                              </div>
+                            )}
                           </div>
                         )}
                       </td>
                     )}
 
-                    {/* Offered Price (O.Price) — sales sees only when price_ready=true; warehouse/auditor never see) */}
-                    {canSeeQuoteColumn && isColumnVisible('offered_price') && <td className="px-3 py-1.5 border-r border-gray-200 font-mono">
-                      {(() => {
-                        const allowed = canSeeFinalQuote(profile?.role, inquiry.price_ready);
-                        if (!allowed) {
-                          return <span className="px-2 py-1 text-xs text-gray-400 italic">Restricted</span>;
-                        }
-                        return editingCell?.id === inquiry.id && editingCell?.field === 'offered_price' ? (
-                          <input name="value" aria-label="Click to add"
-                            type="text"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={saveEdit}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') saveEdit();
-                              if (e.key === 'Escape') setEditingCell(null);
-                            }}
-                            className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none text-xs"
-                            autoFocus
-                            placeholder="Click to add"
-                          />
-                        ) : (
-                          <div
-                            onDoubleClick={() => canManage && !isSalesRole && startEditing(inquiry, 'offered_price')}
-                            className={canManage && !isSalesRole ? "cursor-text hover:bg-yellow-50 px-2 py-1 rounded text-xs" : "px-2 py-1 text-xs"}
-                          >
-                            {inquiry.offered_price ?
-                              `$${inquiry.offered_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}` :
-                              (canManage && !isSalesRole ? <span className="text-gray-400">Click to add</span> : '-')
-                            }
+                    {isColumnVisible('product_name') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 font-medium ${getCellChromeClass(inquiry.id, 'product_name')}`}>
+                        {renderExcelTextCell(inquiry, 'product_name', inquiry.product_name)}
+                      </td>
+                    )}
+
+                    {isColumnVisible('specification') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 text-gray-600 text-xs ${getCellChromeClass(inquiry.id, 'specification')}`}>
+                        {renderExcelTextCell(inquiry, 'specification', inquiry.specification || '-')}
+                      </td>
+                    )}
+
+                    {isColumnVisible('quantity') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 ${getCellChromeClass(inquiry.id, 'quantity')}`}>
+                        {renderExcelTextCell(inquiry, 'quantity', inquiry.quantity)}
+                      </td>
+                    )}
+
+                    {isColumnVisible('supplier_name') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 ${getCellChromeClass(inquiry.id, 'supplier_name')}`}>
+                        {renderExcelTextCell(
+                          inquiry,
+                          'supplier_name',
+                          <div>
+                            <div>{inquiry.supplier_name || '-'}</div>
+                            {inquiry.supplier_country && (
+                              <div className="text-[11px] text-gray-500">{inquiry.supplier_country}</div>
+                            )}
                           </div>
-                        );
-                      })()}
-                    </td>}
+                        )}
+                      </td>
+                    )}
+
+                    {/* ACE ERP No */}
+                    {isColumnVisible('aceerp_no') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 font-mono ${getCellChromeClass(inquiry.id, 'aceerp_no')}`}>
+                        {renderExcelTextCell(
+                          inquiry,
+                          'aceerp_no',
+                          inquiry.aceerp_no || (canManage ? <span className="text-gray-400 text-xs">Click to add</span> : '-')
+                        )}
+                      </td>
+                    )}
+
+                    {/* Purchase Price (Admin Only) */}
+                    {canSeePPrice && isColumnVisible('purchase_price') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 font-mono ${getCellChromeClass(inquiry.id, 'purchase_price')}`}>
+                        {renderExcelTextCell(
+                          inquiry,
+                          'purchase_price',
+                          inquiry.purchase_price
+                            ? `$${inquiry.purchase_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+                            : <span className="text-gray-400 text-xs">Click to add</span>,
+                          { placeholder: '0.00', className: 'text-xs' }
+                        )}
+                      </td>
+                    )}
+
+                    {/* Offered Price (O.Price) — sales sees only when price_ready=true; warehouse/auditor never see */}
+                    {canSeeQuoteColumn && isColumnVisible('offered_price') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 font-mono ${getCellChromeClass(inquiry.id, 'offered_price')}`}>
+                        {(() => {
+                          const allowed = canSeeFinalQuote(profile?.role, inquiry.price_ready);
+                          if (!allowed) {
+                            return <span className="px-2 py-1 text-xs text-gray-400 italic">Restricted</span>;
+                          }
+                          if (!canManage || isSalesRole) {
+                            return (
+                              <div className="px-2 py-1 text-xs">
+                                {inquiry.offered_price
+                                  ? `$${inquiry.offered_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+                                  : '-'}
+                              </div>
+                            );
+                          }
+                          return renderExcelTextCell(
+                            inquiry,
+                            'offered_price',
+                            inquiry.offered_price
+                              ? `$${inquiry.offered_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+                              : <span className="text-gray-400 text-xs">Click to add</span>,
+                            { placeholder: '0.00', className: 'text-xs' }
+                          );
+                        })()}
+                      </td>
+                    )}
 
                     {/* Requirements / Documents / Our Side */}
                     {isColumnVisible('our_side') && <td className="px-3 py-1.5 border-r border-gray-200">
@@ -2882,36 +3398,22 @@ export function InquiryTableExcel({
                     </td>}
 
                     {/* Delivery Date */}
-                    {isColumnVisible('delivery_date') && <td className="px-3 py-1.5 border-r border-gray-200">
-                      {editingCell?.id === inquiry.id && editingCell?.field === 'delivery_date' ? (
-                        <input name="value" aria-label="Value"
-                          type="date"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveEdit();
-                            if (e.key === 'Escape') setEditingCell(null);
-                          }}
-                          className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none text-xs"
-                          autoFocus
-                        />
-                      ) : (
-                        <div
-                          onDoubleClick={() => canManage && startEditing(inquiry, 'delivery_date')}
-                          className={canManage ? "cursor-text hover:bg-yellow-50 px-2 py-1 rounded text-xs whitespace-nowrap" : "px-2 py-1 text-xs whitespace-nowrap"}
-                        >
-                          {inquiry.delivery_date ?
-                            new Date(inquiry.delivery_date).toLocaleDateString('en-GB', {
-                              day: '2-digit',
-                              month: 'short',
-                              year: 'numeric'
-                            }) :
-                            (canManage ? <span className="text-gray-400">Click to add</span> : '-')
-                          }
-                        </div>
-                      )}
-                    </td>}
+                    {isColumnVisible('delivery_date') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 ${getCellChromeClass(inquiry.id, 'delivery_date')}`}>
+                        {renderExcelTextCell(
+                          inquiry,
+                          'delivery_date',
+                          inquiry.delivery_date
+                            ? new Date(inquiry.delivery_date).toLocaleDateString('en-GB', {
+                                day: '2-digit',
+                                month: 'short',
+                                year: 'numeric',
+                              })
+                            : (canManage ? <span className="text-gray-400">Click to add</span> : '-'),
+                          { inputType: 'date', className: 'text-xs whitespace-nowrap' }
+                        )}
+                      </td>
+                    )}
 
                     {/* Pipeline Status */}
                     {isColumnVisible('pipeline_status') && <td className="px-3 py-1.5 border-r border-gray-200">
@@ -2942,59 +3444,31 @@ export function InquiryTableExcel({
                     </td>}
 
                     {/* Mail Subject */}
-                    {isColumnVisible('mail_subject') && <td className="px-3 py-1.5 border-r border-gray-200">
-                      {editingCell?.id === inquiry.id && editingCell?.field === 'mail_subject' ? (
-                        <input name="value" aria-label="Value"
-                          type="text"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveEdit();
-                            if (e.key === 'Escape') setEditingCell(null);
-                          }}
-                          className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none text-xs"
-                          autoFocus
-                        />
-                      ) : (
-                        <div
-                          onDoubleClick={() => startEditing(inquiry, 'mail_subject')}
-                          className="cursor-text hover:bg-yellow-50 px-2 py-1 rounded text-xs"
-                          title={inquiry.mail_subject || ''}
-                        >
-                          {inquiry.mail_subject ? (
+                    {isColumnVisible('mail_subject') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 ${getCellChromeClass(inquiry.id, 'mail_subject')}`}>
+                        {renderExcelTextCell(
+                          inquiry,
+                          'mail_subject',
+                          inquiry.mail_subject ? (
                             <div className="line-clamp-2">{inquiry.mail_subject}</div>
                           ) : (
                             <span className="text-gray-400">-</span>
-                          )}
-                        </div>
-                      )}
-                    </td>}
+                          ),
+                          { className: 'text-xs' }
+                        )}
+                      </td>
+                    )}
 
                     {/* Remarks */}
-                    {isColumnVisible('remarks') && <td className="px-3 py-1.5 border-r border-gray-200">
-                      {editingCell?.id === inquiry.id && editingCell?.field === 'remarks' ? (
-                        <input name="value" aria-label="Value"
-                          type="text"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') saveEdit();
-                            if (e.key === 'Escape') setEditingCell(null);
-                          }}
-                          className="w-full px-2 py-1 border-2 border-blue-500 rounded focus:outline-none"
-                          autoFocus
-                        />
-                      ) : (
-                        <div
-                          onDoubleClick={() => startEditing(inquiry, 'remarks')}
-                          className="cursor-text hover:bg-yellow-50 px-2 py-1 rounded text-gray-600"
-                        >
-                          {inquiry.remarks || '-'}
-                        </div>
-                      )}
-                    </td>}
+                    {isColumnVisible('remarks') && (
+                      <td className={`px-1.5 py-1 border-r border-gray-200 ${getCellChromeClass(inquiry.id, 'remarks')}`}>
+                        {renderExcelTextCell(
+                          inquiry,
+                          'remarks',
+                          <span className="text-gray-600">{inquiry.remarks || '-'}</span>
+                        )}
+                      </td>
+                    )}
 
                     {/* Actions / Detail */}
                     {isColumnVisible('actions') && (
@@ -3096,7 +3570,8 @@ export function InquiryTableExcel({
                     </tr>
                   ))}
                 </React.Fragment>
-                ))
+                );
+                })
               )}
             </tbody>
           </table>
