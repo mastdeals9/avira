@@ -26,6 +26,8 @@
 
 import { calculateCanonicalExpenseTotal } from './taxCalculations.ts';
 
+export const BPOM_LANDED_COST_CUTOVER_DATE = '2026-11-27';
+
 export const CAPITALIZABLE_LANDED_COST_CATEGORIES = new Set([
   'duty_customs',
   'duty',
@@ -41,6 +43,8 @@ export const CAPITALIZABLE_LANDED_COST_CATEGORIES = new Set([
   'other_import',
   'pib_import',
   'bpom_ski_fees',
+  'bpom_ski',
+  'bpom',
 ]);
 
 export const CAPITALIZABLE_LANDED_COST_CATEGORIES_ARRAY = Array.from(CAPITALIZABLE_LANDED_COST_CATEGORIES);
@@ -76,10 +80,18 @@ export function isImportExpenseCategory(category: string | null | undefined): bo
 
 /**
  * Normalizes category names and checks against the authoritative landed-cost whitelist.
+ * Mirrors PostgreSQL `public.is_capitalizable_landed_cost_category(category, effective_date)`.
  */
-export function isCapitalizableLandedCostCategory(category: string | null | undefined): boolean {
+export function isCapitalizableLandedCostCategory(
+  category: string | null | undefined,
+  effectiveDate?: string | null,
+): boolean {
   if (!category) return false;
   const normalized = category.toLowerCase().trim().replace(/ /g, '_');
+  if (normalized === 'bpom_ski_fees' || normalized === 'bpom_ski' || normalized === 'bpom') {
+    const dateStr = (effectiveDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    return dateStr >= BPOM_LANDED_COST_CUTOVER_DATE;
+  }
   return CAPITALIZABLE_LANDED_COST_CATEGORIES.has(normalized);
 }
 
@@ -153,7 +165,10 @@ export function calculateExpenseLandedCostAmount(expense: LandedCostExpenseInput
   amount: number;
   isCapitalizable: boolean;
 } {
-  const isCapitalizable = isCapitalizableLandedCostCategory(expense.expense_category);
+  const isCapitalizable = isCapitalizableLandedCostCategory(
+    expense.expense_category,
+    expense.expense_date,
+  );
   if (!isCapitalizable) {
     return {
       amount: 0,
@@ -220,7 +235,10 @@ export function calculateContainerLandedCostPool(
   let selectedLandedPettyCashTotal = 0;
   for (const pc of linkedPettyCash) {
     const isSelected = inclusionMap[pc.id] ?? (pc.include_in_landed_cost === true);
-    const isCapitalizable = isCapitalizableLandedCostCategory(pc.expense_category || pc.transaction_type);
+    const isCapitalizable = isCapitalizableLandedCostCategory(
+      pc.expense_category || pc.transaction_type,
+      pc.transaction_date,
+    );
 
     if (isCapitalizable) {
       if (isSelected) {
