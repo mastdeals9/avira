@@ -755,6 +755,7 @@ export function PurchaseInvoiceManager({ canManage, onPayInvoice, initialViewInv
 
     // If item_type changes, clear product/account selections
     if (field === 'item_type') {
+      newLines[index].purchase_order_item_id = null;
       newLines[index].product_id = null;
       newLines[index].expense_account_id = null;
       newLines[index].asset_account_id = null;
@@ -766,11 +767,22 @@ export function PurchaseInvoiceManager({ canManage, onPayInvoice, initialViewInv
       newLines[index].receiving_import_container_id = null;
     }
 
-    // If product changes, auto-fill details
+    // If product changes, auto-fill details and keep purchase_order_item_id consistent
     if (field === 'product_id' && value) {
       const product = products.find(p => p.id === value);
       if (product) {
         newLines[index].unit = product.unit;
+      }
+      if (newLines[index].purchase_order_item_id && selectedPurchaseOrder?.purchase_order_items) {
+        const currentPoItem = selectedPurchaseOrder.purchase_order_items.find(
+          candidate => candidate.id === newLines[index].purchase_order_item_id
+        );
+        if (!currentPoItem || currentPoItem.product_id !== value) {
+          const matchingPoItems = selectedPurchaseOrder.purchase_order_items.filter(
+            candidate => candidate.product_id === value
+          );
+          newLines[index].purchase_order_item_id = matchingPoItems.length === 1 ? matchingPoItems[0].id : null;
+        }
       }
       newLines[index].receiving_make_id = null;
       if (newLines[index].receiving_batch_number) {
@@ -932,6 +944,29 @@ export function PurchaseInvoiceManager({ canManage, onPayInvoice, initialViewInv
       if (item.item_type !== 'inventory' && !item.description.trim()) {
         showToast({ type: 'error', title: 'Error', message: `Line ${i + 1}: Please enter a description` });
         return;
+      }
+      if (item.purchase_order_item_id && selectedPurchaseOrder?.purchase_order_items) {
+        const poItem = selectedPurchaseOrder.purchase_order_items.find(
+          candidate => candidate.id === item.purchase_order_item_id
+        );
+        if (poItem) {
+          if (poItem.product_id && item.product_id && poItem.product_id !== item.product_id) {
+            showToast({ type: 'error', title: 'Error', message: `Line ${i + 1}: Product does not match the linked Purchase Order line` });
+            return;
+          }
+          if (
+            poItem.unit &&
+            item.unit &&
+            poItem.unit.trim().toLowerCase() !== item.unit.trim().toLowerCase()
+          ) {
+            showToast({
+              type: 'error',
+              title: 'Error',
+              message: `Line ${i + 1}: Unit (${item.unit}) does not match the linked Purchase Order line unit (${poItem.unit})`,
+            });
+            return;
+          }
+        }
       }
     }
 
