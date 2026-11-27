@@ -3042,7 +3042,7 @@ export function BankReconciliationEnhanced({
         title: 'Linked to expense successfully',
         details: [
           { label: 'Allocated Amount', value: formatCurrency(amount, line.currency) },
-          { label: 'Payment Kind', value: linkPaymentKind === 'supplier' ? 'Supplier' : 'PPh' },
+          { label: 'Allocation / Settlement Category', value: linkPaymentKind === 'supplier' ? 'Supplier' : 'PPh23' },
           { label: 'Status', value: 'Confirmed' },
         ],
         timestamp: Date.now(),
@@ -5008,6 +5008,7 @@ export function BankReconciliationEnhanced({
 
       setEditModal(false);
       setEditingLine(null);
+      await loadStatementLines();
       notifyFinanceReconciliationRefresh();
       alert('✅ Transaction unlinked successfully');
     } catch (error: any) {
@@ -7225,15 +7226,15 @@ export function BankReconciliationEnhanced({
                     </SapRow>
                     <SapRow>
                       <FloatingField
-                        label="Payment Kind"
+                        label="Allocation / Settlement Category"
                         span={12}
                         required
                         filled={!!linkPaymentKind}
-                        hint="Choose PPh23 only when this bank line is the withholding tax being remitted to the government."
+                        hint="Settlement category for this allocation (does not change Bank Transaction Classification). Choose PPh23 only when this bank line is the withholding tax being remitted."
                       >
                         <select
                           name="payment_kind"
-                          aria-label="Payment Kind"
+                          aria-label="Allocation / Settlement Category"
                           value={linkPaymentKind}
                           onChange={(e) =>
                             setLinkPaymentKind(e.target.value as 'supplier' | 'pph23')

@@ -2486,19 +2486,20 @@ export function ExpenseManager({
 
   const handleDelete = async (id: string) => {
     const expense = expenses.find(candidate => candidate.id === id);
-    if (!expense || !['PENDING', 'REJECTED'].includes(expense.effective_posting_state || 'AMBIGUOUS')) {
-      alert('This expense is not deletable through the normal workflow. Reversed, replaced, active, or ambiguous accounting history must be preserved.');
+    if (!expense || !['PENDING', 'REJECTED', 'REVERSED'].includes(expense.effective_posting_state || 'AMBIGUOUS')) {
+      alert('This expense still has an active posted or protected accounting state. Unpost or unlink its payments first.');
       return;
     }
-    if (!confirm('Are you sure you want to delete this expense?')) return;
+    if (!confirm('Are you sure you want to permanently delete this unposted expense and its associated unposted/reversed journal records?')) return;
 
     try {
       const { error } = await supabase.rpc('delete_expense_safe', { p_expense_id: id });
 
       if (error) throw error;
 
-      // Remove from local state
+      // Remove from local state and refresh reconciliation
       setExpenses(prev => prev.filter(exp => exp.id !== id));
+      notifyFinanceReconciliationRefresh();
       alert('Expense deleted successfully');
     } catch (error: any) {
       console.error('Error deleting expense:', error.message);
@@ -3984,10 +3985,10 @@ export function ExpenseManager({
                               />
                             </>
                           )}
-                          {(postingState === 'PENDING' || postingState === 'REJECTED') && (
+                          {(postingState === 'PENDING' || postingState === 'REJECTED' || postingState === 'REVERSED') && (
                             <>
                               <span className="w-px h-4 bg-gray-200 mx-0.5" aria-hidden="true" />
-                              <FinanceActionButton action="delete" onClick={() => handleDelete(expense.id)} />
+                              <FinanceActionButton action="delete" label="Delete" onClick={() => handleDelete(expense.id)} />
                             </>
                           )}
                         </div>
@@ -4072,7 +4073,7 @@ export function ExpenseManager({
                         onClick={() => void handleCancelPostingRequest(expense)}
                       />
                     )}
-                    {canManage && (postingState === 'PENDING' || postingState === 'REJECTED') && (
+                    {canManage && (postingState === 'PENDING' || postingState === 'REJECTED' || postingState === 'REVERSED') && (
                       <FinanceActionButton action="delete" label="Delete" onClick={() => handleDelete(expense.id)} />
                     )}
                     <button
@@ -6565,7 +6566,7 @@ export function ExpenseManager({
                 <p>{cancelPostingBlock.message}</p>
               ) : (
                 <>
-                  <p>This preserves the original journal, creates its auditable reversal journal, and marks the expense cancelled.</p>
+                  <p>This reverses the posted journal and returns the expense to Unposted (Pending Approval), where it can be edited or permanently deleted.</p>
                   <p className="mt-1 text-xs flex items-center gap-1"><Lock className="w-3 h-3" /> Available only for unpaid expenses in an open accounting period.</p>
                 </>
               )}
