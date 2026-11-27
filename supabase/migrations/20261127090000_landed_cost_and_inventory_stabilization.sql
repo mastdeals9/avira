@@ -1244,20 +1244,22 @@ $function$;
 -- -----------------------------------------------------------------------------
 -- 8. Explicit Function Execution Grants
 -- -----------------------------------------------------------------------------
+-- Authorized user-facing RPCs (enforced by internal role guards):
 REVOKE ALL ON FUNCTION public.approve_pending_batch_cost_adjustment(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.approve_pending_batch_cost_adjustment(uuid) TO authenticated, service_role;
 
 REVOKE ALL ON FUNCTION public.reallocate_container_costs(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.reallocate_container_costs(uuid) TO authenticated, service_role;
 
-REVOKE ALL ON FUNCTION public.recalculate_batch_landed_cost(uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.recalculate_batch_landed_cost(uuid) TO authenticated, service_role;
+-- Internal costing/COGS functions (executed only via owning SECURITY DEFINER triggers/RPCs or service_role):
+REVOKE ALL ON FUNCTION public.recalculate_batch_landed_cost(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.recalculate_batch_landed_cost(uuid) TO service_role;
 
-REVOKE ALL ON FUNCTION public.propagate_batch_cost_change(uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.propagate_batch_cost_change(uuid) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.propagate_batch_cost_change(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.propagate_batch_cost_change(uuid) TO service_role;
 
-REVOKE ALL ON FUNCTION public.calculate_container_landed_cost_pool(uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.calculate_container_landed_cost_pool(uuid) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.calculate_batch_direct_landed_cost(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.calculate_batch_direct_landed_cost(uuid) TO service_role;
 
-REVOKE ALL ON FUNCTION public.calculate_batch_direct_landed_cost(uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.calculate_batch_direct_landed_cost(uuid) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.calculate_container_landed_cost_pool(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.calculate_container_landed_cost_pool(uuid) TO service_role;

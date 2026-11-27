@@ -22,19 +22,26 @@ function loadLandedCostModule() {
 }
 
 function dbQuery(sql) {
-  const stdout = execFileSync('supabase', ['db', 'query', '--linked', '--output-format', 'json', sql], {
-    cwd: process.cwd(),
-    encoding: 'utf8',
-    maxBuffer: 100 * 1024 * 1024,
-  });
+  const stdout = execFileSync(
+    'supabase',
+    ['db', 'query', '--linked', '--output-format', 'json', sql],
+    {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      maxBuffer: 100 * 1024 * 1024,
+    }
+  );
   const parsed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
   return parsed.rows || [];
 }
 
 const migrationSql = readFileSync(
-  new URL('../supabase/migrations/20261127090000_landed_cost_and_inventory_stabilization.sql', import.meta.url),
-  'utf8',
+  new URL(
+    '../supabase/migrations/20261127090000_landed_cost_and_inventory_stabilization.sql',
+    import.meta.url
+  ),
+  'utf8'
 );
 
 test('1. TypeScript & SQL landed-cost engines produce identical results across all inclusion, PIB, BPOM, broker, petty-cash & status rules', () => {
@@ -44,7 +51,14 @@ test('1. TypeScript & SQL landed-cost engines produce identical results across a
     containerDate: '2026-11-27',
     otherImportCosts: 500000, // post-cutover container must ignore legacy other_import_costs
     linkedExpenses: [
-      { id: 'e1', expense_category: 'freight_import', amount: 200000, expense_date: '2026-11-27', include_in_landed_cost: true, approval_status: 'approved' },
+      {
+        id: 'e1',
+        expense_category: 'freight_import',
+        amount: 200000,
+        expense_date: '2026-11-27',
+        include_in_landed_cost: true,
+        approval_status: 'approved',
+      },
       {
         id: 'e2',
         expense_category: 'import_broker',
@@ -54,21 +68,98 @@ test('1. TypeScript & SQL landed-cost engines produce identical results across a
         expense_date: '2026-11-27',
         include_in_landed_cost: true,
         approval_status: 'approved',
-        broker_items: [{ amount: 55500, ppn_amount: 5500 }, { dpp_amount: 30000, ppn_amount: 0 }],
+        broker_items: [
+          { amount: 55500, ppn_amount: 5500 },
+          { dpp_amount: 30000, ppn_amount: 0 },
+        ],
       },
-      { id: 'e3', expense_category: 'bpom_ski_fees', amount: 10000, expense_date: '2026-11-27', include_in_landed_cost: true, approval_status: 'approved' },
-      { id: 'e4', expense_category: 'bpom_ski_fees', amount: 99000, expense_date: '2026-11-27', include_in_landed_cost: false, approval_status: 'approved' },
-      { id: 'e5', expense_category: 'bpom_ski_fees', amount: 88000, expense_date: '2026-11-27', include_in_landed_cost: null, approval_status: 'approved' },
-      { id: 'e6', expense_category: 'freight_import', amount: 777000, expense_date: '2026-11-27', include_in_landed_cost: true, approval_status: 'cancelled' },
-      { id: 'e7', expense_category: 'freight_import', amount: 666000, expense_date: '2026-11-27', include_in_landed_cost: true, approval_status: 'pending_approval' },
-      { id: 'p1', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 120000, expense_date: '2026-11-27', include_in_landed_cost: true, approval_status: 'approved' },
-      { id: 'p2', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 220000, expense_date: '2026-11-27', include_in_landed_cost: false, approval_status: 'approved' },
-      { id: 'p3', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 320000, expense_date: '2026-11-27', include_in_landed_cost: null, approval_status: 'approved' },
+      {
+        id: 'e3',
+        expense_category: 'bpom_ski_fees',
+        amount: 10000,
+        expense_date: '2026-11-27',
+        include_in_landed_cost: true,
+        approval_status: 'approved',
+      },
+      {
+        id: 'e4',
+        expense_category: 'bpom_ski_fees',
+        amount: 99000,
+        expense_date: '2026-11-27',
+        include_in_landed_cost: false,
+        approval_status: 'approved',
+      },
+      {
+        id: 'e5',
+        expense_category: 'bpom_ski_fees',
+        amount: 88000,
+        expense_date: '2026-11-27',
+        include_in_landed_cost: null,
+        approval_status: 'approved',
+      },
+      {
+        id: 'e6',
+        expense_category: 'freight_import',
+        amount: 777000,
+        expense_date: '2026-11-27',
+        include_in_landed_cost: true,
+        approval_status: 'cancelled',
+      },
+      {
+        id: 'e7',
+        expense_category: 'freight_import',
+        amount: 666000,
+        expense_date: '2026-11-27',
+        include_in_landed_cost: true,
+        approval_status: 'pending_approval',
+      },
+      {
+        id: 'p1',
+        expense_category: 'pib_import',
+        amount: 500000,
+        pib_bm_amount: 120000,
+        expense_date: '2026-11-27',
+        include_in_landed_cost: true,
+        approval_status: 'approved',
+      },
+      {
+        id: 'p2',
+        expense_category: 'pib_import',
+        amount: 500000,
+        pib_bm_amount: 220000,
+        expense_date: '2026-11-27',
+        include_in_landed_cost: false,
+        approval_status: 'approved',
+      },
+      {
+        id: 'p3',
+        expense_category: 'pib_import',
+        amount: 500000,
+        pib_bm_amount: 320000,
+        expense_date: '2026-11-27',
+        include_in_landed_cost: null,
+        approval_status: 'approved',
+      },
     ],
     linkedPettyCash: [
-      { id: 'pc1', expense_category: 'loading_import', amount: 100000, transaction_date: '2026-11-27', include_in_landed_cost: true, approval_status: 'approved' },
+      {
+        id: 'pc1',
+        expense_category: 'loading_import',
+        amount: 100000,
+        transaction_date: '2026-11-27',
+        include_in_landed_cost: true,
+        approval_status: 'approved',
+      },
       // Linked to already-capitalized e1 -> must NOT be counted twice
-      { id: 'pc2', expense_category: 'freight_import', amount: 200000, transaction_date: '2026-11-27', include_in_landed_cost: true, approval_status: 'approved', finance_expense_id: 'e1' },
+      {
+        id: 'pc2',
+        expense_category: 'freight_import',
+        amount: 200000,
+        transaction_date: '2026-11-27',
+        include_in_landed_cost: true,
+        approval_status: 'approved',
+        finance_expense_id: 'e1',
+      },
     ],
   };
 
@@ -81,10 +172,54 @@ test('1. TypeScript & SQL landed-cost engines produce identical results across a
   assert.equal(tsRes.containerLandedCostPool, 620000);
 
   // Direct calculateExpenseLandedCostAmount parity for post-cutover & pre-cutover PIB inclusion states
-  assert.equal(tsMod.calculateExpenseLandedCostAmount({ id: 'dp1', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 120000, expense_date: '2026-11-27', include_in_landed_cost: true, approval_status: 'approved' }).amount, 120000);
-  assert.equal(tsMod.calculateExpenseLandedCostAmount({ id: 'dp2', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 120000, expense_date: '2026-11-27', include_in_landed_cost: false, approval_status: 'approved' }).amount, 0);
-  assert.equal(tsMod.calculateExpenseLandedCostAmount({ id: 'dp3', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 120000, expense_date: '2026-11-27', include_in_landed_cost: null, approval_status: 'approved' }).amount, 0);
-  assert.equal(tsMod.calculateExpenseLandedCostAmount({ id: 'dp4', expense_category: 'pib_import', amount: 500000, pib_bm_amount: 120000, expense_date: '2026-11-20', include_in_landed_cost: false, approval_status: 'approved' }).amount, 120000);
+  assert.equal(
+    tsMod.calculateExpenseLandedCostAmount({
+      id: 'dp1',
+      expense_category: 'pib_import',
+      amount: 500000,
+      pib_bm_amount: 120000,
+      expense_date: '2026-11-27',
+      include_in_landed_cost: true,
+      approval_status: 'approved',
+    }).amount,
+    120000
+  );
+  assert.equal(
+    tsMod.calculateExpenseLandedCostAmount({
+      id: 'dp2',
+      expense_category: 'pib_import',
+      amount: 500000,
+      pib_bm_amount: 120000,
+      expense_date: '2026-11-27',
+      include_in_landed_cost: false,
+      approval_status: 'approved',
+    }).amount,
+    0
+  );
+  assert.equal(
+    tsMod.calculateExpenseLandedCostAmount({
+      id: 'dp3',
+      expense_category: 'pib_import',
+      amount: 500000,
+      pib_bm_amount: 120000,
+      expense_date: '2026-11-27',
+      include_in_landed_cost: null,
+      approval_status: 'approved',
+    }).amount,
+    0
+  );
+  assert.equal(
+    tsMod.calculateExpenseLandedCostAmount({
+      id: 'dp4',
+      expense_category: 'pib_import',
+      amount: 500000,
+      pib_bm_amount: 120000,
+      expense_date: '2026-11-20',
+      include_in_landed_cost: false,
+      approval_status: 'approved',
+    }).amount,
+    120000
+  );
 
   // Verify SQL calculate_expense_landed_cost_amount matches TS for every item
   const sqlRows = dbQuery(`
@@ -104,7 +239,16 @@ test('1. TypeScript & SQL landed-cost engines produce identical results across a
     ROLLBACK;
   `);
   const r = sqlRows[0];
-  assert.equal(Number(r.e1) + Number(r.e2) + Number(r.e3) + Number(r.e4) + Number(r.e5) + Number(r.e6) + Number(r.e7), 400000);
+  assert.equal(
+    Number(r.e1) +
+      Number(r.e2) +
+      Number(r.e3) +
+      Number(r.e4) +
+      Number(r.e5) +
+      Number(r.e6) +
+      Number(r.e7),
+    400000
+  );
   assert.equal(Number(r.p1), 120000);
   assert.equal(Number(r.p2), 0);
   assert.equal(Number(r.p3), 0);
@@ -153,6 +297,7 @@ test('2. Live DB (rolled back): all 12 historical-protection, PIB, FIFO, concurr
       v_cnt1 integer;
       v_cnt2 integer;
       v_shortage_detected boolean := false;
+      v_denied boolean := false;
       v_je_0507_amt numeric;
       v_je_0508_amt numeric;
       v_je_0509_amt numeric;
@@ -436,6 +581,50 @@ test('2. Live DB (rolled back): all 12 historical-protection, PIB, FIFO, concurr
          OR (SELECT total_debit FROM public.journal_entries WHERE entry_number = 'JE2611-0508') <> v_je_0508_amt
          OR (SELECT total_debit FROM public.journal_entries WHERE entry_number = 'JE2611-0509') <> v_je_0509_amt THEN
         RAISE EXCEPTION 'Baseline journals modified!';
+      END IF;
+
+      -- Function privilege & authorization assertions
+      IF has_function_privilege('authenticated', 'public.recalculate_batch_landed_cost(uuid)', 'EXECUTE')
+         OR has_function_privilege('authenticated', 'public.propagate_batch_cost_change(uuid)', 'EXECUTE')
+         OR has_function_privilege('authenticated', 'public.calculate_batch_direct_landed_cost(uuid)', 'EXECUTE')
+         OR has_function_privilege('authenticated', 'public.calculate_container_landed_cost_pool(uuid)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'authenticated must NOT have EXECUTE on internal landed-cost/COGS functions';
+      END IF;
+
+      IF has_function_privilege('anon', 'public.recalculate_batch_landed_cost(uuid)', 'EXECUTE')
+         OR has_function_privilege('anon', 'public.propagate_batch_cost_change(uuid)', 'EXECUTE')
+         OR has_function_privilege('anon', 'public.calculate_batch_direct_landed_cost(uuid)', 'EXECUTE')
+         OR has_function_privilege('anon', 'public.calculate_container_landed_cost_pool(uuid)', 'EXECUTE')
+         OR has_function_privilege('anon', 'public.approve_pending_batch_cost_adjustment(uuid)', 'EXECUTE')
+         OR has_function_privilege('anon', 'public.reallocate_container_costs(uuid)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'anon must NOT have EXECUTE on landed-cost/COGS functions';
+      END IF;
+
+      IF NOT has_function_privilege('service_role', 'public.recalculate_batch_landed_cost(uuid)', 'EXECUTE')
+         OR NOT has_function_privilege('service_role', 'public.propagate_batch_cost_change(uuid)', 'EXECUTE')
+         OR NOT has_function_privilege('service_role', 'public.calculate_batch_direct_landed_cost(uuid)', 'EXECUTE')
+         OR NOT has_function_privilege('service_role', 'public.calculate_container_landed_cost_pool(uuid)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'service_role must retain EXECUTE on internal landed-cost/COGS functions';
+      END IF;
+
+      IF NOT has_function_privilege('authenticated', 'public.approve_pending_batch_cost_adjustment(uuid)', 'EXECUTE')
+         OR NOT has_function_privilege('authenticated', 'public.reallocate_container_costs(uuid)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'authenticated must retain EXECUTE on guarded approval & reallocation RPCs';
+      END IF;
+
+      -- Verify non-admin/non-accounts user cannot execute approve_pending_batch_cost_adjustment
+      IF EXISTS (SELECT 1 FROM public.user_profiles WHERE role = 'warehouse' AND is_active = true) THEN
+        PERFORM set_config('request.jwt.claim.sub', (SELECT id::text FROM public.user_profiles WHERE role = 'warehouse' AND is_active = true LIMIT 1), true);
+        v_denied := false;
+        BEGIN
+          PERFORM public.approve_pending_batch_cost_adjustment(v_adj_id);
+        EXCEPTION WHEN SQLSTATE '42501' THEN
+          v_denied := true;
+        END;
+        IF NOT v_denied THEN
+          RAISE EXCEPTION 'warehouse role was able to call approve_pending_batch_cost_adjustment!';
+        END IF;
+        PERFORM set_config('request.jwt.claim.sub', v_admin_id::text, true);
       END IF;
     END;
     $test$;

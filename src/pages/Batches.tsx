@@ -612,10 +612,9 @@ export function Batches() {
         }).eq('id', batchId);
 
         // Propagate cost changes dynamically through container, layers, inventory, and COGS
+        // (Standalone batch cost updates propagate automatically via trg_batches_propagate_cost_change)
         if (formData.import_container_id) {
           await supabase.rpc('reallocate_container_costs', { p_container_id: formData.import_container_id });
-        } else {
-          await supabase.rpc('propagate_batch_cost_change', { p_batch_id: batchId });
         }
       }
 
