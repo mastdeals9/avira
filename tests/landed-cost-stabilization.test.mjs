@@ -38,7 +38,7 @@ function dbQuery(sql) {
 
 const migrationSql = readFileSync(
   new URL(
-    '../supabase/migrations/20261127090000_landed_cost_and_inventory_stabilization.sql',
+    '../supabase/migrations/20261127100246_landed_cost_and_inventory_stabilization.sql',
     import.meta.url
   ),
   'utf8'
