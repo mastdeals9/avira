@@ -342,6 +342,27 @@ export function CompactInquiryForm({ onSubmit, onCancel, initialData, isEditing 
   return (
     <>
       <form onSubmit={handleSubmit} className="space-y-3">
+        {/* AI Extraction Review Banner (highlights missing/uncertain fields before save) */}
+        {initialData?.extraction_meta && (
+          <div className="p-3 rounded-lg border border-indigo-200 bg-indigo-50/70 text-xs space-y-1.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="font-semibold text-indigo-900">
+                AI Extraction Review ({String(initialData.extraction_meta.confidence || 'medium').toUpperCase()} confidence) — Please verify fields below before creating
+              </span>
+            </div>
+            {(initialData.extraction_meta.missingFields?.length > 0 || initialData.extraction_meta.uncertainFields?.length > 0) && (
+              <div className="text-amber-800 flex flex-wrap gap-1.5 items-center">
+                <span className="font-medium">Not provided / verify:</span>
+                {[...(initialData.extraction_meta.missingFields || []), ...(initialData.extraction_meta.uncertainFields || [])].map((f: string) => (
+                  <span key={f} className="px-1.5 py-0.5 bg-amber-100 border border-amber-300 rounded text-[11px]">
+                    {f}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Multi-Product Toggle */}
         <div className="flex items-center gap-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
           <input
@@ -390,8 +411,36 @@ export function CompactInquiryForm({ onSubmit, onCancel, initialData, isEditing 
             </div>
 
             {(formData.products as any[]).map((prod: any, index: number) => (
-              <div key={index} className="grid grid-cols-12 gap-2 p-2 bg-white rounded border border-gray-200 items-end">
-                <div className="col-span-12 sm:col-span-5">
+              <div
+                key={index}
+                onPaste={(e) => {
+                  const text = e.clipboardData.getData('text/plain');
+                  if (!text || (!text.includes('\t') && !text.includes('\n'))) return;
+                  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+                  if (lines.length <= 1 && !text.includes('\t')) return;
+                  e.preventDefault();
+                  const parsedRows = lines.map((line) => {
+                    const cols = line.split('\t').map((c) => c.trim());
+                    return {
+                      productName: cols[0] || '',
+                      specification: cols[1] || '',
+                      quantity: cols[2] || '',
+                      supplierName: cols[3] || '',
+                      supplierCountry: cols[4] || '',
+                      deliveryDate: cols[5] || '',
+                      deliveryTerms: '',
+                    };
+                  }).filter((r) => r.productName);
+                  if (parsedRows.length > 0) {
+                    setFormData((prev) => ({
+                      ...prev,
+                      products: [...prev.products.slice(0, index), ...parsedRows, ...prev.products.slice(index + 1)],
+                    }));
+                  }
+                }}
+                className="grid grid-cols-12 gap-2 p-2 bg-white rounded border border-gray-200 items-end"
+              >
+                <div className="col-span-12 sm:col-span-4">
                   <label className="block text-xs font-medium text-gray-700 mb-1">
                     {t('crm.form.productName', 'Product Name')} <span className="text-red-500">*</span>
                   </label>
@@ -404,19 +453,19 @@ export function CompactInquiryForm({ onSubmit, onCancel, initialData, isEditing 
                     required
                   />
                 </div>
-                <div className="col-span-6 sm:col-span-3">
+                <div className="col-span-6 sm:col-span-2">
                   <label className="block text-xs font-medium text-gray-700 mb-1">
                     {t('crm.form.specification', 'Specification')}
                   </label>
                   <input
                     type="text"
-                    value={prod.specification}
+                    value={prod.specification || ''}
                     onChange={(e) => updateProduct(index, 'specification', e.target.value)}
                     placeholder="USP / BP"
                     className="w-full h-8 px-2 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
-                <div className="col-span-5 sm:col-span-3">
+                <div className="col-span-6 sm:col-span-2">
                   <label className="block text-xs font-medium text-gray-700 mb-1">
                     {t('crm.form.quantity', 'Quantity')} <span className="text-red-500">*</span>
                   </label>
@@ -427,6 +476,30 @@ export function CompactInquiryForm({ onSubmit, onCancel, initialData, isEditing 
                     placeholder="e.g., 500 KG"
                     className="w-full h-8 px-2 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
                     required
+                  />
+                </div>
+                <div className="col-span-6 sm:col-span-2">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Manufacturer
+                  </label>
+                  <input
+                    type="text"
+                    value={prod.supplierName || ''}
+                    onChange={(e) => updateProduct(index, 'supplierName', e.target.value)}
+                    placeholder="Factory"
+                    className="w-full h-8 px-2 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="col-span-5 sm:col-span-1">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Origin
+                  </label>
+                  <input
+                    type="text"
+                    value={prod.supplierCountry || ''}
+                    onChange={(e) => updateProduct(index, 'supplierCountry', e.target.value)}
+                    placeholder="India"
+                    className="w-full h-8 px-2 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
                 <div className="col-span-1 flex justify-center pb-1">

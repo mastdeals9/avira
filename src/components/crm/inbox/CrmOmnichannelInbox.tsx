@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import DOMPurify from 'dompurify';
 import { supabase } from '../../../lib/supabase';
 import { EnquiryWhatsAppService } from '../../../services/enquiry/EnquiryWhatsAppService';
+import { extractInquiryFromEmail } from '../../../utils/emailInquiryExtractor';
 import { showToast } from '../../ToastNotification';
 import { getSignedUrlCached } from '../../../utils/signedUrlCache';
 import {
@@ -236,27 +237,131 @@ export function CrmOmnichannelInbox({
   const handleExtractAndCreate = async (conv: InboxConversation) => {
     setIsExtractingAi(true);
     try {
-      const latestMsg = threadMessages[threadMessages.length - 1];
-      const emailBody = latestMsg?.body || conv.snippet;
+      // Duplicate prevention: if already linked to an inquiry, open it instead of creating a duplicate
+      if (conv.inquiryId) {
+        showToast({
+          type: 'info',
+          title: 'Inquiry Already Exists',
+          message: `This email is already linked to Inquiry #${conv.inquiryNumber || ''}.`,
+        });
+        onOpenInquiry?.(conv.inquiryId);
+        return;
+      }
+
+      if (conv.gmailMessageId) {
+        const { data: existingInq } = await supabase
+          .from('crm_inquiries')
+          .select('id, inquiry_number')
+          .eq('source_email_id', conv.gmailMessageId)
+          .limit(1)
+          .maybeSingle();
+        if (existingInq?.id) {
+          showToast({
+            type: 'info',
+            title: 'Inquiry Already Exists',
+            message: `This email was already converted to Inquiry #${existingInq.inquiry_number}.`,
+          });
+          onOpenInquiry?.(existingInq.id);
+          return;
+        }
+      }
+
+      // Ensure full message (body, bodyHtml, attachments, date) is loaded even if user clicked before thread finished
+      let latestMsg = threadMessages[threadMessages.length - 1];
+      if ((!latestMsg || (!latestMsg.bodyHtml && !latestMsg.body)) && conv.channel === 'email' && (conv.gmailThreadId || conv.gmailMessageId)) {
+        const threadMailbox = conv.mailboxAccount || activeMailbox;
+        const { data: msgData } = await supabase.functions.invoke('gmail-inbox-message', {
+          body: {
+            account: threadMailbox === 'kunal@avira.co.id' ? 'pricing' : 'crm',
+            emailAddress: threadMailbox,
+            threadId: conv.gmailThreadId,
+            messageId: conv.gmailMessageId,
+            includeThread: true,
+          },
+        });
+        if (msgData?.success && Array.isArray(msgData.thread_messages) && msgData.thread_messages.length > 0) {
+          const m = msgData.thread_messages[msgData.thread_messages.length - 1];
+          latestMsg = {
+            id: m.messageId,
+            from: m.from,
+            to: m.to,
+            cc: m.cc,
+            date: m.date,
+            subject: m.subject,
+            body: m.bodyText || m.body || m.snippet || '',
+            bodyHtml: m.bodyHtml,
+            snippet: m.snippet,
+            attachments: m.attachments || [],
+            direction: 'inbound',
+          };
+        }
+      }
+
+      const emailBody = latestMsg?.body || conv.snippet || '';
+      const emailBodyHtml = latestMsg?.bodyHtml || null;
       const emailSubject = conv.subject || latestMsg?.subject || '';
       const fromEmail = conv.senderAddress || latestMsg?.from || '';
-      const fromName = conv.senderName || '';
+      const fromName = conv.senderName && conv.senderName !== 'Email Sender' ? conv.senderName : '';
+      const receivedDate = latestMsg?.date || conv.timestamp || undefined;
+      const attachments = latestMsg?.attachments || [];
 
-      let parsedResult = null;
+      let parsedResult: any = null;
       try {
         const { data, error } = await supabase.functions.invoke('parse-pharma-email', {
           body: {
             emailSubject,
             emailBody,
+            emailBodyHtml,
             fromEmail,
             fromName,
+            receivedDate,
+            attachments,
           },
         });
         if (!error && data) {
           parsedResult = data.data || data.fallbackData || data;
         }
       } catch (invokeErr) {
-        console.warn('AI extraction invoke failed, proceeding with raw email:', invokeErr);
+        console.warn('AI extraction invoke failed, using deterministic HTML/email extractor:', invokeErr);
+      }
+
+      // Deterministic HTML-aware fallback/enrichment so raw email body is NEVER dumped into Remarks
+      const deterministic = extractInquiryFromEmail({
+        emailSubject,
+        emailBody,
+        emailBodyHtml,
+        fromEmail,
+        fromName,
+        receivedDate,
+        attachments,
+        knownCompanyName: conv.customerName,
+      });
+
+      if (!parsedResult || (!parsedResult.productName && (!Array.isArray(parsedResult.products) || parsedResult.products.length === 0))) {
+        parsedResult = {
+          ...deterministic,
+          ...(parsedResult || {}),
+          products: (Array.isArray(parsedResult?.products) && parsedResult.products.length > 0) ? parsedResult.products : deterministic.products,
+          productName: parsedResult?.productName || deterministic.productName,
+          quantity: parsedResult?.quantity || deterministic.quantity,
+          supplierName: parsedResult?.supplierName || deterministic.supplierName,
+          supplierCountry: parsedResult?.supplierCountry || deterministic.supplierCountry,
+          companyName: parsedResult?.companyName || deterministic.companyName,
+          contactPerson: parsedResult?.contactPerson || deterministic.contactPerson,
+          deliveryDateExpected: parsedResult?.deliveryDateExpected || deterministic.deliveryDateExpected,
+          remarks: parsedResult?.remarks ?? deterministic.remarks,
+          missingFields: deterministic.missingFields,
+          uncertainFields: deterministic.uncertainFields,
+        };
+      } else {
+        parsedResult = {
+          ...parsedResult,
+          companyName: parsedResult.companyName || deterministic.companyName,
+          contactPerson: parsedResult.contactPerson || deterministic.contactPerson,
+          deliveryDateExpected: parsedResult.deliveryDateExpected || deterministic.deliveryDateExpected,
+          missingFields: deterministic.missingFields,
+          uncertainFields: deterministic.uncertainFields,
+        };
       }
 
       if (onCreateInquiryFromMessage) {
@@ -266,7 +371,7 @@ export function CrmOmnichannelInbox({
             body: emailBody,
             fromEmail,
             fromName,
-            id: conv.id,
+            id: conv.gmailMessageId || conv.id,
           },
           parsedResult
         );
@@ -327,7 +432,7 @@ export function CrmOmnichannelInbox({
               channel: 'email',
               direction: folderFilter === 'sent' ? 'outbound' : 'inbound',
               mailboxAccount: activeMailbox,
-              senderName: m.fromName || m.fromEmail || 'Email Sender',
+              senderName: m.fromName || m.fromEmail || '',
               senderAddress: m.fromEmail || '',
               recipientAddress: m.toEmail || '',
               subject: m.subject || '(No Subject)',

@@ -265,7 +265,7 @@ export function CRM() {
     }
   }, [searchParams, activeTab]);
 
-  const handleCreateInquiryFromMessage = (
+  const handleCreateInquiryFromMessage = async (
     msg: {
       subject: string;
       body: string;
@@ -275,38 +275,74 @@ export function CRM() {
     },
     parsed?: any,
   ) => {
+    if (msg.id) {
+      const { data: existing } = await supabase
+        .from('crm_inquiries')
+        .select('id, inquiry_number')
+        .eq('source_email_id', msg.id)
+        .limit(1)
+        .maybeSingle();
+      if (existing?.id) {
+        handleOpenInquiry(existing.id);
+        return;
+      }
+    }
+
     setEditingInquiry(null);
     const products = Array.isArray(parsed?.products) ? parsed.products : [];
     const firstProd = products[0] || {};
+    const safeCompany =
+      parsed?.companyName &&
+      !['email sender', 'unknown', 'unknown company'].includes(String(parsed.companyName).trim().toLowerCase())
+        ? parsed.companyName
+        : (msg.fromName && msg.fromName !== 'Email Sender' && !msg.fromName.includes('@') ? msg.fromName : '');
 
     setPrefillInquiry({
-      company_name: parsed?.companyName || msg.fromName || '',
-      contact_person: parsed?.contactPerson || '',
+      company_name: safeCompany,
+      contact_person: parsed?.contactPerson || (msg.fromName && msg.fromName !== 'Email Sender' && !msg.fromName.includes('@') ? msg.fromName : ''),
       contact_email: parsed?.contactEmail || msg.fromEmail || '',
       contact_phone: parsed?.contactPhone || '',
       product_name: parsed?.productName || firstProd.productName || '',
       specification: parsed?.specification || firstProd.specification || '',
       quantity: parsed?.quantity || firstProd.quantity || '',
-      supplier_name: parsed?.supplierName || firstProd.supplierName || '',
+      supplier_name: parsed?.supplierName || firstProd.supplierName || firstProd.make || '',
       supplier_country: parsed?.supplierCountry || firstProd.supplierCountry || '',
+      purchase_price: parsed?.purchasePrice || firstProd.purchasePrice || '',
+      purchase_price_currency: parsed?.purchasePriceCurrency || firstProd.purchasePriceCurrency || 'USD',
+      offered_price: parsed?.offeredPrice || firstProd.offeredPrice || '',
+      offered_price_currency: parsed?.offeredPriceCurrency || firstProd.offeredPriceCurrency || 'USD',
       coa_required: Boolean(parsed?.coaRequested),
       msds_required: Boolean(parsed?.msdsRequested),
       sample_required: Boolean(parsed?.sampleRequested),
-      price_required: Boolean(parsed?.priceRequested),
+      price_required: parsed?.priceRequested ?? true,
+      agency_letter_required: Boolean(parsed?.agencyLetterRequested),
+      others_required: Boolean(parsed?.otherRequests),
+      delivery_date: parsed?.deliveryDateExpected || firstProd.deliveryDate || '',
+      delivery_terms: parsed?.deliveryTerms || firstProd.deliveryTerms || '',
       priority: parsed?.urgency || 'medium',
+      pipeline_status: 'new',
+      inquiry_source: 'email',
       mail_subject: msg.subject || '',
-      remarks: parsed?.remarks || msg.body?.slice(0, 500) || '',
+      email_body: msg.body || null,
+      remarks: parsed?.remarks || '',
       source_email_id: msg.id || null,
       is_multi_product: products.length > 1,
       products: products.map((p: any) => ({
         productName: p.productName || '',
         specification: p.specification || '',
         quantity: p.quantity || '',
-        supplierName: p.supplierName || '',
+        supplierName: p.supplierName || p.make || '',
         supplierCountry: p.supplierCountry || '',
         deliveryDate: p.deliveryDate || '',
         deliveryTerms: p.deliveryTerms || '',
       })),
+      extraction_meta: parsed
+        ? {
+            confidence: parsed.confidence || 'medium',
+            missingFields: Array.isArray(parsed.missingFields) ? parsed.missingFields : [],
+            uncertainFields: Array.isArray(parsed.uncertainFields) ? parsed.uncertainFields : [],
+          }
+        : null,
     });
     setModalOpen(true);
   };

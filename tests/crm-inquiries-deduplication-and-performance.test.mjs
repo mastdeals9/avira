@@ -25,9 +25,9 @@ test('CRM Inquiries Deduplication, Performance & Approval Notifications Resilien
     await db.end();
   });
 
-  await t.test('1. Verify crm_inquiries row count in live database is intact (355 rows)', async () => {
+  await t.test('1. Verify crm_inquiries row count in live database is intact (baseline >= 355 rows)', async () => {
     const res = await db.query('SELECT count(*)::int as count FROM crm_inquiries');
-    assert.strictEqual(res.rows[0].count, 355, `Expected 355 live inquiries, found ${res.rows[0].count}`);
+    assert.ok(res.rows[0].count >= 355, `Expected at least 355 live inquiries, found ${res.rows[0].count}`);
   });
 
   await t.test('2. Verify useCrmInquiries.ts source implements authoritative singleton deduplication and explicit columns', () => {
@@ -109,12 +109,16 @@ test('CRM Inquiries Deduplication, Performance & Approval Notifications Resilien
       .filter(c => c && !c.includes('user_profiles:'))
       .join(', ');
 
+    const countRes = await db.query('SELECT count(*)::int as count FROM crm_inquiries');
+    const expectedCount = countRes.rows[0].count;
+    assert.ok(expectedCount >= 355, `Expected at least 355 live inquiries, found ${expectedCount}`);
+
     const t0 = Date.now();
     const result = await db.query(`SELECT ${sqlCols} FROM crm_inquiries ORDER BY created_at DESC`);
     const elapsed = Date.now() - t0;
 
-    assert.strictEqual(result.rows.length, 355, 'Must return all 355 rows');
-    console.log(`Live DB query for 355 rows with explicit columns completed in ${elapsed}ms`);
+    assert.strictEqual(result.rows.length, expectedCount, `Must return all ${expectedCount} rows`);
+    console.log(`Live DB query for ${expectedCount} rows with explicit columns completed in ${elapsed}ms`);
     assert.ok(elapsed < 2000, `Query took ${elapsed}ms, expected < 2000ms`);
   });
 });

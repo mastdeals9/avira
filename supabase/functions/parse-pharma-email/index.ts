@@ -11,9 +11,64 @@ const corsHeaders = {
 interface EmailParseRequest {
   emailSubject: string;
   emailBody: string;
+  emailBodyHtml?: string | null;
   fromEmail: string;
   fromName?: string;
   receivedDate?: string;
+  attachments?: Array<{ filename: string; mimeType?: string; size?: number }>;
+}
+
+function decodeHtmlEntities(input: string): string {
+  return input
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)));
+}
+
+function htmlToStructuredEmailText(html: string): string {
+  if (!html) return '';
+  let text = html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ');
+
+  text = text.replace(/<table[\s\S]*?<\/table>/gi, (tableHtml) => {
+    const rows: string[] = [];
+    const trMatches = tableHtml.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+    for (const tr of trMatches) {
+      const cells = tr.match(/<t[hd][^>]*>[\s\S]*?<\/t[hd]>/gi) || [];
+      const cleanCells = cells.map((cell) =>
+        decodeHtmlEntities(
+          cell
+            .replace(/<br\s*\/?>/gi, ' ')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+        )
+      );
+      if (cleanCells.some((c) => c.length > 0)) {
+        rows.push(`| ${cleanCells.join(' | ')} |`);
+      }
+    }
+    return rows.length > 0 ? `\n${rows.join('\n')}\n` : '\n';
+  });
+
+  text = text
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '\n- ')
+    .replace(/<[^>]+>/g, ' ');
+
+  return decodeHtmlEntities(text)
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 interface ProductLine {
@@ -44,8 +99,15 @@ interface ParsedInquiry {
   msdsRequested: boolean;
   sampleRequested: boolean;
   priceRequested: boolean;
+  agencyLetterRequested?: boolean;
+  otherRequests?: boolean;
   purposeIcons: string[];
   deliveryDateExpected?: string;
+  deliveryTerms?: string | null;
+  purchasePrice?: string | null;
+  purchasePriceCurrency?: string | null;
+  offeredPrice?: string | null;
+  offeredPriceCurrency?: string | null;
   urgency: 'low' | 'medium' | 'high' | 'urgent';
   remarks?: string;
   confidence: 'high' | 'medium' | 'low';
@@ -69,7 +131,11 @@ Deno.serve(async (req: Request) => {
     const authResult = await requireRole(req, supabaseUrl, supabaseServiceKey, ["admin", "manager", "sales"], corsHeaders);
     if (!authResult.ok) return authResult.response;
 
-    const { emailSubject, emailBody, fromEmail, fromName, receivedDate }: EmailParseRequest = await req.json();
+    const { emailSubject, emailBody, emailBodyHtml, fromEmail, fromName, receivedDate, attachments }: EmailParseRequest = await req.json();
+
+    const structuredEmailBody = emailBodyHtml
+      ? htmlToStructuredEmailText(emailBodyHtml)
+      : (/<table|<tr|<td|<p|<div|<br/i.test(emailBody || '') ? htmlToStructuredEmailText(emailBody) : emailBody || '');
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -77,51 +143,67 @@ Deno.serve(async (req: Request) => {
     let actualFromName = fromName;
     let isForwarded = false;
 
-    const internalDomain = 'anzen.co.in';
-    const fromDomain = fromEmail.split('@')[1]?.toLowerCase();
+    const internalDomains = ['anzen.co.in', 'avira.co.id', 'sapharmajaya.co.id'];
+    const fromDomain = actualFromEmail.split('@')[1]?.toLowerCase();
 
-    if (fromDomain === internalDomain) {
+    if (fromDomain && internalDomains.includes(fromDomain)) {
       isForwarded = true;
 
-      const fwdEmailMatch = emailBody.match(/From:\s*([^<\n]+)\s*<([^>]+)>|From:\s*([^\n@]+@[^\n\s]+)/i);
+      const fwdEmailMatch = structuredEmailBody.match(/From:\s*([^<\n]+)\s*<([^>]+)>|From:\s*([^\n@]+@[^\n\s]+)/i);
       if (fwdEmailMatch) {
         actualFromEmail = fwdEmailMatch[2] || fwdEmailMatch[3] || fromEmail;
         actualFromName = fwdEmailMatch[1]?.trim() || fromName;
       } else {
-        const simpleEmailMatch = emailBody.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-        if (simpleEmailMatch && !simpleEmailMatch[1].includes(internalDomain)) {
+        const simpleEmailMatch = structuredEmailBody.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+        if (simpleEmailMatch && !internalDomains.some((d) => simpleEmailMatch[1].toLowerCase().includes(d))) {
           actualFromEmail = simpleEmailMatch[1];
         }
       }
     }
 
     const domain = actualFromEmail.split('@')[1]?.toLowerCase();
-    let companyFromDomain = null;
+    let companyFromDomain: string | null = null;
     let autoDetectedCompany = false;
 
     if (domain) {
       const { data: domainMapping } = await supabase
         .from('crm_company_domain_mapping')
-        .select('company_name, confidence_score')
+        .select('company_name, confidence_score, match_count')
         .eq('email_domain', domain)
         .maybeSingle();
 
-      if (domainMapping) {
+      if (domainMapping?.company_name) {
         companyFromDomain = domainMapping.company_name;
         autoDetectedCompany = true;
 
         await supabase
           .from('crm_company_domain_mapping')
-          .update({ 
-            match_count: supabase.rpc('increment', { row_id: domain }),
-            last_matched: new Date().toISOString() 
+          .update({
+            match_count: (domainMapping.match_count || 0) + 1,
+            last_matched: new Date().toISOString(),
           })
           .eq('email_domain', domain);
+      } else {
+        const { data: contactMatch } = await supabase
+          .from('crm_contacts')
+          .select('company_name')
+          .or(`email.ilike.${actualFromEmail},email.ilike.%@${domain}`)
+          .eq('is_active', true)
+          .limit(1)
+          .maybeSingle();
+        if (contactMatch?.company_name) {
+          companyFromDomain = contactMatch.company_name;
+          autoDetectedCompany = true;
+        }
       }
     }
 
     const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
     if (!openaiApiKey) {
+      const safeFallbackContact =
+        actualFromName && actualFromName !== 'Email Sender' && !actualFromName.includes('@')
+          ? actualFromName
+          : null;
       return new Response(
         JSON.stringify({
           success: false,
@@ -130,9 +212,10 @@ Deno.serve(async (req: Request) => {
             productName: '',
             specification: null,
             quantity: '',
-            companyName: companyFromDomain || 'Unknown Company',
-            contactPerson: fromName || null,
-            contactEmail: fromEmail,
+            companyName: companyFromDomain || safeFallbackContact || '',
+            contactPerson: safeFallbackContact,
+            contactEmail: actualFromEmail,
+            remarks: null,
             coaRequested: false,
             msdsRequested: false,
             sampleRequested: false,
@@ -306,9 +389,9 @@ IMPORTANT: All dates must be in YYYY-MM-DD format.`;
     const allEmailAddresses: string[] = [];
     const emailRegex = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
     let match;
-    while ((match = emailRegex.exec(emailBody)) !== null) {
+    while ((match = emailRegex.exec(structuredEmailBody)) !== null) {
       const foundEmail = match[1].toLowerCase();
-      if (!foundEmail.includes(internalDomain) && !allEmailAddresses.includes(foundEmail)) {
+      if (!internalDomains.some((d) => foundEmail.includes(d)) && !allEmailAddresses.includes(foundEmail)) {
         allEmailAddresses.push(foundEmail);
       }
     }
@@ -316,24 +399,28 @@ IMPORTANT: All dates must be in YYYY-MM-DD format.`;
       allEmailAddresses.unshift(actualFromEmail.toLowerCase());
     }
 
+    const attachmentNote = Array.isArray(attachments) && attachments.length > 0
+      ? `\nATTACHMENTS: ${attachments.map((a) => a.filename).filter(Boolean).join(', ')}`
+      : '';
+
     const userPrompt = `Parse this pharmaceutical inquiry email:
 
 SUBJECT: ${emailSubject}
-FROM: ${actualFromName || ''} <${actualFromEmail}>
+FROM: ${actualFromName && actualFromName !== 'Email Sender' ? actualFromName : ''} <${actualFromEmail}>
 ${isForwarded ? `\nNOTE: This email was FORWARDED from internal team. Extract the ORIGINAL sender's details from the forwarded email body (look for "From:", "Date:", lines).` : ''}
 ${companyFromDomain ? `\nKNOWN COMPANY (from domain): ${companyFromDomain}` : ''}
-${receivedDate ? `\nRECEIVED DATE: ${receivedDate}` : ''}
-${allEmailAddresses.length > 1 ? `\nALL EMAIL ADDRESSES FOUND: ${allEmailAddresses.join(', ')}` : ''}
+${receivedDate ? `\nEMAIL RECEIVED DATE (DO NOT use as deliveryDateExpected): ${receivedDate}` : ''}
+${allEmailAddresses.length > 1 ? `\nALL EMAIL ADDRESSES FOUND: ${allEmailAddresses.join(', ')}` : ''}${attachmentNote}
 
-BODY:
-${emailBody}
+BODY (HTML tables have been converted to pipe-delimited rows):
+${structuredEmailBody}
 
 **CRITICAL EXTRACTION INSTRUCTIONS:**
-1. IGNORE ALL HTML TAGS - Extract only actual text content
-2. For contact email: Look for email format like "name@company.com" in the forwarded "From:" line
-3. For contact person: Extract actual name from "From:" line, NOT HTML tags
-4. If you see HTML like "strong class=..." - IGNORE IT and find the actual email/name nearby
-5. Example: If you see "From: purchasing <purchasing@trifa.co.id>" → contactPerson: "purchasing", contactEmail: "purchasing@trifa.co.id"
+1. Distinguish EMAIL RECEIVED DATE from REQUESTED DELIVERY / ARRIVAL DATE. Never use RECEIVED DATE as deliveryDateExpected. Never invent a delivery date if none is stated.
+2. NEVER copy the email body into "remarks". Set "remarks" to null unless there are extra commercial/packaging/regulatory/delivery instructions not already captured in structured fields.
+3. Never invent specification, purchasePrice, or offeredPrice if not explicitly stated (return null).
+4. Customer companyName is the BUYER (from email signature/header/domain, e.g., "PT Erela"), NEVER the supplier/factory and NEVER "Email Sender".
+5. Also extract agencyLetterRequested (boolean), otherRequests (boolean), and deliveryTerms (string | null).
 
 EXTRACT ALL PRODUCTS. If email contains a table with multiple products, extract each row as a separate product in the products array.
 
@@ -372,29 +459,39 @@ Respond with a JSON object containing the extracted information.`;
     if (purposeIcons.length === 0) purposeIcons.push('price');
 
     const extractedCompany = aiResponse.companyName || aiResponse.company_name || aiResponse.company;
-    const finalCompanyName = companyFromDomain || extractedCompany || 'Unknown Company';
+    const sanitizedExtractedCompany =
+      extractedCompany && !['email sender', 'unknown', 'unknown company'].includes(String(extractedCompany).trim().toLowerCase())
+        ? String(extractedCompany).trim()
+        : null;
+    const finalCompanyName = companyFromDomain || sanitizedExtractedCompany || '';
 
-    if (!companyFromDomain && extractedCompany && domain) {
+    if (!companyFromDomain && sanitizedExtractedCompany && domain) {
       await supabase
         .from('crm_company_domain_mapping')
         .insert({
           email_domain: domain,
-          company_name: extractedCompany,
+          company_name: sanitizedExtractedCompany,
           confidence_score: aiResponse.confidenceScore || 0.7,
           is_verified: false,
           match_count: 1,
-        })
-        .then(() => {
-          autoDetectedCompany = false;
         });
     }
 
+    const products = Array.isArray(aiResponse.products) ? aiResponse.products : [];
+    const firstProduct = products[0] || {};
+    const resolvedProductName = firstProduct.productName || aiResponse.productName || aiResponse.product_name || (products.length > 1 ? 'Multiple Products' : '');
+
     const isValidInquiry = aiResponse.isInquiry !== false &&
                            (aiResponse.confidenceScore || aiResponse.confidence_score || 0.7) >= 0.4 &&
-                           (aiResponse.productName || aiResponse.product_name);
+                           Boolean(resolvedProductName);
 
-    const products = aiResponse.products || [];
-    const firstProduct = products[0] || {};
+    const cleanRemarks =
+      aiResponse.remarks &&
+      typeof aiResponse.remarks === 'string' &&
+      aiResponse.remarks.trim().length > 0 &&
+      aiResponse.remarks.trim() !== structuredEmailBody.trim()
+        ? aiResponse.remarks.trim()
+        : null;
 
     const parsedInquiry: ParsedInquiry = {
       products: products.map((p: any) => ({
@@ -402,30 +499,37 @@ Respond with a JSON object containing the extracted information.`;
         specification: p.specification || p.spec || p.grade || null,
         quantity: p.quantity || '',
         make: p.make || p.manufacturer || null,
-        supplierName: p.supplierName || p.supplier_name || p.supplier || p.origin || null,
-        supplierCountry: p.supplierCountry || p.supplier_country || p.country || null,
+        supplierName: p.supplierName || p.supplier_name || p.supplier || p.make || p.manufacturer || null,
+        supplierCountry: p.supplierCountry || p.supplier_country || p.country || p.origin || null,
         deliveryDate: p.deliveryDate || p.delivery_date || p.tglDatang || p.tgl_datang || null,
         deliveryTerms: p.deliveryTerms || p.delivery_terms || null,
         itemNumber: p.itemNumber || p.item_number || null,
         etdPo: p.etdPo || p.etd_po || p.etd || null,
       })),
-      productName: firstProduct.productName || aiResponse.productName || aiResponse.product_name || (products.length > 1 ? 'Multiple Products' : ''),
+      productName: resolvedProductName,
       specification: firstProduct.specification || aiResponse.specification || aiResponse.spec || aiResponse.grade || null,
       quantity: firstProduct.quantity || aiResponse.quantity || '',
-      supplierName: aiResponse.supplierName || aiResponse.supplier_name || aiResponse.supplier || null,
-      supplierCountry: aiResponse.supplierCountry || aiResponse.supplier_country || aiResponse.country || null,
+      supplierName: firstProduct.supplierName || aiResponse.supplierName || aiResponse.supplier_name || aiResponse.supplier || null,
+      supplierCountry: firstProduct.supplierCountry || aiResponse.supplierCountry || aiResponse.supplier_country || aiResponse.country || null,
       companyName: finalCompanyName,
-      contactPerson: aiResponse.contactPerson || aiResponse.contact_person || aiResponse.contact || actualFromName || null,
+      contactPerson: aiResponse.contactPerson || aiResponse.contact_person || aiResponse.contact || (actualFromName && actualFromName !== 'Email Sender' ? actualFromName : null),
       contactEmail: actualFromEmail,
       contactPhone: aiResponse.contactPhone || aiResponse.contact_phone || aiResponse.phone || aiResponse.whatsapp || null,
-      coaRequested: aiResponse.coaRequested || aiResponse.coa_requested || aiResponse.coa || false,
-      msdsRequested: aiResponse.msdsRequested || aiResponse.msds_requested || aiResponse.msds || false,
-      sampleRequested: aiResponse.sampleRequested || aiResponse.sample_requested || aiResponse.sample || false,
-      priceRequested: aiResponse.priceRequested || aiResponse.price_requested || aiResponse.price || true,
+      coaRequested: Boolean(aiResponse.coaRequested || aiResponse.coa_requested || aiResponse.coa),
+      msdsRequested: Boolean(aiResponse.msdsRequested || aiResponse.msds_requested || aiResponse.msds),
+      sampleRequested: Boolean(aiResponse.sampleRequested || aiResponse.sample_requested || aiResponse.sample),
+      priceRequested: aiResponse.priceRequested ?? aiResponse.price_requested ?? aiResponse.price ?? true,
+      agencyLetterRequested: Boolean(aiResponse.agencyLetterRequested || aiResponse.agency_letter_requested),
+      otherRequests: Boolean(aiResponse.otherRequests || aiResponse.other_requests),
       purposeIcons,
-      deliveryDateExpected: aiResponse.deliveryDateExpected || aiResponse.delivery_date || aiResponse.deliveryDate || null,
+      deliveryDateExpected: aiResponse.deliveryDateExpected || aiResponse.delivery_date || aiResponse.deliveryDate || firstProduct.deliveryDate || firstProduct.delivery_date || null,
+      deliveryTerms: aiResponse.deliveryTerms || aiResponse.delivery_terms || firstProduct.deliveryTerms || firstProduct.delivery_terms || null,
+      purchasePrice: aiResponse.purchasePrice || null,
+      purchasePriceCurrency: aiResponse.purchasePriceCurrency || null,
+      offeredPrice: aiResponse.offeredPrice || null,
+      offeredPriceCurrency: aiResponse.offeredPriceCurrency || null,
       urgency: aiResponse.urgency || 'medium',
-      remarks: aiResponse.remarks || aiResponse.notes || aiResponse.additional_info || null,
+      remarks: cleanRemarks,
       confidence: isValidInquiry ? (aiResponse.confidence || 'medium') : 'low',
       confidenceScore: isValidInquiry ? (aiResponse.confidenceScore || aiResponse.confidence_score || 0.7) : 0.1,
       detectedLanguage: aiResponse.detectedLanguage || aiResponse.language || 'unknown',
