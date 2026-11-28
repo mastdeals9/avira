@@ -9,6 +9,7 @@ import * as XLSX from 'xlsx';
 import { sanitizeExportRows } from '../../utils/csvSafe';
 import { useFinance } from '../../contexts/FinanceContext';
 import {
+  fetchAllPages,
   summarizePostedGlFx,
   computeSupplierSettlementBridge,
   type RevaluationLineRef,
@@ -157,28 +158,27 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       const startDate = dateRange?.startDate || '2025-01-01';
       const endDate = dateRange?.endDate || '2026-12-31';
 
-      // 1. Fetch Revaluations Audit Trail FIRST so GL entries are classified by fx_revaluations.journal_entry_id
+      // 1. Fetch Revaluations Audit Trail FIRST (paginated)
       let revDataList: any[] = [];
       try {
-        const { data: revData } = await supabase
-          .from('fx_revaluations')
-          .select(`
-            id, revaluation_number, revaluation_date, period_name, currency, closing_rate,
-            rate_source, total_gain_loss, status, journal_entry_id, created_at,
-            journal_entries(entry_number, description),
-            fx_revaluation_lines(
-              id, purchase_invoice_id, line_type, foreign_amount, carrying_rate, carrying_amount_idr,
-              revalued_rate, revalued_amount_idr, fx_difference, gain_loss_type,
-              purchase_invoices(invoice_number),
-              bank_accounts(account_name)
-            )
-          `)
-          .order('revaluation_date', { ascending: false });
-
-        if (revData) {
-          revDataList = revData;
-          setRevaluationsList(revData);
-        }
+        revDataList = await fetchAllPages<any>((from, to) =>
+          supabase
+            .from('fx_revaluations')
+            .select(`
+              id, revaluation_number, revaluation_date, period_name, currency, closing_rate,
+              rate_source, total_gain_loss, status, journal_entry_id, created_at,
+              journal_entries(entry_number, description),
+              fx_revaluation_lines(
+                id, purchase_invoice_id, line_type, foreign_amount, carrying_rate, carrying_amount_idr,
+                revalued_rate, revalued_amount_idr, fx_difference, gain_loss_type,
+                purchase_invoices(invoice_number),
+                bank_accounts(account_name)
+              )
+            `)
+            .order('revaluation_date', { ascending: false })
+            .range(from, to)
+        );
+        setRevaluationsList(revDataList);
       } catch (revErr) {
         console.warn('Could not fetch fx_revaluations:', revErr);
       }
@@ -216,47 +216,42 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       }
       setLatestPostedRevalRate(latestPostedRate);
 
-      // 2. Fetch USD Purchase Invoices
-      const { data: piData, error: piErr } = await supabase
-        .from('purchase_invoices')
-        .select(`
-          id, invoice_number, invoice_date, currency, exchange_rate, total_amount, paid_amount, balance_amount, status,
-          suppliers(id, company_name)
-        `)
-        .eq('currency', 'USD')
-        .order('invoice_date', { ascending: true });
+      // 2. Fetch USD Purchase Invoices (paginated)
+      const piData = await fetchAllPages<any>((from, to) =>
+        supabase
+          .from('purchase_invoices')
+          .select(`
+            id, invoice_number, invoice_date, currency, exchange_rate, total_amount, paid_amount, balance_amount, status,
+            suppliers(id, company_name)
+          `)
+          .eq('currency', 'USD')
+          .order('invoice_date', { ascending: true })
+          .range(from, to)
+      );
 
-      if (piErr) throw piErr;
+      // 3. Fetch ALL posted Payment Vouchers (paginated; both IDR-bank FX conversions AND USD-bank settlements)
+      const pvData = await fetchAllPages<any>((from, to) =>
+        supabase
+          .from('payment_vouchers')
+          .select(`
+            id, voucher_number, voucher_date, payment_currency, exchange_rate, amount,
+            converted_amount, actual_bank_debit, bank_amount, bank_charge, is_posted, journal_entry_id,
+            bank_accounts(bank_name, account_name, account_number, currency),
+            journal_entries(id, entry_number)
+          `)
+          .eq('is_posted', true)
+          .order('voucher_date', { ascending: true })
+          .range(from, to)
+      );
 
-      // 3. Fetch ALL posted Payment Vouchers (both IDR-bank FX conversions AND USD-bank settlements)
-      const { data: pvData, error: pvErr } = await supabase
-        .from('payment_vouchers')
-        .select(`
-          id, voucher_number, voucher_date, payment_currency, exchange_rate, amount,
-          converted_amount, actual_bank_debit, bank_amount, bank_charge, is_posted, journal_entry_id,
-          bank_accounts(bank_name, account_name, account_number, currency),
-          journal_entries(id, entry_number)
-        `)
-        .eq('is_posted', true)
-        .order('voucher_date', { ascending: true });
-
-      if (pvErr) throw pvErr;
-
-      // 4. Fetch Voucher Allocations (paginated if large)
-      const allocData: any[] = [];
-      let allocFrom = 0;
+      // 4. Fetch Voucher Allocations (paginated)
       const pageSize = 1000;
-      while (true) {
-        const { data: page, error: allocErr } = await supabase
+      const allocData = await fetchAllPages<any>((from, to) =>
+        supabase
           .from('voucher_allocations')
           .select('id, allocated_amount, allocated_currency, purchase_invoice_id, payment_voucher_id, sales_invoice_id, receipt_voucher_id')
-          .range(allocFrom, allocFrom + pageSize - 1);
-        if (allocErr) throw allocErr;
-        if (!page || page.length === 0) break;
-        allocData.push(...page);
-        if (page.length < pageSize) break;
-        allocFrom += pageSize;
-      }
+          .range(from, to)
+      );
 
       // 5. Fetch Posted, Non-Reversed, Non-Cancelled GL lines for FX accounts 7300 and 4930 (paginated + date filtered)
       const glLines: PostedGlFxLine[] = [];
@@ -330,12 +325,18 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
               const netAmt = coa.code === '7300'
                 ? Number(line.debit || 0) - Number(line.credit || 0)
                 : Number(line.credit || 0) - Number(line.debit || 0);
-              pvRefToFxJeMap.set(je.reference_number.trim(), {
+              const rawRef = je.reference_number.trim();
+              const baseRef = rawRef.replace(/-CORR$/i, '');
+              const entry = {
                 id: je.id,
                 entry_number: je.entry_number,
                 amount: netAmt,
                 account_code: coa.code,
-              });
+              };
+              pvRefToFxJeMap.set(rawRef, entry);
+              if (baseRef !== rawRef && !pvRefToFxJeMap.has(baseRef)) {
+                pvRefToFxJeMap.set(baseRef, entry);
+              }
             }
           }
         }
@@ -364,6 +365,26 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
         const bankObj: any = Array.isArray(pv.bank_accounts) ? pv.bank_accounts[0] : pv.bank_accounts;
         const isUsdBank = (bankObj?.currency || '').toUpperCase() === 'USD';
 
+        const fxJe = pvRefToFxJeMap.get(pv.voucher_number.trim());
+        // For USD-bank settlements (e.g. PV/25-26/003 -> JE2611-0313), derive functional IDR bank outflow
+        // from the linked FX journal when pv.exchange_rate <= 1, never assuming bank rate == PI rate.
+        let actualFunctionalIdr: number | null = null;
+        if (isUsdBank && pvSettleRate <= 1 && fxJe) {
+          const preBridge = computeSupplierSettlementBridge({
+            usdSettled,
+            originalPiRate: piRecRate,
+            settlementRate: pvSettleRate,
+            settlementDate: pv.voucher_date,
+            isUsdBankSettlement: true,
+            priorRevalLines: piRevalLinesMap.get(pi.id) || [],
+          });
+          // 7300 debit = loss (outflow > carrying); 4930 credit = gain (outflow < carrying)
+          actualFunctionalIdr =
+            fxJe.account_code === '7300'
+              ? preBridge.carrying_before_settlement_idr + fxJe.amount
+              : preBridge.carrying_before_settlement_idr - fxJe.amount;
+        }
+
         const bridge = computeSupplierSettlementBridge({
           usdSettled,
           originalPiRate: piRecRate,
@@ -371,6 +392,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           settlementDate: pv.voucher_date,
           isUsdBankSettlement: isUsdBank,
           priorRevalLines: piRevalLinesMap.get(pi.id) || [],
+          actualFunctionalSettlementIdr: actualFunctionalIdr,
         });
 
         const suppObj: any = Array.isArray(pi.suppliers) ? pi.suppliers[0] : pi.suppliers;
@@ -379,7 +401,10 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           : 'Bank';
 
         const jeObj: any = Array.isArray(pv.journal_entries) ? pv.journal_entries[0] : pv.journal_entries;
-        const fxJe = pvRefToFxJeMap.get(pv.voucher_number.trim());
+        const derivedSettleRate =
+          isUsdBank && pvSettleRate <= 1 && usdSettled > 0
+            ? Math.round((bridge.actual_settlement_idr / usdSettled) * 100) / 100
+            : pvSettleRate;
 
         sLines.push({
           id: alloc.id,
@@ -395,7 +420,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           recognition_rate: piRecRate,
           original_idr_carrying: Number(pi.total_amount || 0) * piRecRate,
           usd_settled: usdSettled,
-          settlement_rate: isUsdBank && pvSettleRate <= 1 ? bridge.effective_carrying_rate_before_settlement : pvSettleRate,
+          settlement_rate: derivedSettleRate,
           is_usd_bank_settlement: isUsdBank,
           prior_revaluation_fx: bridge.prior_revaluation_fx,
           carrying_before_settlement_idr: bridge.carrying_before_settlement_idr,
@@ -471,26 +496,61 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       }
       setOpenExposures(exposures);
 
-      // 8. Customer Receipts FX (posted receipts allocated to sales invoices within dateRange)
-      const { data: rvData } = await supabase
-        .from('receipt_vouchers')
-        .select(`
-          id, voucher_number, voucher_date, payment_currency, exchange_rate, amount,
-          settlement_amount, is_posted, journal_entry_id,
-          customers(id, company_name),
-          bank_accounts(bank_name, account_name, account_number, currency),
-          journal_entries(id, entry_number)
-        `)
-        .eq('is_posted', true)
-        .gte('voucher_date', startDate)
-        .lte('voucher_date', endDate);
+      // 8. Customer Receipts FX (paginated; posted receipts allocated to sales invoices; USD-bank receipts use actual bank carrying / FX journals)
+      const rvData = await fetchAllPages<any>((from, to) =>
+        supabase
+          .from('receipt_vouchers')
+          .select(`
+            id, voucher_number, voucher_date, payment_currency, exchange_rate, amount,
+            settlement_amount, is_posted, journal_entry_id,
+            customers(id, company_name),
+            bank_accounts(bank_name, account_name, account_number, currency),
+            journal_entries(id, entry_number)
+          `)
+          .eq('is_posted', true)
+          .gte('voucher_date', startDate)
+          .lte('voucher_date', endDate)
+          .range(from, to)
+      );
 
-      const { data: siUsdData } = await supabase
-        .from('sales_invoices')
-        .select('id, invoice_number, exchange_rate, total_amount, sales_orders(currency, commercial_usd_to_idr_rate)');
+      const siData = await fetchAllPages<any>((from, to) =>
+        supabase
+          .from('sales_invoices')
+          .select(`
+            id, invoice_number, total_amount, subtotal, journal_entry_id,
+            journal_entries(id, entry_number, exchange_rate, transaction_currency, is_posted, is_reversed, is_cancelled)
+          `)
+          .range(from, to)
+      );
 
-      const siMap = new Map<string, any>((siUsdData || []).map((s: any) => [s.id, s]));
-      const rvMap = new Map<string, any>((rvData || []).map((r: any) => [r.id, r]));
+      // Fetch posted journal lines for USD-bank receipt vouchers to derive functional bank asset carrying value
+      const usdBankRvJeIds = rvData
+        .filter((r: any) => {
+          const b: any = Array.isArray(r.bank_accounts) ? r.bank_accounts[0] : r.bank_accounts;
+          return (b?.currency || '').toUpperCase() === 'USD' && Number(r.exchange_rate || 1) <= 1 && r.journal_entry_id;
+        })
+        .map((r: any) => r.journal_entry_id as string);
+
+      const rvBankCarryMap = new Map<string, number>();
+      if (usdBankRvJeIds.length > 0) {
+        for (let i = 0; i < usdBankRvJeIds.length; i += 200) {
+          const chunk = usdBankRvJeIds.slice(i, i + 200);
+          const { data: rvJeLines } = await supabase
+            .from('journal_entry_lines')
+            .select('journal_entry_id, debit, credit, chart_of_accounts(code)')
+            .in('journal_entry_id', chunk);
+          for (const jl of rvJeLines || []) {
+            const coaCode = (jl as any).chart_of_accounts?.code;
+            // Bank asset account (e.g. 111102) debit represents functional IDR bank carrying value
+            if (coaCode && coaCode.startsWith('111') && Number(jl.debit || 0) > 0) {
+              rvBankCarryMap.set(jl.journal_entry_id, (rvBankCarryMap.get(jl.journal_entry_id) || 0) + Number(jl.debit));
+            }
+          }
+        }
+      }
+
+      const siMap = new Map<string, any>(siData.map((s: any) => [s.id, s]));
+      const rvMap = new Map<string, any>(rvData.map((r: any) => [r.id, r]));
 
       const cLines: CustomerFxLine[] = [];
       for (const alloc of allocData) {
@@ -498,19 +558,54 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
         const rv = rvMap.get(alloc.receipt_voucher_id);
         const si = siMap.get(alloc.sales_invoice_id);
         if (!rv || !si) continue;
-        const isUsdRv = (rv.payment_currency || '').toUpperCase() === 'USD' || (alloc.allocated_currency || '').toUpperCase() === 'USD';
-        if (!isUsdRv) continue;
+
+        const siJe: any = Array.isArray(si.journal_entries) ? si.journal_entries[0] : si.journal_entries;
+        const isUsdInvoiceJe =
+          siJe &&
+          siJe.is_posted &&
+          !siJe.is_reversed &&
+          !siJe.is_cancelled &&
+          (siJe.transaction_currency || '').toUpperCase() === 'USD';
+        const isUsdRv =
+          (rv.payment_currency || '').toUpperCase() === 'USD' ||
+          (alloc.allocated_currency || '').toUpperCase() === 'USD';
+        if (!isUsdRv && !isUsdInvoiceJe) continue;
 
         const custObj: any = Array.isArray(rv.customers) ? rv.customers[0] : rv.customers;
         const bankObj: any = Array.isArray(rv.bank_accounts) ? rv.bank_accounts[0] : rv.bank_accounts;
         const jeObj: any = Array.isArray(rv.journal_entries) ? rv.journal_entries[0] : rv.journal_entries;
+        const isUsdBank = (bankObj?.currency || '').toUpperCase() === 'USD';
 
         const rvRate = Number(rv.exchange_rate || 1);
-        const soObj: any = Array.isArray(si.sales_orders) ? si.sales_orders[0] : si.sales_orders;
-        const recRate = Number(si.exchange_rate || soObj?.commercial_usd_to_idr_rate || rvRate);
         const usdAmt = Number(alloc.allocated_amount || rv.amount || 0);
+        // Accounting recognition rate strictly from the posted sales invoice journal (never commercial SO rate)
+        const recRate = isUsdInvoiceJe && Number(siJe.exchange_rate || 0) > 1
+          ? Number(siJe.exchange_rate)
+          : rvRate;
         const carryingSettled = Math.round(usdAmt * recRate * 100) / 100;
-        const actualIdr = Math.round(usdAmt * rvRate * 100) / 100;
+
+        // For USD customer receipts into USD bank accounts (exchange_rate = 1), derive functional IDR
+        // from actual bank asset carrying value in posted journal lines or linked FX journal (not rate=1)
+        const rvFxJe = pvRefToFxJeMap.get((rv.voucher_number || '').trim());
+        const bankAssetIdr = rv.journal_entry_id ? rvBankCarryMap.get(rv.journal_entry_id) : undefined;
+        let actualIdr: number;
+        if (isUsdBank && rvRate <= 1) {
+          if (bankAssetIdr && bankAssetIdr > usdAmt) {
+            const rvTotalUsd = Number(rv.amount || usdAmt) || 1;
+            actualIdr = Math.round((bankAssetIdr * (usdAmt / rvTotalUsd)) * 100) / 100;
+          } else if (rvFxJe) {
+            actualIdr = rvFxJe.account_code === '4930'
+              ? Math.round((carryingSettled + rvFxJe.amount) * 100) / 100
+              : Math.round((carryingSettled - rvFxJe.amount) * 100) / 100;
+          } else {
+            actualIdr = carryingSettled;
+          }
+        } else {
+          actualIdr = Math.round(usdAmt * rvRate * 100) / 100;
+        }
+        const effectiveReceiptRate = isUsdBank && rvRate <= 1 && usdAmt > 0
+          ? Math.round((actualIdr / usdAmt) * 100) / 100
+          : rvRate;
         const fxDiff = Math.round((actualIdr - carryingSettled) * 100) / 100; // > 0 is gain on receivable
 
         cLines.push({
@@ -526,7 +621,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           recognition_rate: recRate,
           original_idr_carrying: carryingSettled,
           usd_received: usdAmt,
-          receipt_rate: rvRate,
+          receipt_rate: effectiveReceiptRate,
           actual_idr_received: actualIdr,
           carrying_idr_settled: carryingSettled,
           fx_gain_loss: fxDiff,

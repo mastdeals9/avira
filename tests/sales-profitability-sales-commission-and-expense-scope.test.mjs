@@ -43,9 +43,9 @@ test('5. Mathematical allocation method is preserved using sales value and quant
   assert.match(migration, /ROUND\(e\.total_expense \* s\.quantity \/ d\.total_qty, 2\)/);
 });
 
-test('6. UI tooltips accurately reflect all sales expenses including commissions', () => {
-  assert.match(ui, /commission\/marketing/);
-  assert.match(ui, /Allocated sales expense \(delivery, loading, commission\) per sold unit/);
+test('6. UI displays sales expenses and unallocated sales expense disclosure', () => {
+  assert.match(ui, /Sales Expenses/);
+  assert.match(ui, /unallocated_sales_expenses/);
 });
 
 test('7. Migration is strictly report-only and does not modify accounting or business records', () => {

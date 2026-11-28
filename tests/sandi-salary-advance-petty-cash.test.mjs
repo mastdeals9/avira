@@ -4,7 +4,7 @@ import pg from 'pg';
 
 const DB_CONNECTION =
   process.env.SUPABASE_DB_URL ||
-  'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+  (process.env.READONLY_AUDIT_DB_URL || '');
 
 test('Sandi Prasetyo Salary Advance via Petty Cash Verification Suite', async (t) => {
   const client = new pg.Client({

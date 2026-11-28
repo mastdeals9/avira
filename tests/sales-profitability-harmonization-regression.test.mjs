@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import pg from '/Users/Kunal/Documents/anzen-main/node_modules/pg/lib/index.js';
 
 const MIGRATION_PATH = 'supabase/migrations/20261103010000_harmonize_all_sales_profitability_reports.sql';
-const DB_URL = process.env.DATABASE_URL || "postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres";
+const DB_URL = process.env.READONLY_AUDIT_DB_URL || (process.env.READONLY_AUDIT_DB_URL || '');
 
 test('1. Migration File Structure: Harmonization of All Sales Reports', () => {
   assert.ok(fs.existsSync(MIGRATION_PATH), 'Migration file must exist');

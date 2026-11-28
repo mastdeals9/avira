@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 const client = new pg.Client({
-  connectionString: 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres'
+  connectionString: (process.env.READONLY_AUDIT_DB_URL || '')
 });
 
 await client.connect();

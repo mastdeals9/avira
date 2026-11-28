@@ -10,8 +10,8 @@ import {
 } from '../src/utils/phoneValidation.ts';
 
 const DB_URL =
-  process.env.DATABASE_URL ||
-  'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+  process.env.READONLY_AUDIT_DB_URL ||
+  (process.env.READONLY_AUDIT_DB_URL || '');
 
 test('SAPJ CRM Multi-Phone & Contact Management Suite', async (t) => {
   await t.test('1. Compound Phone Parsing: splits delimiters safely without mangling formatting spaces', () => {

@@ -1,6 +1,6 @@
 import pg from 'pg';
 
-const DB_CONN = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+const DB_CONN = (process.env.READONLY_AUDIT_DB_URL || '');
 
 function normalizeDocType(raw) {
   if (!raw) return 'OTHER';

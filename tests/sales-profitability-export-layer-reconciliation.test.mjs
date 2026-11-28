@@ -38,11 +38,11 @@ test('sales profitability engine defines authoritative cost-layer resolution', (
     'Must fall back to cogs_total_cost'
   );
 
-  // Priority 3: batch landed/authoritative cost fallback
+  // Priority 3: fail closed to null (never fall back to current batch cost)
   assert.match(
     engineCode,
-    /batchCostPerUnit|cost_per_unit/,
-    'Must fall back to batch authoritative cost if no line layer allocation exists'
+    /unresolved:\s*true/,
+    'Must fail closed with unresolved: true when no authoritative cost snapshot exists'
   );
 
   // Verify fetchCanonicalSalesProfitability

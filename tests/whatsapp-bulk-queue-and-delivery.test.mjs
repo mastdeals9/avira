@@ -6,7 +6,7 @@ import { CampaignComplianceService } from '../src/services/crm/campaignComplianc
 import { classifyCanonicalPhone } from '../src/services/crm/canonicalPhoneService.ts';
 import { formatPersonalizedWhatsAppMessage, validateMediaCaption } from '../src/utils/whatsappPersonalization.ts';
 
-const DB_CONN = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+const DB_CONN = (process.env.READONLY_AUDIT_DB_URL || '');
 const client = new pg.Client({ connectionString: DB_CONN, ssl: { rejectUnauthorized: false } });
 
 test('Universal WhatsApp Bulk Sender, Server-Side Queue & Delivery Suite', async (t) => {

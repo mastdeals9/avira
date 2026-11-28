@@ -7,7 +7,7 @@ import pg from 'pg';
 const { Client } = pg;
 const connectionString =
   process.env.SUPABASE_DB_URL ||
-  'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+  (process.env.READONLY_AUDIT_DB_URL || '');
 
 function getDbClient() {
   return new Client({

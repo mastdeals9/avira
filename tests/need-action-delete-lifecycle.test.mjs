@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 
 const DB_CONN =
-  process.env.DATABASE_URL ||
-  'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+  process.env.READONLY_AUDIT_DB_URL ||
+  (process.env.READONLY_AUDIT_DB_URL || '');
 
 test('Need Action Screen — Trash / Delete Document Lifecycle Verification Suite', async (t) => {
   const client = new pg.Client({ connectionString: DB_CONN, ssl: { rejectUnauthorized: false } });

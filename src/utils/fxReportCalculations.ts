@@ -1,6 +1,23 @@
 // Pure, deterministic FX calculation & reconciliation helpers shared by
 // FXReport.tsx (Accounting FX), FXBusinessDashboard.tsx (Commercial FX), and tests.
 
+export async function fetchAllPages<T = any>(
+  buildQuery: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>,
+  pageSize = 1000
+): Promise<T[]> {
+  const results: T[] = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await buildQuery(from, from + pageSize - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    results.push(...data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return results;
+}
+
 export interface PostedGlFxLineInput {
   id: string;
   journal_entry_id: string;
@@ -102,6 +119,7 @@ export function computeSupplierSettlementBridge(params: {
   settlementDate: string;
   isUsdBankSettlement: boolean;
   priorRevalLines: RevaluationLineRef[];
+  actualFunctionalSettlementIdr?: number | null;
 }): SupplierSettlementBridgeResult {
   const {
     usdSettled,
@@ -110,6 +128,7 @@ export function computeSupplierSettlementBridge(params: {
     settlementDate,
     isUsdBankSettlement,
     priorRevalLines,
+    actualFunctionalSettlementIdr,
   } = params;
 
   const originalCarrying = Math.round(usdSettled * originalPiRate * 100) / 100;
@@ -139,9 +158,17 @@ export function computeSupplierSettlementBridge(params: {
   priorRevalFx = Math.round(priorRevalFx * 100) / 100;
   const carryingBeforeSettlement = Math.round((originalCarrying + priorRevalFx) * 100) / 100;
 
-  // For USD-bank settlements where pvRate == 1, functional IDR outflow is at carrying rate unless explicit FX rate > 1
-  const effectiveSettleRate = isUsdBankSettlement && settlementRate <= 1 ? effectiveCarryingRate : settlementRate;
-  const actualSettlementIdr = Math.round(usdSettled * effectiveSettleRate * 100) / 100;
+  // For USD-bank settlements (e.g. PV/25-26/003), use actual functional IDR carrying relief from posted journals;
+  // never assume USD bank asset carrying rate equals the supplier invoice carrying rate.
+  let actualSettlementIdr: number;
+  if (actualFunctionalSettlementIdr != null && actualFunctionalSettlementIdr > 0) {
+    actualSettlementIdr = Math.round(actualFunctionalSettlementIdr * 100) / 100;
+  } else if (isUsdBankSettlement && settlementRate <= 1) {
+    actualSettlementIdr = carryingBeforeSettlement;
+  } else {
+    actualSettlementIdr = Math.round(usdSettled * settlementRate * 100) / 100;
+  }
+
   const realizedFx = Math.round((actualSettlementIdr - carryingBeforeSettlement) * 100) / 100;
   const cumulativeVariance = Math.round((actualSettlementIdr - originalCarrying) * 100) / 100;
 

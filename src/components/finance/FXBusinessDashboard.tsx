@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { sanitizeExportRows } from '../../utils/csvSafe';
+import { fetchAllPages } from '../../utils/fxReportCalculations';
 
 interface FXBusinessDashboardProps {
   onSwitchToAccountingReport?: () => void;
@@ -117,67 +118,82 @@ export function FXBusinessDashboard({
   const [showMoreFilters, setShowMoreFilters] = useState(false);
 
   const [transactions, setTransactions] = useState<CommercialFxTransaction[]>([]);
+  const [unmatchedPiExposures, setUnmatchedPiExposures] = useState<Array<{
+    pi_id: string;
+    pi_number: string;
+    supplier_name: string;
+    pi_total_usd: number;
+    allocated_to_so_usd: number;
+    unsold_unmatched_usd: number;
+    pi_unpaid_usd: number;
+    unallocated_share_pct: number;
+  }>>([]);
   const [selectedTx, setSelectedTx] = useState<CommercialFxTransaction | null>(null);
 
   const loadData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch Sales Orders with items & customer
-      const { data: soData, error: soErr } = await supabase
-        .from('sales_orders')
-        .select(`
-          id, so_number, so_date, currency, commercial_usd_to_idr_rate, total_amount, subtotal_amount,
-          customers(id, company_name),
-          sales_order_items(
-            id, product_id, quantity, unit_price, quoted_usd_unit_price, line_total,
-            products(id, product_name, product_code, unit)
-          )
-        `)
-        .order('so_date', { ascending: false });
+      // 1. Fetch Sales Orders with items & customer (paginated)
+      const soData = await fetchAllPages<any>((from, to) =>
+        supabase
+          .from('sales_orders')
+          .select(`
+            id, so_number, so_date, currency, commercial_usd_to_idr_rate, total_amount, subtotal_amount,
+            customers(id, company_name),
+            sales_order_items(
+              id, product_id, quantity, unit_price, quoted_usd_unit_price, line_total,
+              products(id, product_name, product_code, unit)
+            )
+          `)
+          .order('so_date', { ascending: false })
+          .range(from, to)
+      );
 
-      if (soErr) throw soErr;
+      // 2. Fetch Sales Invoices & items (paginated)
+      const siData = await fetchAllPages<any>((from, to) =>
+        supabase
+          .from('sales_invoices')
+          .select(`
+            id, invoice_number, invoice_date, sales_order_id, total_amount, subtotal,
+            sales_invoice_items(
+              id, product_id, batch_id, quantity, unit_price, line_total
+            )
+          `)
+          .range(from, to)
+      );
 
-      // 2. Fetch Sales Invoices & items to map batch_id and actual invoiced IDR
-      const { data: siData, error: siErr } = await supabase
-        .from('sales_invoices')
-        .select(`
-          id, invoice_number, invoice_date, sales_order_id, total_amount, subtotal,
-          sales_invoice_items(
-            id, product_id, batch_id, quantity, unit_price, line_total
-          )
-        `);
+      // 3. Fetch Batches (paginated)
+      const batchData = await fetchAllPages<any>((from, to) =>
+        supabase
+          .from('batches')
+          .select('id, batch_number, import_quantity, import_price_usd, purchase_invoice_id')
+          .range(from, to)
+      );
 
-      if (siErr) throw siErr;
+      // 4. Fetch Purchase Invoices with suppliers (paginated)
+      const piData = await fetchAllPages<any>((from, to) =>
+        supabase
+          .from('purchase_invoices')
+          .select(`
+            id, invoice_number, invoice_date, currency, exchange_rate, total_amount, paid_amount, balance_amount,
+            suppliers(id, company_name)
+          `)
+          .range(from, to)
+      );
 
-      // 3. Fetch Batches to find linked purchase_invoices
-      const { data: batchData, error: bErr } = await supabase
-        .from('batches')
-        .select('id, batch_number, import_quantity, import_price_usd, purchase_invoice_id');
-
-      if (bErr) throw bErr;
-
-      // 4. Fetch Purchase Invoices with suppliers
-      const { data: piData, error: piErr } = await supabase
-        .from('purchase_invoices')
-        .select(`
-          id, invoice_number, invoice_date, currency, exchange_rate, total_amount, paid_amount, balance_amount,
-          suppliers(id, company_name)
-        `);
-
-      if (piErr) throw piErr;
-
-      // 5. Fetch Payment Voucher Allocations & Payment Vouchers
-      const { data: vaData, error: vaErr } = await supabase
-        .from('voucher_allocations')
-        .select(`
-          id, purchase_invoice_id, payment_voucher_id, allocated_amount, allocated_currency,
-          payment_vouchers(
-            id, voucher_number, voucher_date, payment_currency, exchange_rate, amount,
-            bank_accounts(bank_name, account_name, account_number, currency)
-          )
-        `);
-
-      if (vaErr) throw vaErr;
+      // 5. Fetch Payment Voucher Allocations & Payment Vouchers (paginated)
+      const vaData = await fetchAllPages<any>((from, to) =>
+        supabase
+          .from('voucher_allocations')
+          .select(`
+            id, purchase_invoice_id, payment_voucher_id, allocated_amount, allocated_currency,
+            payment_vouchers(
+              id, voucher_number, voucher_date, payment_currency, exchange_rate, amount,
+              bank_accounts(bank_name, account_name, account_number, currency)
+            )
+          `)
+          .range(from, to)
+      );
 
       // Build Fast Lookup Maps
       const batchMap = new Map<string, any>((batchData || []).map(b => [b.id, b]));
@@ -500,6 +516,40 @@ export function FXBusinessDashboard({
       // Sort by SO Date descending
       txRows.sort((a, b) => new Date(b.so_date).getTime() - new Date(a.so_date).getTime());
       setTransactions(txRows);
+
+      // Compute remaining unallocated share per USD Purchase Invoice as explicit Unsold / Unmatched Exposure
+      const allocatedUsdByPi = new Map<string, number>();
+      const seenSoProd = new Set<string>();
+      for (const row of txRows) {
+        if (!row.pi_id) continue;
+        const k = `${row.so_id}-${row.product_id}-${row.pi_id}`;
+        if (seenSoProd.has(k)) continue;
+        seenSoProd.add(k);
+        allocatedUsdByPi.set(row.pi_id, (allocatedUsdByPi.get(row.pi_id) || 0) + Number(row.matched_usd_cost || 0));
+      }
+
+      const unmatchedList: typeof unmatchedPiExposures = [];
+      for (const pi of piData || []) {
+        if ((pi.currency || '').toUpperCase() !== 'USD') continue;
+        const piTotal = Number(pi.total_amount || 0);
+        if (piTotal <= 0) continue;
+        const allocated = Math.min(piTotal, allocatedUsdByPi.get(pi.id) || 0);
+        const unsold = Math.max(0, Math.round((piTotal - allocated) * 100) / 100);
+        if (unsold > 0.01) {
+          const suppObj: any = Array.isArray(pi.suppliers) ? pi.suppliers[0] : pi.suppliers;
+          unmatchedList.push({
+            pi_id: pi.id,
+            pi_number: pi.invoice_number,
+            supplier_name: suppObj?.company_name || 'Supplier',
+            pi_total_usd: piTotal,
+            allocated_to_so_usd: Math.round(allocated * 100) / 100,
+            unsold_unmatched_usd: unsold,
+            pi_unpaid_usd: Number(pi.balance_amount || 0),
+            unallocated_share_pct: Math.round((unsold / piTotal) * 10000) / 100,
+          });
+        }
+      }
+      setUnmatchedPiExposures(unmatchedList);
     } catch (err: any) {
       console.error('Failed to load FX Business Dashboard data:', err);
     } finally {
@@ -774,7 +824,14 @@ export function FXBusinessDashboard({
           <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">USD Sold</span>
           <div className="mt-1">
             <div className="text-base font-bold text-slate-900 leading-tight">{fmtUsd(kpis.totalUsdSold)}</div>
-            <div className="text-[10px] text-slate-400 mt-0.5">Unpaid: {fmtUsd(kpis.totalUnpaidUsd)}</div>
+            <div className="text-[10px] text-slate-400 mt-0.5">
+              Unpaid PI: {fmtUsd(kpis.totalUnpaidUsd)}
+              {unmatchedPiExposures.length > 0 && (
+                <span className="ml-1 text-amber-700 font-medium">
+                  &bull; Unsold: {fmtUsd(unmatchedPiExposures.reduce((s, u) => s + u.unsold_unmatched_usd, 0))}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 

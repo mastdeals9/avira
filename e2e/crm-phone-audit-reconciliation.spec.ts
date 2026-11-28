@@ -8,8 +8,8 @@ test.describe('Anzen CRM Phone Audit Numerical Reconciliation & Acceptance', () 
   let realContacts: any[] = [];
   const artifactDir = '/Users/Kunal/.gemini/antigravity/brain/ba0a5665-f6f0-4bb7-bcd8-a665594273a2';
   const DB_URL =
-    process.env.DATABASE_URL ||
-    'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+    process.env.READONLY_AUDIT_DB_URL ||
+    (process.env.READONLY_AUDIT_DB_URL || '');
 
   test.beforeAll(async () => {
     const envFile = fs.readFileSync('.env', 'utf8');

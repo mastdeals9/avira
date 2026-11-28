@@ -1,6 +1,6 @@
 import pg from 'pg';
 
-const connectionString = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres';
+const connectionString = (process.env.READONLY_AUDIT_DB_URL || '');
 
 const demotions = [
   { company: 'DJAMU DJAGO', contact_id: '28afdb31-babd-4975-a100-26f81dd0fa16', demote_id: '1f503482-4f9c-47f1-a572-51df76a59361', keep_id: 'e1a9a8f1-3e29-48a6-afd2-7882927114d1' },

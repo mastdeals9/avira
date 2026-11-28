@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
 
-const DB_CONN = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+const DB_CONN = (process.env.READONLY_AUDIT_DB_URL || '');
 const envFile = fs.readFileSync('.env', 'utf8');
 const anonMatch = envFile.match(/VITE_SUPABASE_ANON_KEY=(.*)/);
 const SUPABASE_ANON_KEY = anonMatch ? anonMatch[1].trim() : '';

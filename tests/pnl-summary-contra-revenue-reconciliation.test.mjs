@@ -6,7 +6,7 @@ import pg from '/Users/Kunal/Documents/anzen-main/node_modules/pg/lib/index.js';
 test('P&L Summary Contra Revenue Harmonization Test', async () => {
   const { Client } = pg;
   const client = new Client({
-    connectionString: 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres',
+    connectionString: (process.env.READONLY_AUDIT_DB_URL || ''),
     ssl: { rejectUnauthorized: false }
   });
 

@@ -25,8 +25,20 @@ export interface NormalizedProductProfitabilityRow {
   has_unreported_cost: boolean;
 }
 
+export interface BatchReturnDetail {
+  credit_note_id: string;
+  credit_note_number: string;
+  credit_note_date: string;
+  credit_note_type: string;
+  return_qty: number;
+  return_revenue: number;
+  return_cogs: number | null;
+  unresolved_cost_count: number;
+  has_unresolved_cost: boolean;
+}
+
 export interface NormalizedBatchProfitabilityRow {
-  batch_id: string;
+  batch_id: string | null;
   batch_number: string;
   current_stock: number;
   sold_qty: number;
@@ -42,6 +54,16 @@ export interface NormalizedBatchProfitabilityRow {
   profit_per_unit: number | null;
   profit_margin_pct: number | null;
   is_imported: boolean;
+  return_qty?: number;
+  return_revenue?: number;
+  return_cogs?: number | null;
+  return_details?: BatchReturnDetail[];
+  costed_lines?: number;
+  total_lines?: number;
+  unresolved_sales_cogs_count?: number;
+  unresolved_return_cogs_count?: number;
+  has_unreported_cost?: boolean;
+  cost_coverage?: 'complete' | 'partial';
   cost_breakdown?: {
     is_imported: boolean;
     import_price: number | null;
@@ -224,7 +246,7 @@ export function normalizeBatchProfitabilityRow(raw: any): NormalizedBatchProfita
   };
 
   return {
-    batch_id: raw.batch_id,
+    batch_id: raw.batch_id ?? null,
     batch_number: raw.batch_number || 'Unassigned Batch',
     current_stock: Number(raw.current_stock ?? 0),
     sold_qty: soldQty,
@@ -240,6 +262,16 @@ export function normalizeBatchProfitabilityRow(raw: any): NormalizedBatchProfita
     profit_per_unit: profitPerUnit,
     profit_margin_pct: profitMarginPct,
     is_imported: isImported,
+    return_qty: Number(raw.return_qty ?? 0),
+    return_revenue: Number(raw.return_revenue ?? 0),
+    return_cogs: raw.return_cogs != null ? Number(raw.return_cogs) : (raw.resolved_return_cogs != null ? Number(raw.resolved_return_cogs) : null),
+    return_details: Array.isArray(raw.return_details) ? raw.return_details : [],
+    costed_lines: Number(raw.costed_lines ?? 0),
+    total_lines: Number(raw.total_lines ?? 0),
+    unresolved_sales_cogs_count: Number(raw.unresolved_sales_cogs_count ?? 0),
+    unresolved_return_cogs_count: Number(raw.unresolved_return_cogs_count ?? 0),
+    has_unreported_cost: Boolean(raw.has_unreported_cost),
+    cost_coverage: raw.cost_coverage === 'partial' ? 'partial' : 'complete',
     cost_breakdown: costBreakdown,
   };
 }
@@ -291,6 +323,14 @@ export function adaptProfitabilitySummaryResponse(
     total_qty_sold: number;
     order_count: number;
     product_count: number;
+    has_unreported_cost?: boolean;
+    unresolved_return_cogs_count?: number;
+    return_cogs_allocation_mismatch_count?: number;
+    credit_note_item_subtotal_mismatch_count?: number;
+    has_unresolved_return_cogs?: boolean;
+    has_credit_note_item_subtotal_mismatch?: boolean;
+    profitability_certified?: boolean;
+    certification_status?: string;
     cancelled_invoices?: {
       count: number;
       total_amount: number;
@@ -303,6 +343,8 @@ export function adaptProfitabilitySummaryResponse(
     month_label: string;
     month_start: string;
     gross_sales: number;
+    sales_returns: number;
+    net_sales: number;
     product_cost: number;
     sales_expenses: number;
     gross_profit: number;
@@ -310,6 +352,8 @@ export function adaptProfitabilitySummaryResponse(
     profit_margin_pct: number;
     total_qty_sold: number;
     order_count: number;
+    has_unreported_cost?: boolean;
+    unresolved_return_cogs_count?: number;
   }>;
 } {
   if (!raw || typeof raw !== 'object') {
@@ -359,18 +403,27 @@ export function adaptProfitabilitySummaryResponse(
   });
 
   const monthly = Array.isArray(obj.monthly)
-    ? obj.monthly.map((m: any) => ({
-        month_label: String(m.month_label || ''),
-        month_start: String(m.month_start || ''),
-        gross_sales: Number(m.gross_sales ?? 0),
-        product_cost: Number(m.product_cost ?? 0),
-        sales_expenses: Number(m.sales_expenses ?? 0),
-        gross_profit: Number(m.gross_profit ?? 0),
-        profit_after_sales_expenses: Number(m.profit_after_sales_expenses ?? 0),
-        profit_margin_pct: Number(m.profit_margin_pct ?? 0),
-        total_qty_sold: Number(m.total_qty_sold ?? 0),
-        order_count: Number(m.order_count ?? 0),
-      }))
+    ? obj.monthly.map((m: any) => {
+        const grossBeforeReturns = Number(m.gross_sales_before_returns ?? m.gross_sales ?? 0);
+        const salesRet = Number(m.sales_returns ?? 0);
+        const netSalesVal = m.net_sales != null ? Number(m.net_sales) : Math.round((grossBeforeReturns - salesRet) * 100) / 100;
+        return {
+          month_label: String(m.month_label || ''),
+          month_start: String(m.month_start || ''),
+          gross_sales: grossBeforeReturns,
+          sales_returns: salesRet,
+          net_sales: netSalesVal,
+          product_cost: Number(m.product_cost ?? 0),
+          sales_expenses: Number(m.sales_expenses ?? 0),
+          gross_profit: Number(m.gross_profit ?? 0),
+          profit_after_sales_expenses: Number(m.profit_after_sales_expenses ?? 0),
+          profit_margin_pct: Number(m.profit_margin_pct ?? 0),
+          total_qty_sold: Number(m.total_qty_sold ?? 0),
+          order_count: Number(m.order_count ?? 0),
+          has_unreported_cost: Boolean(m.has_unreported_cost),
+          unresolved_return_cogs_count: Number(m.unresolved_return_cogs_count ?? 0),
+        };
+      })
     : [];
 
   return {
@@ -389,11 +442,40 @@ export function adaptProfitabilitySummaryResponse(
       total_qty_sold: totalQtySold,
       order_count: orderCount,
       product_count: productCount,
+      has_unreported_cost: Boolean(c.has_unreported_cost),
+      unresolved_return_cogs_count: Number(c.unresolved_return_cogs_count ?? 0),
+      return_cogs_allocation_mismatch_count: Number(c.return_cogs_allocation_mismatch_count ?? 0),
+      credit_note_item_subtotal_mismatch_count: Number(c.credit_note_item_subtotal_mismatch_count ?? 0),
+      has_unresolved_return_cogs: Boolean(c.has_unresolved_return_cogs),
+      has_credit_note_item_subtotal_mismatch: Boolean(c.has_credit_note_item_subtotal_mismatch),
+      profitability_certified: c.profitability_certified !== undefined ? Boolean(c.profitability_certified) : undefined,
+      certification_status: c.certification_status ? String(c.certification_status) : undefined,
       cancelled_invoices: c.cancelled_invoices as any,
     },
     products,
     monthly,
   };
+}
+
+export function adaptProductBatchEnvelope(
+  raw: unknown,
+  contextLabel = 'product'
+): {
+  product: NormalizedProductProfitabilityRow | null;
+  batches: NormalizedBatchProfitabilityRow[];
+} {
+  if (Array.isArray(raw)) {
+    return { product: null, batches: raw.map(normalizeBatchProfitabilityRow) };
+  }
+  if (raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>).batches)) {
+    const obj = raw as Record<string, unknown>;
+    const product = obj.product && typeof obj.product === 'object'
+      ? normalizeProductProfitabilityRow(obj.product)
+      : null;
+    const batches = (obj.batches as unknown[]).map(normalizeBatchProfitabilityRow);
+    return { product, batches };
+  }
+  throw new Error(`Invalid product batches RPC response for ${contextLabel}: expected { product, batches } or JSON array`);
 }
 
 export function adaptProductBatchesResponse(

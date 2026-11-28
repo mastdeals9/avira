@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
 
-const TEST_DB_URL = 'postgresql://postgres:postgres@127.0.0.1:54333/postgres';
+const TEST_DB_URL = (process.env.READONLY_AUDIT_DB_URL || '');
 
 // Synthetic user IDs
 const USERS = {

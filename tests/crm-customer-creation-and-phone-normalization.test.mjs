@@ -25,7 +25,7 @@ const {
   auditContactsMultiPhone,
 } = jiti('../src/utils/phoneValidation.ts');
 
-const DB_CONN = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+const DB_CONN = (process.env.READONLY_AUDIT_DB_URL || '');
 
 describe('Avira CRM Customer Creation & Phone Normalization Fixes', () => {
 

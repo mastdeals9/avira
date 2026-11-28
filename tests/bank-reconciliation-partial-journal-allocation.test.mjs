@@ -11,7 +11,7 @@ const commandsFile = fs.readFileSync(path.resolve('src/services/financeCommands.
 
 const DB_CONNECTION =
   process.env.SUPABASE_DB_URL ||
-  'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+  (process.env.READONLY_AUDIT_DB_URL || '');
 
 // -----------------------------------------------------------------------------
 // SECTION 1: ARCHITECTURAL & UI CODE CONTRACTS

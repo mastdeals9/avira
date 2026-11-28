@@ -1,7 +1,7 @@
 import pg from 'pg';
 import fs from 'fs';
 
-const connectionString = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres';
+const connectionString = (process.env.READONLY_AUDIT_DB_URL || '');
 
 async function generateBatchSchedule() {
   const client = new pg.Client({ connectionString });

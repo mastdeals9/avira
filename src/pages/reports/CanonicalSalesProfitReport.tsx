@@ -82,6 +82,8 @@ export interface MonthlyProfitabilityRow {
   month_label: string;
   month_start: string;
   gross_sales: number;
+  sales_returns?: number;
+  net_sales?: number;
   product_cost: number;
   sales_expenses: number;
   gross_profit: number;
@@ -98,7 +100,7 @@ export interface ProfitabilitySummaryResponse {
 }
 
 export interface BatchProfitabilityRow {
-  batch_id: string;
+  batch_id: string | null;
   batch_number: string;
   current_stock: number;
   sold_qty: number;
@@ -114,6 +116,20 @@ export interface BatchProfitabilityRow {
   profit_per_unit: number | null;
   profit_margin_pct: number | null;
   is_imported: boolean;
+  return_qty?: number;
+  return_revenue?: number;
+  return_cogs?: number | null;
+  return_details?: Array<{
+    credit_note_id: string;
+    credit_note_number: string;
+    credit_note_date: string;
+    credit_note_type: string;
+    return_qty: number;
+    return_revenue: number;
+    return_cogs: number | null;
+    unresolved_cost_count: number;
+    has_unresolved_cost: boolean;
+  }>;
   cost_breakdown: {
     is_imported: boolean;
     import_price: number | null;
@@ -359,14 +375,16 @@ export function CanonicalSalesProfitReport() {
       return bList;
     } catch (err: any) {
       console.error('Error loading product batches:', err);
-      return [];
+      setError(err?.message || 'Failed to load product batch breakdown');
+      throw err;
     } finally {
       setLoadingBatchesMap(prev => ({ ...prev, [productId]: false }));
     }
   }, [startDate, endDate, batchesCache]);
 
   const fetchBatchOrders = useCallback(async (batchId: string) => {
-    if (!batchId || ordersCache[batchId]) return ordersCache[batchId] || [];
+    if (!batchId) return [];
+    if (ordersCache[batchId]) return ordersCache[batchId];
     setLoadingOrdersMap(prev => ({ ...prev, [batchId]: true }));
     try {
       const { data: res, error: rpcErr } = await supabase.rpc('get_sales_profitability_batch_orders', {
@@ -377,22 +395,22 @@ export function CanonicalSalesProfitReport() {
       if (rpcErr) throw rpcErr;
       const rawOrders = adaptBatchOrdersResponse(res, batchId) as any[];
 
-      // Resolve authoritative cost layer allocations
+      // Fetch layer metadata strictly for display (never overrides canonical RPC line_cost)
       const lineIds = rawOrders.map(o => o.line_id).filter(Boolean);
       const siiMap = new Map<string, any>();
       if (lineIds.length > 0) {
-        const { data: siiRows } = await supabase
+        const { data: siiRows, error: siiErr } = await supabase
           .from('sales_invoice_items')
           .select('id, quantity, unit_price, cogs_unit_cost, cogs_total_cost, cogs_layer_allocations')
           .in('id', lineIds);
+        if (siiErr) throw siiErr;
         (siiRows || []).forEach((row: any) => siiMap.set(row.id, row));
       }
 
       const oList: OrderSaleRow[] = rawOrders.map(ord => {
         const sii = siiMap.get(ord.line_id);
         const grossSales = Number(ord.gross_sales ?? ((Number(ord.quantity) || 0) * (Number(ord.selling_price) || 0)));
-        const fallbackUnitCost = ord.unit_cost != null ? Number(ord.unit_cost) : null;
-        const costResolution = resolveAuthoritativeInvoiceItemCOGS(ord, sii, fallbackUnitCost);
+        const costResolution = resolveAuthoritativeInvoiceItemCOGS(ord, sii);
         const lineCost = costResolution.lineCost;
         const unitCost = costResolution.unitCost;
         const salesExp = Number(ord.line_sales_expense ?? ord.sales_expense ?? 0);
@@ -422,6 +440,7 @@ export function CanonicalSalesProfitReport() {
           gross_profit: grossProfit,
           profit: netProfit,
           profit_margin_pct: marginPct != null ? Math.round(marginPct * 100) / 100 : null,
+          layer_allocations: costResolution.allocations,
           expenses: Array.isArray(ord.expenses) ? ord.expenses : [],
         };
       });
@@ -430,7 +449,8 @@ export function CanonicalSalesProfitReport() {
       return oList;
     } catch (err: any) {
       console.error('Error loading batch orders:', err);
-      return [];
+      setError(err?.message || 'Failed to load batch invoice order details');
+      throw err;
     } finally {
       setLoadingOrdersMap(prev => ({ ...prev, [batchId]: false }));
     }
@@ -481,12 +501,12 @@ export function CanonicalSalesProfitReport() {
     }
   };
 
-  const toggleModalBatchExpand = async (batchId: string) => {
-    if (modalExpandedBatchId === batchId) {
+  const toggleModalBatchExpand = async (batchKey: string, batchId: string | null) => {
+    if (modalExpandedBatchId === batchKey) {
       setModalExpandedBatchId(null);
     } else {
-      setModalExpandedBatchId(batchId);
-      void fetchBatchOrders(batchId);
+      setModalExpandedBatchId(batchKey);
+      if (batchId) void fetchBatchOrders(batchId);
     }
   };
 
@@ -786,9 +806,9 @@ export function CanonicalSalesProfitReport() {
                   const isExpanded = expandedProductIds.has(p.product_id);
                   const pBatches = batchesCache[p.product_id] || [];
                   const isBatchesLoading = !!loadingBatchesMap[p.product_id];
-                  const isAnyOrdersLoading = pBatches.some(b => Boolean(loadingOrdersMap[b.batch_id]));
+                  const isAnyOrdersLoading = pBatches.some(b => Boolean(b.batch_id && loadingOrdersMap[b.batch_id]));
                   const flattenedOrders = pBatches.flatMap((b) =>
-                    (ordersCache[b.batch_id] || [])
+                    (b.batch_id ? (ordersCache[b.batch_id] || []) : [])
                       .filter((ord) => customerFilter === 'all' || ord.customer_id === customerFilter)
                       .map((ord) => ({ batchNumber: b.batch_number, ord }))
                   );
@@ -1019,8 +1039,18 @@ export function CanonicalSalesProfitReport() {
                 </div>
                 <div className="mt-2 space-y-1 text-xs">
                   <div className="flex justify-between text-gray-500">
-                    <span>Revenue:</span>
-                    <span className="font-medium text-gray-800">{formatCurrency(m.gross_sales)}</span>
+                    <span>Gross Sales:</span>
+                    <span className="text-gray-700">{formatCurrency(m.gross_sales)}</span>
+                  </div>
+                  {(m.sales_returns || 0) > 0 && (
+                    <div className="flex justify-between text-amber-700">
+                      <span>Returns:</span>
+                      <span>-{formatCurrency(m.sales_returns)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-gray-500">
+                    <span>Net Sales:</span>
+                    <span className="font-medium text-gray-800">{formatCurrency(m.net_sales ?? m.gross_sales)}</span>
                   </div>
                   <div className="flex justify-between text-gray-500">
                     <span>Product Cost:</span>
@@ -1161,15 +1191,16 @@ export function CanonicalSalesProfitReport() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {modalProductBatches.map(b => {
-                        const isBatchExpanded = modalExpandedBatchId === b.batch_id;
-                        const bOrders = ordersCache[b.batch_id] || [];
-                        const isOrdersLoading = !!loadingOrdersMap[b.batch_id];
+                      {modalProductBatches.map((b, idx) => {
+                        const batchKey = b.batch_id || `unassigned-${idx}`;
+                        const isBatchExpanded = modalExpandedBatchId === batchKey;
+                        const bOrders = b.batch_id ? (ordersCache[b.batch_id] || []) : [];
+                        const isOrdersLoading = b.batch_id ? !!loadingOrdersMap[b.batch_id] : false;
 
                         return (
-                          <Fragment key={b.batch_id}>
+                          <Fragment key={batchKey}>
                             <tr
-                              onClick={() => toggleModalBatchExpand(b.batch_id)}
+                              onClick={() => toggleModalBatchExpand(batchKey, b.batch_id)}
                               className={`hover:bg-blue-50/50 cursor-pointer transition group ${isBatchExpanded ? 'bg-blue-50/30' : ''}`}
                             >
                               <td className="px-3 py-2.5 font-mono font-bold text-blue-900 group-hover:text-blue-600">
@@ -1272,6 +1303,45 @@ export function CanonicalSalesProfitReport() {
                                       )}
                                     </div>
                                   </div>
+
+                                  {/* Credit Note Returns (if any) */}
+                                  {Array.isArray(b.return_details) && b.return_details.length > 0 && (
+                                    <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-lg space-y-2">
+                                      <h4 className="text-xs font-bold text-amber-900">
+                                        Credit Note Returns ({b.return_details.length})
+                                      </h4>
+                                      <div className="overflow-x-auto bg-white border border-amber-200 rounded">
+                                        <table className="w-full text-xs text-left">
+                                          <thead className="bg-amber-50 text-amber-900 font-semibold border-b border-amber-200">
+                                            <tr>
+                                              <th className="px-2.5 py-1.5">Credit Note #</th>
+                                              <th className="px-2.5 py-1.5">Date</th>
+                                              <th className="px-2.5 py-1.5">Type</th>
+                                              <th className="px-2.5 py-1.5 text-right">Returned Qty</th>
+                                              <th className="px-2.5 py-1.5 text-right">Revenue Reduction</th>
+                                              <th className="px-2.5 py-1.5 text-right">COGS Reversal</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-amber-100">
+                                            {b.return_details.map((rd) => (
+                                              <tr key={rd.credit_note_id}>
+                                                <td className="px-2.5 py-1.5 font-mono font-semibold text-amber-900">{rd.credit_note_number}</td>
+                                                <td className="px-2.5 py-1.5 text-gray-600">{rd.credit_note_date}</td>
+                                                <td className="px-2.5 py-1.5 text-gray-700">{rd.credit_note_type === 'commercial_credit' ? 'Commercial' : 'Physical'}</td>
+                                                <td className="px-2.5 py-1.5 text-right font-mono">{formatNumber(rd.return_qty, 0)}</td>
+                                                <td className="px-2.5 py-1.5 text-right font-mono text-amber-800">-{formatCurrency(rd.return_revenue)}</td>
+                                                <td className="px-2.5 py-1.5 text-right font-mono text-emerald-700">
+                                                  {rd.has_unresolved_cost || rd.return_cogs == null
+                                                    ? <span className="text-red-600 font-semibold">Cost Unresolved</span>
+                                                    : `-${formatCurrency(rd.return_cogs)}`}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  )}
 
                                   {/* Orders Table */}
                                   <div>

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import pg from '/Users/Kunal/Documents/anzen-main/node_modules/pg/lib/index.js';
 
 const MIGRATION_PATH = 'supabase/migrations/20261103000000_pib_subledger_reclassification_and_customs_payment_clearing.sql';
-const DB_URL = process.env.DATABASE_URL || "postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres";
+const DB_URL = process.env.READONLY_AUDIT_DB_URL || (process.env.READONLY_AUDIT_DB_URL || '');
 
 test('1. Category Field Rules: pib_import decouples trade supplier and shows container picker', async () => {
   const rulesFile = fs.readFileSync('src/components/finance/categoryFieldRules.ts', 'utf8');

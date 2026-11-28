@@ -8,13 +8,17 @@ import { test } from 'node:test';
 import { Client } from 'pg';
 import crypto from 'node:crypto';
 
-const CONNECTION_STRING = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+const CONNECTION_STRING = (process.env.READONLY_AUDIT_DB_URL || '');
 
 function sha256(input) {
   return crypto.createHash('sha256').update(input).digest('hex');
 }
 
 test('SAPJ Dynamic Bank Recon & FX Accounting Regression Suite', async (t) => {
+  if (!CONNECTION_STRING) {
+    t.skip('Skipping live DB suite: READONLY_AUDIT_DB_URL not set');
+    return;
+  }
   const client = new Client({ connectionString: CONNECTION_STRING });
   await client.connect();
 

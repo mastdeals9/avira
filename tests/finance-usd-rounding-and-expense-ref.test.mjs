@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 
-const connectionString = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres';
+const connectionString = (process.env.READONLY_AUDIT_DB_URL || '');
 const paymentVoucherManagerPath = path.resolve('src/components/finance/PaymentVoucherManager.tsx');
 const bankReconciliationPath = path.resolve('src/components/finance/BankReconciliationEnhanced.tsx');
 const expenseManagerPath = path.resolve('src/components/finance/ExpenseManager.tsx');

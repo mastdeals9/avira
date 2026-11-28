@@ -13,8 +13,8 @@ import {
 } from '../src/utils/phoneValidation.ts';
 
 const DB_URL =
-  process.env.DATABASE_URL ||
-  'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+  process.env.READONLY_AUDIT_DB_URL ||
+  (process.env.READONLY_AUDIT_DB_URL || '');
 
 test('SAPJ Interactive Phone Audit & Correction Suite', async (t) => {
   await t.test('1. Count Reconciliation: 65 Eligible + 315 Landlines + 110 Missing + 31 Invalid = exactly 521 Total Directory', async () => {

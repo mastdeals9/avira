@@ -5,7 +5,7 @@ import { detectCountryInfo } from '../src/utils/phoneValidation.ts';
 
 const { Client } = pg;
 const client = new Client({
-  connectionString: 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres',
+  connectionString: (process.env.READONLY_AUDIT_DB_URL || ''),
   ssl: { rejectUnauthorized: false }
 });
 

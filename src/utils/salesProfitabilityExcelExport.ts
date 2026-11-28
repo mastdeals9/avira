@@ -163,7 +163,7 @@ export function buildSalesProfitabilityWorkbook(
 
   productsWithBatches.forEach((pb) => {
     pb.batches.forEach((b) => {
-      const orders = batchOrdersMap.get(b.batch_id) || [];
+      const orders = b.batch_id ? (batchOrdersMap.get(b.batch_id) || []) : [];
       orders.forEach((ord) => {
         const qty = Number(ord.quantity || 0);
         const grossSales = Number(ord.gross_sales ?? qty * Number(ord.selling_price || 0));
@@ -290,6 +290,8 @@ export function buildSalesProfitabilityWorkbook(
     const mHeader = wsSummary.addRow([
       'Month',
       'Invoices',
+      'Gross Sales (IDR)',
+      'Sales Returns (IDR)',
       'Net Sales (IDR)',
       'Net COGS (IDR)',
       'Sales Expenses (IDR)',
@@ -306,21 +308,27 @@ export function buildSalesProfitabilityWorkbook(
     });
 
     let sumMOrders = 0;
-    let sumMSales = 0;
+    let sumMGrossBeforeReturns = 0;
+    let sumMReturns = 0;
+    let sumMNetSales = 0;
     let sumMCogs = 0;
     let sumMExp = 0;
     let sumMGP = 0;
     let sumMNP = 0;
 
     monthly.forEach((m, idx) => {
-      const mGross = Number(m.gross_sales || 0);
+      const mGrossBefore = Number(m.gross_sales || 0);
+      const mRet = Number(m.sales_returns || 0);
+      const mNetSales = Number(m.net_sales ?? (mGrossBefore - mRet));
       const mCogs = Number(m.product_cost || 0);
       const mExp = Number(m.sales_expenses || 0);
       const mGP = Number(m.gross_profit || 0);
       const mNet = Number(m.profit_after_sales_expenses || 0);
 
       sumMOrders += Number(m.order_count || 0);
-      sumMSales += mGross;
+      sumMGrossBeforeReturns += mGrossBefore;
+      sumMReturns += mRet;
+      sumMNetSales += mNetSales;
       sumMCogs += mCogs;
       sumMExp += mExp;
       sumMGP += mGP;
@@ -329,12 +337,14 @@ export function buildSalesProfitabilityWorkbook(
       const r = wsSummary.addRow([
         m.month_label,
         Number(m.order_count || 0),
-        mGross,
+        mGrossBefore,
+        -mRet,
+        mNetSales,
         mCogs,
         mExp,
         mGP,
         mNet,
-        mGross > 0 ? mNet / mGross : 0,
+        mNetSales > 0 ? mNet / mNetSales : 0,
       ]);
       r.height = 20;
       r.eachCell((cell, colNum) => {
@@ -346,7 +356,7 @@ export function buildSalesProfitabilityWorkbook(
         } else {
           cell.alignment = { vertical: 'middle', horizontal: 'right' };
           if (colNum === 2) cell.numFmt = '#,##0';
-          else if (colNum === 8) cell.numFmt = PCT_NUM_FMT;
+          else if (colNum === 10) cell.numFmt = PCT_NUM_FMT;
           else cell.numFmt = IDR_NUM_FMT;
         }
       });
@@ -355,12 +365,14 @@ export function buildSalesProfitabilityWorkbook(
     const mTotalRow = wsSummary.addRow([
       'MONTHLY TOTAL',
       sumMOrders,
-      Math.round(sumMSales * 100) / 100,
+      Math.round(sumMGrossBeforeReturns * 100) / 100,
+      Math.round(-sumMReturns * 100) / 100,
+      Math.round(sumMNetSales * 100) / 100,
       Math.round(sumMCogs * 100) / 100,
       Math.round(sumMExp * 100) / 100,
       Math.round(sumMGP * 100) / 100,
       Math.round(sumMNP * 100) / 100,
-      sumMSales > 0 ? sumMNP / sumMSales : 0,
+      sumMNetSales > 0 ? sumMNP / sumMNetSales : 0,
     ]);
     mTotalRow.height = 22;
     mTotalRow.eachCell((cell, colNum) => {
@@ -372,7 +384,7 @@ export function buildSalesProfitabilityWorkbook(
       } else {
         cell.alignment = { vertical: 'middle', horizontal: 'right' };
         if (colNum === 2) cell.numFmt = '#,##0';
-        else if (colNum === 8) cell.numFmt = PCT_NUM_FMT;
+        else if (colNum === 10) cell.numFmt = PCT_NUM_FMT;
         else cell.numFmt = IDR_NUM_FMT;
       }
     });

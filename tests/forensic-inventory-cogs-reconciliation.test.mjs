@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 
-const connectionString = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres';
+const connectionString = (process.env.READONLY_AUDIT_DB_URL || '');
 const schedulePath = path.resolve('docs/audits/SAPJ_INVENTORY_HISTORY_COGS_BATCH_SCHEDULE.csv');
 
 test('Forensic Inventory History & Historical COGS Final Reconciliation Suite', async (t) => {

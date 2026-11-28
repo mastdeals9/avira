@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { calculateExpenseTotals } from '../src/utils/taxCalculations.ts';
 
-const DB_CONNECTION = process.env.DATABASE_URL || 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+const DB_CONNECTION = process.env.READONLY_AUDIT_DB_URL || (process.env.READONLY_AUDIT_DB_URL || '');
 
 async function withDbClient(callback) {
   const client = new pg.Client({

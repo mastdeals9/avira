@@ -1,10 +1,10 @@
 // Read-only finance-audit verification.
-// Run:  SUPABASE_DB_URL='postgres://...' node scripts/finance-audit-verify.mjs
+// Run:  SUPABASE_DB_URL=(process.env.READONLY_AUDIT_DB_URL || '') node scripts/finance-audit-verify.mjs
 // No writes. All queries are SELECT/information_schema/pg_catalog.
 
 import { Client } from 'pg';
 
-const dbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL || process.env.POSTGRES_URL;
+const dbUrl = process.env.SUPABASE_DB_URL || process.env.READONLY_AUDIT_DB_URL || process.env.POSTGRES_URL;
 if (!dbUrl) {
   console.error('Missing SUPABASE_DB_URL (or DATABASE_URL/POSTGRES_URL).');
   process.exit(1);

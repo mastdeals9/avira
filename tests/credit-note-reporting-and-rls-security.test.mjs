@@ -68,7 +68,7 @@ test('3. Credit Note Accounting Math: Return Revenue, Quantity and FIFO COGS Ded
 test('4. Live Database Transactional Pre-Execution Validation: 8 Reporting Cases & 7 Security Roles', async () => {
   const { Client } = pg;
   const client = new Client({
-    connectionString: 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres',
+    connectionString: (process.env.READONLY_AUDIT_DB_URL || ''),
     ssl: { rejectUnauthorized: false }
   });
 

@@ -7,7 +7,7 @@ import sharp from 'sharp';
 
 const EXPECTED_PROJECT_REF = 'dkrtsqienlhpouohmfki';
 const EXPECTED_COMPANY_PREFIX = 'PT. Shubham Anzen Pharma Jaya';
-const DB_CONN = 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres';
+const DB_CONN = (process.env.READONLY_AUDIT_DB_URL || '');
 const SUPABASE_URL = 'https://dkrtsqienlhpouohmfki.supabase.co';
 
 const envFile = fs.readFileSync('.env', 'utf8');

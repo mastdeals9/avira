@@ -56,7 +56,7 @@ function runDbQuery(sql) {
   const pgPath = join(process.cwd(), 'node_modules/pg');
   const runnerContent = `
     const { Client } = require(${JSON.stringify(pgPath)});
-    const client = new Client({ connectionString: process.env.DATABASE_URL || 'postgresql://postgres.dkrtsqienlhpouohmfki:Kunallunkad%40123@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres' });
+    const client = new Client({ connectionString: process.env.READONLY_AUDIT_DB_URL || (process.env.READONLY_AUDIT_DB_URL || '') });
     client.connect().then(async () => {
       const res = await client.query(${JSON.stringify(sql)});
       const rows = Array.isArray(res) ? (res[res.length - 1]?.rows || []) : (res.rows || []);
