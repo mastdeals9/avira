@@ -228,7 +228,8 @@ DECLARE
   v_original_invoice_id uuid;
   v_unit_cogs numeric;
   v_min_unit_cogs numeric;
-  v_max_unit_cogs numeric;
+  v_total_candidates bigint;
+  v_null_candidates bigint;
   v_distinct_unit_cogs bigint;
 BEGIN
   SELECT * INTO v_cni
@@ -249,7 +250,17 @@ BEGIN
     RETURN 0;
   END IF;
 
-  -- Exact original invoice-line link, when present.
+  -- Resolve original invoice from the credit note or its material return first
+  -- so an explicit sales_invoice_item_id can be validated against it.
+  v_original_invoice_id := v_cn.original_invoice_id;
+  IF v_original_invoice_id IS NULL AND v_cn.material_return_id IS NOT NULL THEN
+    SELECT mr.original_invoice_id
+      INTO v_original_invoice_id
+    FROM public.material_returns mr
+    WHERE mr.id = v_cn.material_return_id;
+  END IF;
+
+  -- Exact original invoice-line link, when present (must belong to original invoice if populated).
   IF v_cni.sales_invoice_item_id IS NOT NULL THEN
     SELECT CASE
              WHEN sii.cogs_unit_cost IS NOT NULL AND sii.cogs_unit_cost > 0 THEN sii.cogs_unit_cost
@@ -261,6 +272,7 @@ BEGIN
     FROM public.sales_invoice_items sii
     WHERE sii.id = v_cni.sales_invoice_item_id
       AND sii.product_id = v_cni.product_id
+      AND (v_original_invoice_id IS NULL OR sii.invoice_id = v_original_invoice_id)
       AND (v_cni.batch_id IS NULL OR sii.batch_id = v_cni.batch_id);
 
     IF v_unit_cogs IS NULL THEN
@@ -271,6 +283,9 @@ BEGIN
       JOIN public.journal_entries je ON je.id = jel.journal_entry_id
       JOIN public.chart_of_accounts coa ON coa.id = jel.account_id
       WHERE sii.id = v_cni.sales_invoice_item_id
+        AND sii.product_id = v_cni.product_id
+        AND (v_original_invoice_id IS NULL OR sii.invoice_id = v_original_invoice_id)
+        AND (v_cni.batch_id IS NULL OR sii.batch_id = v_cni.batch_id)
         AND coa.code = '5100'
         AND je.is_posted = true
         AND NOT COALESCE(je.is_reversed, false)
@@ -283,22 +298,14 @@ BEGIN
     END IF;
   END IF;
 
-  -- Resolve original invoice from the credit note or its material return.
-  v_original_invoice_id := v_cn.original_invoice_id;
-  IF v_original_invoice_id IS NULL AND v_cn.material_return_id IS NOT NULL THEN
-    SELECT mr.original_invoice_id
-      INTO v_original_invoice_id
-    FROM public.material_returns mr
-    WHERE mr.id = v_cn.material_return_id;
-  END IF;
-
-  -- Legacy notes may have no item FK. A batch match is accepted only if all
-  -- matching original invoice lines carry one identical saved unit COGS.
+  -- Legacy notes may have no item FK. A batch/invoice match is accepted ONLY if
+  -- every matching original invoice line has a known (non-NULL), identical unit COGS.
   IF v_original_invoice_id IS NOT NULL THEN
-    SELECT COUNT(DISTINCT ROUND(unit_cost, 4)),
-           MIN(ROUND(unit_cost, 4)),
-           MAX(ROUND(unit_cost, 4))
-      INTO v_distinct_unit_cogs, v_min_unit_cogs, v_max_unit_cogs
+    SELECT COUNT(*),
+           COUNT(*) FILTER (WHERE unit_cost IS NULL),
+           COUNT(DISTINCT ROUND(unit_cost, 4)),
+           MIN(ROUND(unit_cost, 4))
+      INTO v_total_candidates, v_null_candidates, v_distinct_unit_cogs, v_min_unit_cogs
     FROM (
       SELECT CASE
                WHEN sii.cogs_unit_cost IS NOT NULL AND sii.cogs_unit_cost > 0 THEN sii.cogs_unit_cost
@@ -313,35 +320,15 @@ BEGIN
           (v_cni.batch_id IS NOT NULL AND sii.batch_id = v_cni.batch_id)
           OR (v_cni.batch_id IS NULL)
         )
-    ) candidates
-    WHERE unit_cost IS NOT NULL;
+    ) candidates;
 
-    IF v_distinct_unit_cogs = 1 THEN
+    IF v_total_candidates > 0 AND v_null_candidates = 0 AND v_distinct_unit_cogs = 1 THEN
       RETURN ROUND(v_cni.quantity * v_min_unit_cogs, 2);
     END IF;
   END IF;
 
-  -- Last historical evidence source: original material-return issue cost.
-  -- Multiple differing issue costs are ambiguous and therefore unresolved.
-  IF v_cn.material_return_id IS NOT NULL THEN
-    SELECT COUNT(DISTINCT ROUND(it.unit_cost, 4)),
-           MIN(ROUND(it.unit_cost, 4)),
-           MAX(ROUND(it.unit_cost, 4))
-      INTO v_distinct_unit_cogs, v_min_unit_cogs, v_max_unit_cogs
-    FROM public.material_returns mr
-    JOIN public.inventory_transactions it ON it.source_id = mr.original_dc_id
-    WHERE mr.id = v_cn.material_return_id
-      AND it.unit_cost IS NOT NULL
-      AND it.product_id = v_cni.product_id
-      AND (v_cni.batch_id IS NULL OR it.batch_id = v_cni.batch_id);
-
-    IF v_distinct_unit_cogs = 1 THEN
-      RETURN ROUND(v_cni.quantity * v_min_unit_cogs, 2);
-    END IF;
-  END IF;
-
-  -- NULL is intentional: unresolved historical COGS must not become zero or
-  -- today's batch cost. The report will block certification until resolved.
+  -- NULL is intentional: unresolved historical COGS must not become zero,
+  -- invent non-existent inventory_transactions columns, or use today's batch cost.
   RETURN NULL;
 END;
 $function$;

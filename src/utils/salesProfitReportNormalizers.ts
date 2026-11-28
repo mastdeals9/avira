@@ -26,15 +26,15 @@ export interface NormalizedProductProfitabilityRow {
 }
 
 export interface BatchReturnDetail {
-  credit_note_id: string;
+  credit_note_item_id: string;
   credit_note_number: string;
   credit_note_date: string;
   credit_note_type: string;
+  quantity: number;
   return_qty: number;
   return_revenue: number;
   return_cogs: number | null;
-  unresolved_cost_count: number;
-  has_unresolved_cost: boolean;
+  has_unresolved_cogs: boolean;
 }
 
 export interface NormalizedBatchProfitabilityRow {

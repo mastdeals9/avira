@@ -408,7 +408,7 @@ export function buildSalesProfitabilityWorkbook(
     'Quantity sold',
     'Average selling price',
     'Average historical COGS',
-    'Gross sales',
+    'Net sales (after returns)',
     'Total COGS',
     'Sales expenses',
     'Gross profit',

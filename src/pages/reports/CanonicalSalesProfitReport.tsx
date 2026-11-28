@@ -45,6 +45,14 @@ export interface CompanyProfitabilitySummary {
   total_qty_sold: number;
   order_count: number;
   product_count: number;
+  has_unreported_cost?: boolean;
+  unresolved_return_cogs_count?: number;
+  return_cogs_allocation_mismatch_count?: number;
+  credit_note_item_subtotal_mismatch_count?: number;
+  has_unresolved_return_cogs?: boolean;
+  has_credit_note_item_subtotal_mismatch?: boolean;
+  profitability_certified?: boolean;
+  certification_status?: string;
   cancelled_invoices?: {
     count: number;
     total_amount: number;
@@ -120,15 +128,15 @@ export interface BatchProfitabilityRow {
   return_revenue?: number;
   return_cogs?: number | null;
   return_details?: Array<{
-    credit_note_id: string;
+    credit_note_item_id: string;
     credit_note_number: string;
     credit_note_date: string;
     credit_note_type: string;
+    quantity: number;
     return_qty: number;
     return_revenue: number;
     return_cogs: number | null;
-    unresolved_cost_count: number;
-    has_unresolved_cost: boolean;
+    has_unresolved_cogs: boolean;
   }>;
   cost_breakdown: {
     is_imported: boolean;
@@ -607,9 +615,60 @@ export function CanonicalSalesProfitReport() {
       </div>
 
       {error && (
-        <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-800 text-xs">
-          <p className="font-semibold">Failed to load profitability data</p>
-          <p className="mt-0.5">{error}</p>
+        <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-800 text-xs flex items-center justify-between gap-2">
+          <div>
+            <p className="font-semibold">Failed to load profitability data</p>
+            <p className="mt-0.5">{error}</p>
+          </div>
+          <button
+            type="button"
+            onClick={loadSummary}
+            className="px-2.5 py-1 bg-red-100 hover:bg-red-200 text-red-900 rounded font-semibold shrink-0"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* ─── Certification & Unresolved Cost Diagnostics Banner ─── */}
+      {company && company.certification_status && (
+        <div
+          className={`rounded-lg px-3 py-2 text-xs flex flex-wrap items-center justify-between gap-2 border shadow-xs ${
+            company.profitability_certified
+              ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
+              : 'bg-red-50 border-red-300 text-red-900'
+          }`}
+        >
+          <div className="flex items-center gap-2 font-semibold">
+            <span
+              className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                company.profitability_certified
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-red-600 text-white'
+              }`}
+            >
+              {company.certification_status}
+            </span>
+            <span>
+              {company.profitability_certified
+                ? 'All invoice COGS snapshots and credit-note return reversals reconciled to GL 5100.'
+                : 'Certification blocked: unresolved COGS or return allocation diagnostics detected.'}
+            </span>
+          </div>
+          {!company.profitability_certified && (
+            <div className="text-[11px] font-mono flex flex-wrap gap-3">
+              {company.has_unreported_cost && <span>Unresolved Sales Cost</span>}
+              {(company.unresolved_return_cogs_count || 0) > 0 && (
+                <span>Unresolved Return COGS: {company.unresolved_return_cogs_count}</span>
+              )}
+              {(company.return_cogs_allocation_mismatch_count || 0) > 0 && (
+                <span>Return COGS Mismatch: {company.return_cogs_allocation_mismatch_count}</span>
+              )}
+              {(company.credit_note_item_subtotal_mismatch_count || 0) > 0 && (
+                <span>CN Subtotal Mismatch: {company.credit_note_item_subtotal_mismatch_count}</span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -775,7 +834,7 @@ export function CanonicalSalesProfitReport() {
                 <th className="px-4 py-2.5 min-w-[200px]">Product</th>
                 <th className="px-3 py-2.5 text-center">Unit</th>
                 <th className="px-3 py-2.5 text-right">Sold Qty</th>
-                <th className="px-3 py-2.5 text-right">Gross Sales</th>
+                <th className="px-3 py-2.5 text-right">Net Sales</th>
                 <th className="px-3 py-2.5 text-right">Product Cost</th>
                 <th className="px-3 py-2.5 text-right">Sales Expenses</th>
                 <th className="px-3 py-2.5 text-right">Gross Profit</th>
@@ -842,17 +901,17 @@ export function CanonicalSalesProfitReport() {
                           {formatCurrency(p.gross_sales)}
                         </td>
                         <td className="px-3 py-2.5 text-right text-gray-700 tabular-nums">
-                          {p.costed_lines === 0 ? (
+                          {p.product_cost == null || p.costed_lines === 0 ? (
                             <span className="text-amber-700 font-medium">Cost Unresolved</span>
                           ) : hasPartialCostCoverage ? (
                             <div>
-                              <span className="font-medium">{formatCurrency(p.product_cost ?? 0)}</span>
+                              <span className="font-medium">{formatCurrency(p.product_cost)}</span>
                               <div className="text-[10px] text-amber-700">
                                 {p.costed_lines}/{p.total_lines} lines
                               </div>
                             </div>
                           ) : (
-                            formatCurrency(p.product_cost ?? 0)
+                            formatCurrency(p.product_cost)
                           )}
                         </td>
                         <td className="px-3 py-2.5 text-right text-amber-700 tabular-nums">
@@ -976,7 +1035,9 @@ export function CanonicalSalesProfitReport() {
                     {formatCurrency(filteredProducts.reduce((s, p) => s + p.gross_sales, 0))}
                   </td>
                   <td className="px-3 py-3 text-right tabular-nums">
-                    {formatCurrency(filteredProducts.reduce((s, p) => s + (p.product_cost ?? 0), 0))}
+                    {filteredProducts.some(p => p.product_cost == null)
+                      ? <span className="text-amber-700">Cost Unresolved</span>
+                      : formatCurrency(filteredProducts.reduce((s, p) => s + (p.product_cost ?? 0), 0))}
                   </td>
                   <td className="px-3 py-3 text-right text-amber-800 tabular-nums">
                     <div>{formatCurrency(filteredProducts.reduce((s, p) => s + p.sales_expense, 0))}</div>
@@ -1324,14 +1385,14 @@ export function CanonicalSalesProfitReport() {
                                           </thead>
                                           <tbody className="divide-y divide-amber-100">
                                             {b.return_details.map((rd) => (
-                                              <tr key={rd.credit_note_id}>
+                                              <tr key={rd.credit_note_item_id}>
                                                 <td className="px-2.5 py-1.5 font-mono font-semibold text-amber-900">{rd.credit_note_number}</td>
                                                 <td className="px-2.5 py-1.5 text-gray-600">{rd.credit_note_date}</td>
                                                 <td className="px-2.5 py-1.5 text-gray-700">{rd.credit_note_type === 'commercial_credit' ? 'Commercial' : 'Physical'}</td>
                                                 <td className="px-2.5 py-1.5 text-right font-mono">{formatNumber(rd.return_qty, 0)}</td>
                                                 <td className="px-2.5 py-1.5 text-right font-mono text-amber-800">-{formatCurrency(rd.return_revenue)}</td>
                                                 <td className="px-2.5 py-1.5 text-right font-mono text-emerald-700">
-                                                  {rd.has_unresolved_cost || rd.return_cogs == null
+                                                  {rd.has_unresolved_cogs || rd.return_cogs == null
                                                     ? <span className="text-red-600 font-semibold">Cost Unresolved</span>
                                                     : `-${formatCurrency(rd.return_cogs)}`}
                                                 </td>
