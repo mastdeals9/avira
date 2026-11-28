@@ -271,5 +271,47 @@ test('Four Historical Accounting & Workflow Repairs (Rollback-Only DB Verificati
     }
   });
 
+  await t.test('Task 1 Permissions: anon/authenticated blocked from helpers, service_role allowed, triggers still work', async () => {
+    const fns = [
+      'public.recompute_purchase_order_item_received(uuid)',
+      'public.trg_sync_po_item_quantity_received_alloc()',
+      'public.trg_sync_po_item_quantity_received_pi_item()',
+      'public.validate_purchase_invoice_po_item_compatibility()',
+      'public.sync_batch_cost_summary_from_layers(uuid)',
+      'public.trg_sync_batch_cost_summary_from_layers()',
+    ];
+
+    for (const fn of fns) {
+      const privRes = await db.query(
+        `SELECT has_function_privilege('anon', $1, 'EXECUTE') AS anon_exec,
+                has_function_privilege('authenticated', $1, 'EXECUTE') AS auth_exec,
+                has_function_privilege('service_role', $1, 'EXECUTE') AS svc_exec`,
+        [fn]
+      );
+      assert.equal(privRes.rows[0].anon_exec, false, `anon must not execute ${fn}`);
+      assert.equal(privRes.rows[0].auth_exec, false, `authenticated must not execute ${fn}`);
+      assert.equal(privRes.rows[0].svc_exec, true, `service_role must retain execute on ${fn}`);
+    }
+
+    // Prove anon and authenticated actually fail on direct invocation
+    for (const role of ['anon', 'authenticated']) {
+      await db.query('SAVEPOINT sp_role_1');
+      await db.query(`SET LOCAL ROLE ${role}`);
+      await assert.rejects(
+        db.query('SELECT public.recompute_purchase_order_item_received($1)', ['00000000-0000-0000-0000-000000000000']),
+        /permission denied/i
+      );
+      await db.query('ROLLBACK TO SAVEPOINT sp_role_1');
+
+      await db.query('SAVEPOINT sp_role_2');
+      await db.query(`SET LOCAL ROLE ${role}`);
+      await assert.rejects(
+        db.query('SELECT public.sync_batch_cost_summary_from_layers($1)', ['00000000-0000-0000-0000-000000000000']),
+        /permission denied/i
+      );
+      await db.query('ROLLBACK TO SAVEPOINT sp_role_2');
+    }
+  });
+
   await db.query('ROLLBACK');
 });

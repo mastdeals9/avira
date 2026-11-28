@@ -106,3 +106,10 @@ BEGIN
   END LOOP;
 END;
 $$;
+
+-- Restrict helper and trigger function execution privileges
+REVOKE ALL ON FUNCTION public.sync_batch_cost_summary_from_layers(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.sync_batch_cost_summary_from_layers(uuid) TO postgres, service_role;
+
+REVOKE ALL ON FUNCTION public.trg_sync_batch_cost_summary_from_layers() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.trg_sync_batch_cost_summary_from_layers() TO postgres, service_role;

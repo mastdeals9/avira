@@ -268,3 +268,16 @@ BEGIN
   END LOOP;
 END;
 $$;
+
+-- 7. Restrict helper and trigger function execution privileges
+REVOKE ALL ON FUNCTION public.recompute_purchase_order_item_received(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.recompute_purchase_order_item_received(uuid) TO postgres, service_role;
+
+REVOKE ALL ON FUNCTION public.trg_sync_po_item_quantity_received_alloc() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.trg_sync_po_item_quantity_received_alloc() TO postgres, service_role;
+
+REVOKE ALL ON FUNCTION public.trg_sync_po_item_quantity_received_pi_item() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.trg_sync_po_item_quantity_received_pi_item() TO postgres, service_role;
+
+REVOKE ALL ON FUNCTION public.validate_purchase_invoice_po_item_compatibility() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.validate_purchase_invoice_po_item_compatibility() TO postgres, service_role;
