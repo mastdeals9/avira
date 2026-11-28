@@ -1,5 +1,4 @@
 import { useRef, useEffect, useState } from 'react';
-import { X, Printer, Download } from 'lucide-react';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { type CompanySnapshot } from '../types/company';
@@ -7,6 +6,7 @@ import { useResolvedCompanyLogo, waitForImages } from '../utils/companyLogoUrl';
 
 import { DocumentHeader } from './DocumentHeader';
 import { DocumentPrintStyles } from './DocumentPrintStyles';
+import { ResponsiveDocumentPreview } from './ui/ResponsiveDocumentPreview';
 import { SnapshotMissingError } from './SnapshotMissingError';
 import { formatUnit } from '../utils/unitDisplay';
 import { resolveItemPackaging } from '../utils/deliveryPackaging';
@@ -228,44 +228,19 @@ export function DeliveryChallanView({ challan, items, onClose, companyProfile }:
   const firstItemUnit = formatUnit(itemsToDisplay[0]?.products?.unit || itemsToDisplay[0]?.batches?.products?.unit);
 
   return (
-    <div className="doc-print-root fixed inset-0 z-50 overflow-y-auto bg-gray-900 bg-opacity-75 print:static print:bg-white print:overflow-visible">
-      <div className="doc-print-scroll flex min-h-screen items-start justify-center p-4 pt-10 print:p-0 print:min-h-0 print:block">
-        <div className="doc-print-sheet relative w-full max-w-5xl bg-white shadow-xl print:shadow-none print:max-w-full">
-          {/* Action Buttons - Hidden on print */}
-          <div className="doc-print-hide sticky top-0 z-10 flex items-center justify-between border-b bg-white px-6 py-4 print:hidden">
-            <h2 className="text-xl font-bold text-gray-900">
-              Surat Jalan {challan.challan_number}
-            </h2>
-            <div className="flex gap-2">
-              <button
-                onClick={handlePrint}
-                disabled={!logoReady}
-                title={logoReady ? undefined : 'Loading company logo…'}
-                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-wait"
-              >
-                <Printer className="h-4 w-4" />
-                Cetak
-              </button>
-              <button
-                onClick={handleDownloadPDF}
-                disabled={!logoReady}
-                title={logoReady ? undefined : 'Loading company logo…'}
-                className="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-wait"
-              >
-                <Download className="h-4 w-4" />
-                PDF
-              </button>
-              <button
-                onClick={onClose}
-                className="rounded-lg bg-gray-100 p-2 text-gray-600 hover:bg-gray-200"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-          </div>
-
-          {/* Challan Content */}
-          <div id="challan-print-content" ref={printRef} className="p-8">
+    <>
+      <ResponsiveDocumentPreview
+        title={`Surat Jalan ${challan.challan_number}`}
+        onPrint={handlePrint}
+        onDownloadPDF={handleDownloadPDF}
+        onClose={onClose}
+        disabled={!logoReady}
+        disabledTitle="Loading company logo…"
+        printLabel="Cetak"
+        pdfLabel="PDF"
+      >
+        {/* Challan Content */}
+        <div id="challan-print-content" ref={printRef} className="p-4 sm:p-8">
             {/* Header Section - Company Details */}
             <DocumentHeader co={co} title="SURAT JALAN" />
 
@@ -430,10 +405,9 @@ export function DeliveryChallanView({ challan, items, onClose, companyProfile }:
               </div>
             </div>
           </div>
-        </div>
-      </div>
+      </ResponsiveDocumentPreview>
 
       <DocumentPrintStyles contentId="challan-print-content" />
-    </div>
+    </>
   );
 }

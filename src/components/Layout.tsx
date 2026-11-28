@@ -177,12 +177,11 @@ export function Layout({ children }: LayoutProps) {
 
   // Viewport breakpoint classification & responsive auto-collapse
   // >= 1440px: Expanded allowed (default expanded)
-  // Auto collapse/expand based on page route:
-  // - Dashboard/Home = sidebar OPEN / full menu
-  // - Every other page/route = sidebar automatically COLLAPSED / icon-only
-  // - Returning to Dashboard = automatically OPEN again
+  // Auto collapse/expand based on page route and viewport:
+  // - Large desktop (>=1440px) on Dashboard = sidebar OPEN / full menu
+  // - Compact laptop (1024-1439px) or non-Dashboard routes = sidebar COLLAPSED / icon-only
   useEffect(() => {
-    if (currentPage === 'dashboard') {
+    if (currentPage === 'dashboard' && (typeof window === 'undefined' || window.innerWidth >= 1440)) {
       setSidebarCollapsed(false);
     } else {
       setSidebarCollapsed(true);
@@ -307,15 +306,15 @@ export function Layout({ children }: LayoutProps) {
 
       {/* Mobile Slide-Over Navigation Drawer */}
       <aside
-        className={`fixed top-0 left-0 bottom-0 z-50 w-72 max-w-[85vw] bg-white flex flex-col shadow-2xl
+        className={`fixed top-0 left-0 bottom-0 z-50 w-[280px] max-w-[82vw] bg-white flex flex-col shadow-2xl
           transform transition-transform duration-300 ease-out lg:hidden print:hidden
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
         aria-label="Mobile Navigation Drawer"
       >
         {/* Mobile Drawer Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gray-50/80">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <img src={logo} alt="SAPJ Logo" className="w-7 h-7 flex-shrink-0" />
+        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-gray-50/80 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <img src={logo} alt="SAPJ Logo" className="w-6 h-6 flex-shrink-0" />
             <div className="min-w-0">
               <p className="text-xs font-bold text-gray-900 truncate leading-tight">{currentCompanyName}</p>
               <span className="text-[10px] font-semibold text-blue-600 uppercase tracking-wider">SAPJ ERP</span>
@@ -323,22 +322,22 @@ export function Layout({ children }: LayoutProps) {
           </div>
           <button
             onClick={() => setSidebarOpen(false)}
-            className="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 transition-colors"
+            className="no-compact w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 transition-colors"
             aria-label="Close menu"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Mobile Drawer Nav Groups */}
-        <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-3 overscroll-contain">
+        <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-2 overscroll-contain">
           {groups.map((group) => {
             const visibleItems = group.items.filter(item => isItemAccessible(item.id));
             if (visibleItems.length === 0) return null;
 
             return (
-              <div key={group.label} className="space-y-1">
-                <p className="px-3 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+              <div key={group.label} className="space-y-0.5">
+                <p className="px-2.5 pt-1 pb-0.5 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
                   {group.label}
                 </p>
                 <div className="space-y-0.5">
@@ -350,20 +349,20 @@ export function Layout({ children }: LayoutProps) {
                         key={item.id}
                         type="button"
                         onClick={() => navigate((item.path ?? `/${item.id}`).replace(/^\//, ''))}
-                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-left transition-colors min-h-[44px]
+                        className={`no-compact w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-colors min-h-[38px]
                           ${isActive
                             ? 'bg-blue-50 text-blue-700 font-semibold'
                             : 'text-gray-700 hover:bg-gray-100 font-medium'
                           }`}
                       >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <Icon className={`w-5 h-5 flex-shrink-0 ${isActive ? 'text-blue-600' : 'text-gray-500'}`} strokeWidth={isActive ? 2 : 1.75} />
-                          <span className="text-sm truncate">{item.label}</span>
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-blue-600' : 'text-gray-500'}`} strokeWidth={isActive ? 2 : 1.75} />
+                          <span className="text-[13px] leading-tight truncate">{item.label}</span>
                         </div>
                         {isActive ? (
-                          <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0" />
                         ) : (
-                          <ChevronRight className="w-4 h-4 text-gray-300" />
+                          <ChevronRight className="w-3.5 h-3.5 text-gray-300 shrink-0" />
                         )}
                       </button>
                     );
@@ -376,15 +375,15 @@ export function Layout({ children }: LayoutProps) {
 
         {/* Mobile Drawer User Footer */}
         {profile && (
-          <div className="border-t border-gray-200 bg-gray-50/80 p-3 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
+          <div className="border-t border-gray-200 bg-gray-50/80 px-3 py-2 flex flex-col gap-1.5 shrink-0">
+            <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-xs font-bold text-gray-900 truncate">{profile.full_name || profile.username}</p>
                 <p className="text-[11px] text-gray-500 capitalize">{profile.role}</p>
               </div>
               <button
                 onClick={toggleLanguage}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-gray-200 bg-white text-xs font-semibold text-gray-700 uppercase"
+                className="no-compact flex items-center gap-1 px-2 py-1 rounded-md border border-gray-200 bg-white text-[11px] font-semibold text-gray-700 uppercase shrink-0"
                 title="Change language"
               >
                 <Globe className="w-3.5 h-3.5 text-gray-500" />
@@ -393,9 +392,9 @@ export function Layout({ children }: LayoutProps) {
             </div>
             <button
               onClick={() => signOut()}
-              className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 text-xs font-medium transition-colors min-h-[40px]"
+              className="no-compact w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 text-xs font-medium transition-colors min-h-[36px]"
             >
-              <LogOut className="w-4 h-4" />
+              <LogOut className="w-3.5 h-3.5" />
               <span>{t('auth.logout')}</span>
             </button>
           </div>
@@ -499,14 +498,14 @@ export function Layout({ children }: LayoutProps) {
       {/* Main content */}
       <div className={`flex-1 flex flex-col transition-[padding] duration-200 ${mainPadding} min-w-0 max-w-full overflow-x-hidden print:pl-0 print:overflow-visible`}>
         <header className="bg-white border-b border-gray-200 sticky top-0 z-20 print:hidden">
-          <div className="flex items-center justify-between px-2.5 sm:px-3 py-1.5">
+          <div className="flex items-center justify-between gap-2 px-2 sm:px-3 py-1 min-h-[44px]">
             {/* Left Controls & Page Header */}
-            <div className="flex items-center gap-2 min-w-0">
-              {/* Mobile menu button (touch target >= 44px) */}
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+              {/* Mobile menu button */}
               <button
                 type="button"
                 onClick={() => setSidebarOpen(true)}
-                className="lg:hidden w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-100 active:bg-gray-200 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="no-compact lg:hidden w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 active:bg-gray-200 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 shrink-0"
                 title="Open menu"
                 aria-label="Open navigation menu"
               >
@@ -669,19 +668,19 @@ export function Layout({ children }: LayoutProps) {
             </div>
 
             {/* Header Right Actions */}
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 shrink-0">
               {/* Mobile Search Button */}
               <button
                 type="button"
                 onClick={() => setSearchOpen(true)}
-                className="sm:hidden w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600"
+                className="no-compact sm:hidden w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600"
                 title="Search"
                 aria-label="Search"
               >
                 <Search className="w-4 h-4" />
               </button>
 
-              {/* Desktop Search Button */}
+              {/* Desktop Search Button (condensed on compact laptop/tablet) */}
               <button
                 type="button"
                 onClick={() => setSearchOpen(true)}
@@ -689,7 +688,8 @@ export function Layout({ children }: LayoutProps) {
                 title="Search (Ctrl/Cmd+K)"
               >
                 <Search className="w-3.5 h-3.5" />
-                <span>Search</span><kbd className="text-[10px] bg-gray-100 px-1 rounded">⌘K</kbd>
+                <span className="hidden xl:inline">Search</span>
+                <kbd className="hidden 2xl:inline text-[10px] bg-gray-100 px-1 rounded">⌘K</kbd>
               </button>
 
               <NotificationDropdown />
@@ -697,7 +697,7 @@ export function Layout({ children }: LayoutProps) {
               <button
                 type="button"
                 onClick={toggleLanguage}
-                className="flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 text-gray-700 min-h-[36px]"
+                className="no-compact flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded hover:bg-gray-100 text-gray-700 min-h-[34px]"
                 title="Toggle language"
                 aria-label="Toggle language"
               >
@@ -712,14 +712,14 @@ export function Layout({ children }: LayoutProps) {
                 title={t('auth.logout')}
               >
                 <LogOut className="w-3.5 h-3.5" />
-                <span className="text-xs font-medium">{t('auth.logout')}</span>
+                <span className="hidden xl:inline text-xs font-medium">{t('auth.logout')}</span>
               </button>
             </div>
           </div>
         </header>
 
-        {/* Content Area — pb-24 on mobile ensures floating elements and content clear the fixed bottom nav */}
-        <main className="flex-1 p-2.5 sm:p-3 pb-24 lg:pb-3 max-w-full overflow-x-hidden print:p-0 print:overflow-visible">
+        {/* Content Area — extra bottom padding on <lg clears the fixed bottom nav + iOS safe area */}
+        <main className="flex-1 min-w-0 p-2 sm:p-2.5 xl:p-3 pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:pb-3 max-w-full overflow-x-clip print:p-0 print:overflow-visible">
           {children}
         </main>
       </div>
@@ -727,17 +727,17 @@ export function Layout({ children }: LayoutProps) {
       {/* Mobile Bottom Navigation Shortcut Layer */}
       <nav
         aria-label="Mobile Navigation"
-        className="fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-gray-200 px-1 py-1 flex items-center justify-around shadow-[0_-2px_10px_rgba(0,0,0,0.06)] lg:hidden print:hidden"
+        className="fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-gray-200 px-1 py-0.5 flex items-center justify-around shadow-[0_-2px_10px_rgba(0,0,0,0.06)] lg:hidden print:hidden"
         style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 4px)' }}
       >
         {/* 1. HOME */}
         <button
           type="button"
           onClick={() => navigate('dashboard')}
-          className={`flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[48px]
+          className={`no-compact flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[42px]
             ${currentPage === 'dashboard' ? 'text-blue-600 font-semibold' : 'text-gray-500 hover:text-gray-900 font-medium'}`}
         >
-          <LayoutDashboard className="w-5 h-5 flex-shrink-0" strokeWidth={currentPage === 'dashboard' ? 2 : 1.75} />
+          <LayoutDashboard className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" strokeWidth={currentPage === 'dashboard' ? 2 : 1.75} />
           <span className="text-[10px] mt-0.5 truncate tracking-tight">{t('nav.home', 'Home')}</span>
         </button>
 
@@ -745,10 +745,10 @@ export function Layout({ children }: LayoutProps) {
         <button
           type="button"
           onClick={() => navigate('crm')}
-          className={`flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[48px]
+          className={`no-compact flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[42px]
             ${['crm', 'customers'].includes(currentPage) ? 'text-blue-600 font-semibold' : 'text-gray-500 hover:text-gray-900 font-medium'}`}
         >
-          <UsersRound className="w-5 h-5 flex-shrink-0" strokeWidth={['crm', 'customers'].includes(currentPage) ? 2 : 1.75} />
+          <UsersRound className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" strokeWidth={['crm', 'customers'].includes(currentPage) ? 2 : 1.75} />
           <span className="text-[10px] mt-0.5 truncate tracking-tight">{t('nav.crm', 'CRM')}</span>
         </button>
 
@@ -756,10 +756,10 @@ export function Layout({ children }: LayoutProps) {
         <button
           type="button"
           onClick={() => navigate('sales')}
-          className={`flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[48px]
+          className={`no-compact flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[42px]
             ${['sales', 'sales-orders', 'delivery-challan'].includes(currentPage) ? 'text-blue-600 font-semibold' : 'text-gray-500 hover:text-gray-900 font-medium'}`}
         >
-          <ReceiptText className="w-5 h-5 flex-shrink-0" strokeWidth={['sales', 'sales-orders', 'delivery-challan'].includes(currentPage) ? 2 : 1.75} />
+          <ReceiptText className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" strokeWidth={['sales', 'sales-orders', 'delivery-challan'].includes(currentPage) ? 2 : 1.75} />
           <span className="text-[10px] mt-0.5 truncate tracking-tight">{t('nav.sales', 'Sales')}</span>
         </button>
 
@@ -767,10 +767,10 @@ export function Layout({ children }: LayoutProps) {
         <button
           type="button"
           onClick={() => navigate('stock')}
-          className={`flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[48px]
+          className={`no-compact flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[42px]
             ${['stock', 'products', 'batches', 'inventory'].includes(currentPage) ? 'text-blue-600 font-semibold' : 'text-gray-500 hover:text-gray-900 font-medium'}`}
         >
-          <Warehouse className="w-5 h-5 flex-shrink-0" strokeWidth={['stock', 'products', 'batches', 'inventory'].includes(currentPage) ? 2 : 1.75} />
+          <Warehouse className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" strokeWidth={['stock', 'products', 'batches', 'inventory'].includes(currentPage) ? 2 : 1.75} />
           <span className="text-[10px] mt-0.5 truncate tracking-tight">{t('nav.stock', 'Stock')}</span>
         </button>
 
@@ -778,10 +778,10 @@ export function Layout({ children }: LayoutProps) {
         <button
           type="button"
           onClick={() => setSidebarOpen(true)}
-          className={`flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[48px]
+          className={`no-compact flex-1 min-w-0 flex flex-col items-center justify-center py-1 rounded-lg transition-colors min-h-[42px]
             ${sidebarOpen ? 'text-blue-600 font-semibold' : 'text-gray-500 hover:text-gray-900 font-medium'}`}
         >
-          <MoreHorizontal className="w-5 h-5 flex-shrink-0" strokeWidth={1.75} />
+          <MoreHorizontal className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" strokeWidth={1.75} />
           <span className="text-[10px] mt-0.5 truncate tracking-tight">{t('common.more', 'More')}</span>
         </button>
       </nav>

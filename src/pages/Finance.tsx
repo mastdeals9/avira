@@ -541,7 +541,7 @@ function FinanceContent() {
 
   return (
     <Layout>
-      <div className="flex h-screen bg-gray-50 print:h-auto print:bg-white print:block">
+      <div className="flex min-h-[calc(100dvh-3.5rem)] bg-gray-50 min-w-0 print:h-auto print:bg-white print:block">
         {/* Left Sidebar - Compact Menu */}
         {!sidebarCollapsed && (
           <div className="fixed inset-0 z-40 bg-black/30 md:hidden print:hidden" onClick={() => setSidebarCollapsed(true)} />
@@ -621,25 +621,25 @@ function FinanceContent() {
         </div>
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col overflow-hidden print:overflow-visible">
+        <div className="flex-1 min-w-0 flex flex-col print:overflow-visible">
           {/* Slim top strip — hamburger + active sub-tab breadcrumb only */}
-          <div className="bg-white border-b border-gray-200 px-2 py-0.5 flex items-center gap-1.5 min-h-[26px] print:hidden">
+          <div className="bg-white border-b border-gray-200 px-2 py-1 flex items-center gap-1.5 min-h-[30px] print:hidden">
             <button
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className="p-0.5 hover:bg-gray-100 rounded transition-colors"
+              className="no-compact p-1 hover:bg-gray-100 rounded transition-colors"
               title={sidebarCollapsed ? 'Show Menu' : 'Hide Menu'}
               aria-label={sidebarCollapsed ? 'Show finance menu' : 'Hide finance menu'}
             >
-              {sidebarCollapsed ? <Menu className="w-3.5 h-3.5 text-gray-600" /> : <X className="w-3.5 h-3.5 text-gray-600" />}
+              {sidebarCollapsed ? <Menu className="w-4 h-4 text-gray-600" /> : <X className="w-4 h-4 text-gray-600" />}
             </button>
-            <span className="text-[11px] font-semibold text-gray-600 truncate">
+            <span className="text-xs font-semibold text-gray-700 truncate">
               {financeMenu.flatMap(g => g.items).find(i => i.id === activeTab)?.label ?? t.finance.title}
             </span>
           </div>
 
-          {/* Content Area — minimal padding so summary cards sit right under the header */}
-          <div className="flex-1 overflow-auto bg-white print:overflow-visible">
-            <div className="finance-ui px-2 py-1.5 md:px-2.5 md:py-2 print:p-0">
+          {/* Content Area — single natural document scroll on mobile/tablet, clean horizontal containment */}
+          <div className="flex-1 min-w-0 bg-white print:overflow-visible">
+            <div className="finance-ui px-1.5 py-1.5 sm:px-2.5 sm:py-2 print:p-0 min-w-0">
               <Suspense fallback={
                 <div className="flex items-center justify-center py-12">
                   <Loader className="w-6 h-6 animate-spin text-blue-600" />

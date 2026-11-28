@@ -392,15 +392,15 @@ export function CRMCommandCenter() {
           </div>
         </div>
 
-        <div className="flex-1 flex overflow-hidden">
-          <div className="w-1/4 min-w-[300px] max-w-[400px]">
+        <div className="flex-1 flex flex-col lg:flex-row lg:overflow-hidden min-w-0">
+          <div className="w-full lg:w-1/4 lg:min-w-[240px] xl:min-w-[300px] lg:max-w-[400px] min-w-0">
             <EmailListPanel
               onEmailSelect={handleEmailSelect}
               selectedEmailId={selectedEmail?.id || null}
             />
           </div>
 
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <InquiryFormPanel
               email={selectedEmail}
               parsedData={parsedData}
@@ -409,7 +409,7 @@ export function CRMCommandCenter() {
             />
           </div>
 
-          <div className="w-1/4 min-w-[300px] max-w-[400px]">
+          <div className="w-full lg:w-1/4 lg:min-w-[240px] xl:min-w-[300px] lg:max-w-[400px] min-w-0">
             <QuickActionsPanel
               inquiry={createdInquiry}
               onActionComplete={handleActionComplete}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Plus, Package, Truck, Pencil as Edit, Trash2, FileText, X, Download, Eye, CheckCircle, XCircle, Clipboard, ClipboardCheck, Lock, RotateCcw, UserPlus, AlertCircle, Banknote, Link2, Search, Clock, Loader2, ChevronDown, Minus, Landmark } from 'lucide-react';
 import { FinanceModal as Modal } from './FinanceModal';
+import { ResponsiveFilterBar } from '../ui/ResponsiveFilterBar';
 import { MoneyInput } from '../MoneyInput';
 import { SearchableSelect } from '../SearchableSelect';
 import { FinanceModal } from './FinanceModal';
@@ -3506,8 +3507,8 @@ export function ExpenseManager({
             </div>
           </div>
 
-          {/* Two-row toolbar: Row A (Type tabs, Recon pills, Approval pills) & Row B (Category, Supplier, Lifecycle, Search) */}
-          <div className="bg-white border border-gray-200 rounded-lg p-2 space-y-1.5 shadow-2xs">
+          {/* Desktop/Tablet two-row toolbar (md+) */}
+          <div className="hidden md:block bg-white border border-gray-200 rounded-lg p-2 space-y-1.5 shadow-2xs">
             {/* Toolbar Row 1: Primary filter groups */}
             <div className="flex items-center gap-2 flex-wrap text-xs">
               {/* Type tabs */}
@@ -3659,6 +3660,176 @@ export function ExpenseManager({
                 />
               </div>
             </div>
+          </div>
+
+          {/* Mobile compact search + Filter bottom sheet (<md) */}
+          <div className="md:hidden bg-white border border-gray-200 rounded-lg p-2 shadow-2xs">
+            <ResponsiveFilterBar
+              sheetTitle="Expense Filters"
+              searchInput={
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Search expenses..."
+                    aria-label="Search expenses mobile"
+                    style={{ paddingLeft: '2rem' }}
+                    className="h-9 w-full rounded-lg border border-gray-300 bg-white pr-2.5 text-xs text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+              }
+              activeChips={[
+                ...(filterType !== 'all' ? [{ key: 'type', label: `Type: ${filterType}`, onRemove: () => setFilterType('all') }] : []),
+                ...(reconFilter !== 'all' ? [{ key: 'recon', label: `Recon: ${reconFilter}`, onRemove: () => setReconFilter('all') }] : []),
+                ...(approvalFilter !== 'all' ? [{ key: 'approval', label: `Approval: ${approvalFilter.replace(/_/g, ' ')}`, onRemove: () => setApprovalFilter('all') }] : []),
+                ...(categoryFilter !== 'all' ? [{ key: 'cat', label: `Category: ${categoryFilter}`, onRemove: () => setCategoryFilter('all') }] : []),
+                ...(supplierFilter !== 'all' ? [{ key: 'sup', label: `Supplier filtered`, onRemove: () => setSupplierFilter('all') }] : []),
+                ...(lifecycleFilter !== 'operational' ? [{ key: 'life', label: `Lifecycle: ${lifecycleFilter}`, onRemove: () => setLifecycleFilter('operational') }] : []),
+              ]}
+              onClearAll={() => {
+                setFilterType('all');
+                setReconFilter('all');
+                setApprovalFilter('all');
+                setCategoryFilter('all');
+                setSupplierFilter('all');
+                setLifecycleFilter('operational');
+                setSearchQuery('');
+              }}
+              filters={
+                <div className="space-y-3 text-xs">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1.5">Expense Type</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { value: 'all', label: 'All' },
+                        { value: 'import', label: 'Import' },
+                        { value: 'sales', label: 'Sales' },
+                        { value: 'staff', label: 'Staff' },
+                        { value: 'operations', label: 'Ops' },
+                        { value: 'admin', label: 'Admin' },
+                      ].map((tab) => (
+                        <button
+                          key={tab.value}
+                          type="button"
+                          onClick={() => setFilterType(tab.value as any)}
+                          className={`no-compact px-2.5 py-1 rounded-full border text-xs ${
+                            filterType === tab.value
+                              ? 'bg-blue-600 text-white border-blue-600 font-semibold'
+                              : 'bg-white text-gray-700 border-gray-300'
+                          }`}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1.5">Reconciliation</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { value: 'all', label: 'All' },
+                        { value: 'reconciled', label: 'Reconciled' },
+                        { value: 'partial', label: 'Partial' },
+                        { value: 'outstanding', label: 'Outstanding' },
+                      ].map((filter) => (
+                        <button
+                          key={filter.value}
+                          type="button"
+                          onClick={() => setReconFilter(filter.value as any)}
+                          className={`no-compact px-2.5 py-1 rounded-full border text-xs ${
+                            reconFilter === filter.value
+                              ? 'bg-emerald-600 text-white border-emerald-600 font-semibold'
+                              : 'bg-white text-gray-700 border-gray-300'
+                          }`}
+                        >
+                          {filter.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1.5">Approval Status</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { value: 'all', label: 'All' },
+                        { value: 'pending_approval', label: 'Pending' },
+                        { value: 'approved', label: 'Approved' },
+                      ].map((filter) => (
+                        <button
+                          key={filter.value}
+                          type="button"
+                          onClick={() => setApprovalFilter(filter.value as any)}
+                          className={`no-compact px-2.5 py-1 rounded-full border text-xs ${
+                            approvalFilter === filter.value
+                              ? 'bg-amber-600 text-white border-amber-600 font-semibold'
+                              : 'bg-white text-gray-700 border-gray-300'
+                          }`}
+                        >
+                          {filter.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1">Category</p>
+                    <select
+                      value={categoryFilter}
+                      onChange={(e) => setCategoryFilter(e.target.value)}
+                      className="w-full h-9 px-2.5 border border-gray-300 rounded-lg text-xs bg-white"
+                    >
+                      <option value="all">All Categories</option>
+                      {groupExpenseCategories(expenseCategories).map(([parent, categories]) => (
+                        <optgroup key={parent} label={parent}>
+                          {categories.map((category) => (
+                            <option key={category.value} value={category.value}>{category.label}</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                  {suppliers.length > 0 && (
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1">Supplier</p>
+                      <select
+                        value={supplierFilter}
+                        onChange={(e) => setSupplierFilter(e.target.value)}
+                        className="w-full h-9 px-2.5 border border-gray-300 rounded-lg text-xs bg-white"
+                      >
+                        <option value="all">All Suppliers</option>
+                        <option value="no_supplier">— No Supplier —</option>
+                        {suppliers.map(s => (
+                          <option key={s.id} value={s.id}>{s.company_name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1.5">Lifecycle</p>
+                    <div className="flex gap-1.5">
+                      {[
+                        { value: 'operational', label: 'Operational' },
+                        { value: 'cancelled', label: 'Cancelled' },
+                      ].map((filter) => (
+                        <button
+                          key={filter.value}
+                          type="button"
+                          onClick={() => setLifecycleFilter(filter.value as 'operational' | 'cancelled')}
+                          className={`no-compact px-2.5 py-1 rounded-full border text-xs ${
+                            lifecycleFilter === filter.value
+                              ? 'bg-gray-800 text-white border-gray-800 font-semibold'
+                              : 'bg-white text-gray-700 border-gray-300'
+                          }`}
+                        >
+                          {filter.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              }
+            />
           </div>
 
       {/* Desktop Table View (>= 768px) */}

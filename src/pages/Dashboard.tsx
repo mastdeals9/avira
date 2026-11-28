@@ -70,6 +70,7 @@ export function Dashboard() {
   } | undefined>(undefined);
   const [rawDeliveryAlerts, setRawDeliveryAlerts] = useState<any[] | undefined>(undefined);
   const [showSecondary, setShowSecondary] = useState(false);
+  const [mobileChartsOpen, setMobileChartsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -375,12 +376,12 @@ export function Dashboard() {
 
   return (
     <Layout>
-      <div className="space-y-4">
-        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-4 border border-blue-100">
-          <h1 className="text-2xl font-bold text-gray-900">
+      <div className="space-y-3 xl:space-y-4 min-w-0">
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-3 xl:p-4 border border-blue-100">
+          <h1 className="text-lg sm:text-xl 2xl:text-2xl font-bold text-gray-900 leading-tight">
             Welcome, {profile?.full_name || profile?.username || 'User'}!
           </h1>
-          <p className="text-sm text-gray-600 mt-1">Here’s what needs attention today.</p>
+          <p className="text-xs sm:text-sm text-gray-600 mt-0.5 sm:mt-1">Here’s what needs attention today.</p>
         </div>
 
         {(isAdmin || isAccounts || isManager || isAuditor) && (
@@ -442,26 +443,39 @@ export function Dashboard() {
             </div>
 
             {showSecondary && (isAdmin || isAccounts) && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <RevenueChart />
-                <SalesPipelineChart />
+              <div className="space-y-2">
+                <div className="flex items-center justify-between md:hidden">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    Analytics & Tax Overview
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setMobileChartsOpen(prev => !prev)}
+                    className="no-compact text-xs font-semibold text-blue-600 px-2 py-1 rounded hover:bg-blue-50"
+                  >
+                    {mobileChartsOpen ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+                <div className={`${mobileChartsOpen ? 'grid' : 'hidden md:grid'} grid-cols-1 lg:grid-cols-2 gap-3 xl:gap-4`}>
+                  <RevenueChart />
+                  <SalesPipelineChart />
+                </div>
+                <div className={`${mobileChartsOpen ? 'block' : 'hidden md:block'}`}>
+                  <TaxComplianceDashboardCards />
+                </div>
               </div>
-            )}
-
-            {showSecondary && (isAdmin || isAccounts) && (
-              <TaxComplianceDashboardCards />
             )}
           </>
         )}
 
-        <div className={`grid grid-cols-1 ${(isAdmin || isAccounts) ? 'md:grid-cols-2 lg:grid-cols-3' : 'md:grid-cols-2'} gap-4`}>
+        <div className={`grid grid-cols-1 ${(isAdmin || isAccounts) ? 'md:grid-cols-2 lg:grid-cols-3' : 'md:grid-cols-2'} gap-3 xl:gap-4`}>
           {showSecondary && (isAdmin || isAccounts) && (
-            <div className="md:col-span-1 lg:col-span-1">
+            <div className="md:col-span-1 lg:col-span-1 min-w-0">
               <PaymentOverview />
             </div>
           )}
           {(isAdmin || isWarehouse || isManager) && (
-            <div className="md:col-span-1 lg:col-span-1">
+            <div className="md:col-span-1 lg:col-span-1 min-w-0">
               <TodaysActionsDashboard
                 initialDeliveryAlerts={rawDeliveryAlerts}
                 initialPendingSalesOrders={stats.pendingSalesOrders}
@@ -470,8 +484,8 @@ export function Dashboard() {
             </div>
           )}
           {quickLinks.length > 0 && (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-              <h3 className="text-base font-semibold text-gray-900 mb-4">Quick Links</h3>
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-3 sm:p-4 2xl:p-6 min-w-0">
+              <h3 className="text-sm sm:text-base font-semibold text-gray-900 mb-2.5 sm:mb-4">Quick Links</h3>
               <div className="space-y-2">
                 {quickLinks.map((link, index) => {
                   const LinkIcon = link.icon;

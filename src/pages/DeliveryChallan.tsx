@@ -2106,7 +2106,155 @@ export function DeliveryChallan() {
                 </div>
               )}
 
-              <div className="overflow-x-auto max-h-96 rounded border border-gray-200">
+              {/* Mobile Item Entry Cards (<768px) */}
+              <div className="md:hidden space-y-2.5">
+                {items.map((item, index) => {
+                  const batchUsageInForm = new Map<string, number>();
+                  items.forEach((formItem, formIndex) => {
+                    if (formIndex !== index && formItem.batch_id) {
+                      const currentUsage = batchUsageInForm.get(formItem.batch_id) || 0;
+                      batchUsageInForm.set(formItem.batch_id, currentUsage + formItem.quantity);
+                    }
+                  });
+                  const availableBatches = batches.filter(b => {
+                    const baseAvailable = getAvailableStock(b);
+                    const usedInOtherItems = batchUsageInForm.get(b.id) || 0;
+                    const sourceMake = salesOrderItemSources.find(source => source.id === item.sales_order_item_id)?.make_id || null;
+                    return b.product_id === item.product_id && (!sourceMake || b.make_id === sourceMake) && (baseAvailable - usedInOtherItems) > 0;
+                  });
+                  const selectedBatch = batches.find(b => b.id === item.batch_id);
+                  const unitLabel = formatUnit(item.products?.unit || (selectedBatch?.product_id && products.find(p => p.id === selectedBatch.product_id)?.unit) || '');
+
+                  return (
+                    <div key={index} className="bg-gray-50/70 border border-gray-200 rounded-xl p-2.5 space-y-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-bold text-gray-500 uppercase">Item #{index + 1}</span>
+                        {items.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeItem(index)}
+                            className="no-compact p-1 text-red-600 hover:bg-red-50 rounded"
+                            title="Remove item"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">Product</label>
+                        <SearchableSelect
+                          value={item.product_id}
+                          onChange={(value) => {
+                            const matchingSource = salesOrderItemSources.find(s => s.product_id === value);
+                            const newItems = [...items];
+                            newItems[index] = {
+                              ...newItems[index],
+                              product_id: value,
+                              sales_order_item_id: matchingSource?.id || newItems[index].sales_order_item_id || null,
+                              batch_id: '',
+                              quantity: 0,
+                              pack_size: null,
+                              pack_type: null,
+                              number_of_packs: null,
+                            };
+                            setItems(newItems);
+                          }}
+                          options={products.map(p => ({ value: p.id, label: p.product_name }))}
+                          placeholder="Select Product"
+                          className="text-xs"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-0.5">
+                          <label className="text-[11px] font-semibold text-gray-600">Batch</label>
+                          {item.product_id && availableBatches.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const sourceMake = salesOrderItemSources.find(source => source.id === item.sales_order_item_id)?.make_id || null;
+                                const fifoBatch = getFIFOBatch(item.product_id, sourceMake);
+                                if (fifoBatch) handleBatchChange(index, fifoBatch.id);
+                              }}
+                              className="no-compact text-[11px] text-blue-600 font-semibold"
+                            >
+                              Use FIFO
+                            </button>
+                          )}
+                        </div>
+                        {!item.product_id ? (
+                          <div className="text-gray-400 text-[11px] py-1">Select product first</div>
+                        ) : availableBatches.length > 0 ? (
+                          <SearchableSelect
+                            value={item.batch_id}
+                            onChange={(value) => handleBatchChange(index, value)}
+                            options={availableBatches.map((b, idx) => ({
+                              value: b.id,
+                              label: `${b.batch_number} (Avl: ${getAvailableStock(b) - (batchUsageInForm.get(b.id) || 0)} ${unitLabel})${idx === 0 ? ' 🔄' : ''}`,
+                            }))}
+                            placeholder="Select Batch"
+                            className="text-xs"
+                            required
+                          />
+                        ) : (
+                          <div className="text-red-600 text-[11px] py-1">No stock available</div>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">
+                            Qty {unitLabel ? `(${unitLabel})` : ''}
+                          </label>
+                          {item.pack_size ? (
+                            <input
+                              type="text"
+                              value={item.quantity || 0}
+                              className="w-full px-2 py-1.5 text-xs border border-gray-200 rounded-lg bg-gray-100 text-right"
+                              disabled
+                            />
+                          ) : (
+                            <input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={item.quantity || ''}
+                              onChange={(e) => {
+                                const next = [...items];
+                                next[index] = { ...next[index], quantity: Number(e.target.value) || 0 };
+                                setItems(next);
+                              }}
+                              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-lg bg-white text-right"
+                              required
+                            />
+                          )}
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-gray-600 mb-0.5">
+                            {item.pack_size ? 'Packs' : 'Available'}
+                          </label>
+                          {item.pack_size ? (
+                            <input
+                              type="number"
+                              min="1"
+                              value={item.number_of_packs || ''}
+                              onChange={(e) => updatePackQuantity(index, Number(e.target.value))}
+                              className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded-lg bg-white text-right"
+                              required
+                            />
+                          ) : (
+                            <div className="px-2 py-1.5 text-xs font-semibold text-green-700 bg-white border border-gray-200 rounded-lg text-right">
+                              {selectedBatch ? `${(getAvailableStock(selectedBatch) - (batchUsageInForm.get(selectedBatch.id) || 0)).toLocaleString()} ${unitLabel}` : '—'}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Desktop Item Table (md+) */}
+              <div className="hidden md:block overflow-x-auto max-h-96 rounded border border-gray-200">
                 <table className="min-w-[1220px] w-full text-xs">
                   <thead className="bg-gray-50 text-[10px] uppercase tracking-wide text-gray-500">
                     <tr>

@@ -17,23 +17,77 @@
   animation: slideIn 0.3s ease-out;
 }
 
+:root {
+  --erp-h1-size: 1.5rem;      /* 24px */
+  --erp-h2-size: 1.125rem;    /* 18px */
+  --erp-body-size: 0.875rem;  /* 14px */
+  --erp-label-size: 0.75rem;  /* 12px */
+  --erp-input-h: 2.5rem;      /* 40px */
+  --erp-btn-h: 2.25rem;       /* 36px */
+  --erp-card-pad: 1rem;       /* 16px */
+}
+
+@media (max-width: 1439px) {
+  :root {
+    --erp-h1-size: 1.25rem;     /* 20px compact laptop / tablet */
+    --erp-h2-size: 1rem;        /* 16px */
+    --erp-body-size: 0.8125rem; /* 13px */
+    --erp-label-size: 0.75rem;  /* 12px */
+    --erp-input-h: 2.25rem;     /* 36px */
+    --erp-btn-h: 2rem;          /* 32px */
+    --erp-card-pad: 0.75rem;    /* 12px */
+  }
+}
+
+@media (max-width: 767px) {
+  :root {
+    --erp-h1-size: 1.125rem;    /* 18px mobile */
+    --erp-h2-size: 0.9375rem;   /* 15px */
+    --erp-body-size: 0.8125rem; /* 13px */
+    --erp-label-size: 0.6875rem;/* 11px */
+    --erp-input-h: 2.25rem;     /* 36px */
+    --erp-btn-h: 2.125rem;      /* 34px */
+    --erp-card-pad: 0.625rem;   /* 10px */
+  }
+}
+
 @layer base {
-  input[type='text'],
-  input[type='email'],
-  input[type='number'],
-  input[type='date'],
-  input[type='tel'],
-  textarea,
-  select {
-    @apply py-1 px-2.5 text-sm;
+  html, body {
+    max-width: 100%;
+    overflow-x: clip;
+    font-size: 16px;
+  }
+
+  :where(
+    input[type='text'],
+    input[type='email'],
+    input[type='number'],
+    input[type='date'],
+    input[type='tel'],
+    textarea,
+    select
+  ) {
+    @apply py-1 pr-2.5 text-sm;
+  }
+
+  :where(
+    input[type='text'],
+    input[type='email'],
+    input[type='number'],
+    input[type='date'],
+    input[type='tel'],
+    textarea,
+    select
+  ):not([class*='pl-']) {
+    padding-left: 0.625rem;
   }
 
   label {
-    @apply mb-0.5 text-sm;
+    @apply mb-0.5 text-xs sm:text-sm;
   }
 
   .form-group {
-    @apply mb-2.5;
+    @apply mb-2;
   }
 
   /* Mobile Safe Area & App-Style Interaction Enhancements */
@@ -64,17 +118,18 @@ button {
     line-height: 1.1 !important;
   }
 
-  /* Compact table styling */
-  table {
-    @apply text-sm;
+  /* Compact table styling — preserves 1440px+ density, tightens compact laptop/tablet/mobile,
+     and excludes print documents & rich email content */
+  table:not(.doc-print-sheet table):not(.email-content table) {
+    @apply text-[13px] 2xl:text-sm;
   }
 
-  table thead th {
-    @apply px-4 py-2 text-xs;
+  table:not(.doc-print-sheet table):not(.email-content table) thead th {
+    @apply px-2.5 py-1.5 2xl:px-4 2xl:py-2 text-[11px] 2xl:text-xs;
   }
 
-  table tbody td {
-    @apply px-4 py-2.5 text-sm;
+  table:not(.doc-print-sheet table):not(.email-content table) tbody td {
+    @apply px-2.5 py-1.5 2xl:px-4 2xl:py-2.5 text-[13px] 2xl:text-sm;
   }
 
   /* Compact badges and pills */
@@ -84,23 +139,33 @@ button {
     @apply px-2 py-0.5 text-xs leading-tight;
   }
 
-  /* Compact cards */
-  .card, .bg-white.rounded-lg {
-    @apply p-4;
+  /* Compact cards (scoped away from print sheets) */
+  :where(.card, .bg-white.rounded-lg):not(.doc-print-sheet):not(.doc-print-sheet *) {
+    padding: var(--erp-card-pad);
   }
 
   /* Compact spacing */
   .space-y-6 > * + * {
-    margin-top: 1rem !important;
+    margin-top: 0.75rem !important;
+  }
+  @media (min-width: 1440px) {
+    .space-y-6 > * + * {
+      margin-top: 1rem !important;
+    }
   }
 
   .space-y-4 > * + * {
-    margin-top: 0.75rem !important;
+    margin-top: 0.625rem !important;
+  }
+  @media (min-width: 1440px) {
+    .space-y-4 > * + * {
+      margin-top: 0.75rem !important;
+    }
   }
 
   /* Compact buttons */
   button:not(.no-compact) {
-    @apply py-1.5 px-3 text-sm;
+    @apply py-1 px-2.5 text-[13px] 2xl:py-1.5 2xl:px-3 2xl:text-sm;
   }
 
   /* Gmail-like email content styling */

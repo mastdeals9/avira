@@ -633,10 +633,10 @@ export function CRM() {
     <Layout>
       <div className="space-y-2.5">
         {/* Top Consolidated CRM Bar: 7 Primary Destinations + Quick Actions */}
-        <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs px-3 py-2 flex flex-wrap items-center justify-between gap-3">
+        <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs px-2.5 sm:px-3 py-2 flex flex-wrap items-center justify-between gap-2 sm:gap-3 min-w-0">
           
           {/* PRIMARY CRM DESTINATIONS (CONSOLIDATED INTO EXACTLY 7) */}
-          <div className="flex items-center gap-1 bg-slate-100/80 p-0.5 rounded-lg border border-slate-200/60 overflow-x-auto">
+          <div className="flex items-center gap-1 bg-slate-100/80 p-0.5 rounded-lg border border-slate-200/60 overflow-x-auto min-w-0 max-w-full">
             {(
               [
                 ['dashboard', LayoutDashboard, 'DASHBOARD'],

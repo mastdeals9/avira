@@ -7,6 +7,7 @@ import {
   Download, FileSpreadsheet, ArrowUpDown, ArrowDown, XCircle, Plus, ChevronRight, Layers, Clock, CheckCircle2, Calculator, Search, ExternalLink, Loader, Upload
 } from 'lucide-react';
 import { Modal } from '../Modal';
+import { ResponsiveFilterBar } from '../ui/ResponsiveFilterBar';
 import { SearchableSelect } from '../SearchableSelect';
 import { updateCachedInquiry } from './inquiries/useCrmInquiries';
 import {
@@ -206,6 +207,9 @@ export function InquiryTableExcel({
     }
   });
   const [expandedCustomerGroups, setExpandedCustomerGroups] = useState<Set<string>>(new Set());
+  const [mobileExpandedIds, setMobileExpandedIds] = useState<Set<string>>(new Set());
+  const [mobileEditInquiry, setMobileEditInquiry] = useState<Inquiry | null>(null);
+  const [mobileEditForm, setMobileEditForm] = useState<Record<string, any>>({});
   const saveQueueRef = useRef<Map<string, Promise<void>>>(new Map());
   const cellNodeRefs = useRef<Map<string, HTMLElement>>(new Map());
   const latestFieldValuesRef = useRef<Map<string, any>>(new Map());
@@ -2329,7 +2333,7 @@ export function InquiryTableExcel({
               className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 transition min-h-[32px]"
             >
               <Upload className="w-3 h-3" />
-              {t('common.import', 'Import')}
+              {t('common.import') === 'common.import' ? 'Import' : t('common.import')}
               <ChevronDown className="w-3 h-3 opacity-60" />
             </button>
             {importMenuOpen && (
@@ -2352,7 +2356,7 @@ export function InquiryTableExcel({
             onClick={() => { setColumnsMenuOpen(o => !o); setExportMenuOpen(false); setImportMenuOpen(false); }}
             className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 transition min-h-[32px]"
           >
-            {t('common.columns', 'Columns')}
+            {t('common.columns') === 'common.columns' ? 'Columns' : t('common.columns')}
             <ChevronDown className="w-3 h-3 opacity-60" />
           </button>
           {columnsMenuOpen && (
@@ -2411,6 +2415,7 @@ export function InquiryTableExcel({
             value={productSearch}
             onChange={e => setProductSearch(e.target.value)}
             placeholder={t('crm.form.productNamePlaceholder', 'Search product...')}
+            style={{ paddingLeft: '1.85rem' }}
             className="w-full pl-7 pr-6 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
           />
           {productSearch && (
@@ -2430,8 +2435,8 @@ export function InquiryTableExcel({
         </div>
       </div>
 
-      {/* Compact status chips */}
-      <div className="flex flex-wrap items-center gap-1">
+      {/* Compact status chips (md+ inline, <md inside ResponsiveFilterBar) */}
+      <div className="hidden md:flex flex-wrap items-center gap-1">
         {[
           ['all', 'All'],
           ['new_not_sent', 'New Not Sent'],
@@ -2453,6 +2458,65 @@ export function InquiryTableExcel({
             {label}
           </button>
         ))}
+      </div>
+
+      <div className="md:hidden">
+        <ResponsiveFilterBar
+          sheetTitle="Inquiry Filters"
+          activeChips={[
+            ...(quickFilter !== 'all'
+              ? [{ key: 'quickFilter', label: `Status: ${quickFilter.replace(/_/g, ' ')}`, onRemove: () => setQuickFilter('all') }]
+              : []),
+            ...(groupByCustomer
+              ? [{ key: 'group', label: 'Grouped by Customer', onRemove: () => setGroupByCustomer(false) }]
+              : []),
+          ]}
+          onClearAll={() => {
+            setQuickFilter('all');
+            setProductSearch('');
+            if (groupByCustomer) setGroupByCustomer(false);
+          }}
+          filters={
+            <div className="space-y-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1.5">Quick Status</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    ['all', 'All'],
+                    ['new_not_sent', 'New Not Sent'],
+                    ['waiting_india', 'Waiting India'],
+                    ['reminder_due', 'Reminder Due'],
+                    ['need_kunal', 'Need Kunal Price'],
+                    ['reply_pending', 'Reply Pending'],
+                    ['quote_sent', 'Quote Sent'],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setQuickFilter(value)}
+                      className={`no-compact px-2.5 py-1 text-xs rounded-full border transition ${
+                        quickFilter === value
+                          ? 'bg-blue-600 text-white border-blue-600 font-semibold'
+                          : 'bg-white text-gray-700 border-gray-300'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-xs font-medium text-gray-700 pt-1 border-t border-gray-100">
+                <input
+                  type="checkbox"
+                  checked={groupByCustomer}
+                  onChange={() => setGroupByCustomer(prev => !prev)}
+                  className="rounded border-gray-300 text-blue-600"
+                />
+                <span>Group inquiries by customer</span>
+              </label>
+            </div>
+          }
+        />
       </div>
 
       {/* Compact quick-actions toolbar — one row, ERP density */}
@@ -2669,8 +2733,127 @@ export function InquiryTableExcel({
         </div>
       )}
 
-      {/* Excel-like Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden border border-gray-200">
+      {/* Mobile Inquiry Card View (<768px) */}
+      <div className="md:hidden space-y-2">
+        {filteredData.length === 0 ? (
+          <div className="bg-white rounded-xl border border-gray-200 p-6 text-center text-xs text-gray-500">
+            No inquiries match the current filter.
+          </div>
+        ) : (
+          filteredData.map((inquiry) => {
+            const isExpanded = mobileExpandedIds.has(inquiry.id);
+            const toggleMobileExpand = () => {
+              setMobileExpandedIds((prev) => {
+                const next = new Set(prev);
+                if (next.has(inquiry.id)) next.delete(inquiry.id);
+                else next.add(inquiry.id);
+                return next;
+              });
+            };
+
+            return (
+              <div
+                key={inquiry.id}
+                className="bg-white rounded-xl border border-gray-200 shadow-2xs p-2.5 space-y-1.5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-mono text-xs font-bold text-gray-900">
+                        {inquiry.inquiry_number || '—'}
+                      </span>
+                      <span className="text-[11px] text-gray-400">
+                        {inquiry.inquiry_date || '—'}
+                      </span>
+                    </div>
+                    <p className="text-xs font-semibold text-gray-800 truncate mt-0.5">
+                      {inquiry.company_name || 'Unknown Customer'}
+                    </p>
+                  </div>
+                  <div className="shrink-0">
+                    <PipelineStatusBadge status={inquiry.pipeline_status || 'new'} />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 text-xs text-gray-700 pt-1 border-t border-gray-100">
+                  <span className="font-medium truncate min-w-0 flex-1">
+                    {inquiry.product_name || '—'}
+                  </span>
+                  <span className="font-mono text-[11px] font-semibold text-gray-600 shrink-0">
+                    {inquiry.quantity || '—'}
+                  </span>
+                </div>
+
+                {isExpanded && (
+                  <div className="grid grid-cols-2 gap-2 pt-2 mt-1 border-t border-dashed border-gray-200 bg-gray-50/70 p-2 rounded-lg text-[11px]">
+                    <div className="min-w-0">
+                      <span className="text-[10px] font-semibold text-gray-400 uppercase block">Specification</span>
+                      <span className="text-gray-800 truncate block">{inquiry.specification || '—'}</span>
+                    </div>
+                    <div className="min-w-0">
+                      <span className="text-[10px] font-semibold text-gray-400 uppercase block">Supplier</span>
+                      <span className="text-gray-800 truncate block">{inquiry.supplier_name || '—'}</span>
+                    </div>
+                    <div className="min-w-0 col-span-2">
+                      <span className="text-[10px] font-semibold text-gray-400 uppercase block">Mail Subject</span>
+                      <span className="text-gray-800 break-words block">{inquiry.mail_subject || inquiry.email_subject || '—'}</span>
+                    </div>
+                    {inquiry.remarks && (
+                      <div className="min-w-0 col-span-2">
+                        <span className="text-[10px] font-semibold text-gray-400 uppercase block">Remarks</span>
+                        <span className="text-gray-700 break-words block">{inquiry.remarks}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={toggleMobileExpand}
+                    className="no-compact text-[11px] font-semibold text-gray-500 hover:text-gray-800 inline-flex items-center gap-1 py-1"
+                  >
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                    <span>{isExpanded ? 'Hide Details' : 'Expand Details'}</span>
+                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {onOpenDrawer && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenDrawer(inquiry)}
+                        className="no-compact px-2 py-1 text-[11px] font-semibold rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+                      >
+                        Detail
+                      </button>
+                    )}
+                    {canManage && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMobileEditInquiry(inquiry);
+                          setMobileEditForm({
+                            product_name: inquiry.product_name || '',
+                            specification: inquiry.specification || '',
+                            quantity: inquiry.quantity ?? '',
+                            pipeline_status: inquiry.pipeline_status || 'new',
+                            remarks: inquiry.remarks || '',
+                          });
+                        }}
+                        className="no-compact px-2.5 py-1 text-[11px] font-semibold rounded bg-blue-600 text-white hover:bg-blue-700"
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Excel-like Table (md+ desktop/laptop/tablet) */}
+      <div className="hidden md:block bg-white rounded-lg shadow overflow-hidden border border-gray-200 min-w-0">
         <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
           <table className="w-full text-xs border-collapse">
             <thead className="bg-gray-100 sticky top-0 z-20">
@@ -4083,6 +4266,96 @@ export function InquiryTableExcel({
             >
               Save Requirements
             </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Single-Inquiry Mobile Edit Modal */}
+      <Modal
+        isOpen={Boolean(mobileEditInquiry)}
+        onClose={() => setMobileEditInquiry(null)}
+        title={`Edit ${mobileEditInquiry?.inquiry_number || 'Inquiry'}`}
+        subtitle={mobileEditInquiry?.company_name}
+        size="sm"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setMobileEditInquiry(null)}
+              className="no-compact px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!mobileEditInquiry) return;
+                const patch: Record<string, any> = {
+                  product_name: mobileEditForm.product_name || null,
+                  specification: mobileEditForm.specification || null,
+                  quantity: mobileEditForm.quantity || null,
+                  pipeline_status: mobileEditForm.pipeline_status || 'new',
+                  remarks: mobileEditForm.remarks || null,
+                };
+                const target = mobileEditInquiry;
+                setMobileEditInquiry(null);
+                await commitFieldPatch(target, patch);
+              }}
+              className="no-compact px-4 py-1.5 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+            >
+              Save Inquiry
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-xs">
+          <div>
+            <label className="block text-[11px] font-semibold text-gray-700 mb-1">Product Name</label>
+            <input
+              type="text"
+              value={mobileEditForm.product_name ?? ''}
+              onChange={(e) => setMobileEditForm(prev => ({ ...prev, product_name: e.target.value }))}
+              className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-gray-700 mb-1">Quantity (e.g. 25 kg)</label>
+            <input
+              type="text"
+              value={mobileEditForm.quantity ?? ''}
+              onChange={(e) => setMobileEditForm(prev => ({ ...prev, quantity: e.target.value }))}
+              className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-gray-700 mb-1">Specification</label>
+            <input
+              type="text"
+              value={mobileEditForm.specification ?? ''}
+              onChange={(e) => setMobileEditForm(prev => ({ ...prev, specification: e.target.value }))}
+              className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-gray-700 mb-1">Pipeline Status</label>
+            <select
+              value={mobileEditForm.pipeline_status ?? 'new'}
+              onChange={(e) => setMobileEditForm(prev => ({ ...prev, pipeline_status: e.target.value }))}
+              className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white"
+            >
+              {pipelineStatusOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-gray-700 mb-1">Remarks</label>
+            <textarea
+              rows={2}
+              value={mobileEditForm.remarks ?? ''}
+              onChange={(e) => setMobileEditForm(prev => ({ ...prev, remarks: e.target.value }))}
+              className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs"
+            />
           </div>
         </div>
       </Modal>

@@ -1,11 +1,12 @@
 import { useRef, useEffect, useState } from 'react';
-import { X, Printer, Download, DollarSign, AlertTriangle } from 'lucide-react';
+import { DollarSign, AlertTriangle } from 'lucide-react';
 import { useLanguage } from '../contexts/LanguageContext';
 import { type CompanySnapshot } from '../types/company';
 import { useResolvedCompanyLogo, waitForImages } from '../utils/companyLogoUrl';
 import { SnapshotMissingError } from './SnapshotMissingError';
 import { DocumentHeader } from './DocumentHeader';
 import { DocumentPrintStyles } from './DocumentPrintStyles';
+import { ResponsiveDocumentPreview } from './ui/ResponsiveDocumentPreview';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { formatUnit } from '../utils/unitDisplay';
@@ -346,48 +347,28 @@ export function ProformaInvoiceView({
     items.some(item => item.quoted_usd_unit_price != null && Number(item.quoted_usd_unit_price) > 0);
 
   return (
-    <div className="doc-print-root fixed inset-0 z-50 overflow-y-auto bg-gray-900 bg-opacity-75 print:static print:bg-white print:overflow-visible">
-      <div className="doc-print-scroll flex min-h-screen items-start justify-center p-4 pt-10 print:p-0 print:min-h-0 print:block">
-        <div className="doc-print-sheet relative w-full max-w-5xl bg-white shadow-xl print:shadow-none print:max-w-full">
-          <div className="doc-print-hide sticky top-0 z-10 flex items-center justify-between border-b bg-white px-6 py-4" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }}>
-            <h2 className="text-xl font-bold text-gray-900">
-              {language === 'id' ? 'Faktur Proforma' : 'Proforma Invoice'} {salesOrder.so_number}
-            </h2>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowRateModal(true)}
-                className="flex items-center gap-1.5 rounded-lg bg-amber-50 border border-amber-300 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition shadow-sm"
-                title="Edit Commercial FX Rate (USD → IDR)"
-              >
-                <DollarSign className="h-4 w-4 text-amber-600" />
-                Edit FX Rate
-              </button>
-              <button
-                onClick={handlePrint}
-                disabled={!logoReady}
-                title={logoReady ? undefined : "Loading company logo…"}
-                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-wait"
-              >
-                <Printer className="h-4 w-4" />
-                {language === 'id' ? 'Cetak' : 'Print'}
-              </button>
-              <button
-                onClick={handleDownloadPDF}
-                disabled={!logoReady}
-                title={logoReady ? undefined : "Loading company logo…"}
-                className="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-wait"
-              >
-                <Download className="h-4 w-4" />
-                PDF
-              </button>
-              <button
-                onClick={onClose}
-                className="rounded-lg bg-gray-100 p-2 text-gray-600 hover:bg-gray-200"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-          </div>
+    <>
+      <ResponsiveDocumentPreview
+        title={`${language === 'id' ? 'Faktur Proforma' : 'Proforma Invoice'} ${salesOrder.so_number}`}
+        extraActions={
+          <button
+            type="button"
+            onClick={() => setShowRateModal(true)}
+            className="no-compact flex items-center gap-1 rounded-lg bg-amber-50 border border-amber-300 px-2.5 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition shadow-sm"
+            title="Edit Commercial FX Rate (USD → IDR)"
+          >
+            <DollarSign className="h-3.5 w-3.5 text-amber-600" />
+            <span>Edit FX Rate</span>
+          </button>
+        }
+        onPrint={handlePrint}
+        onDownloadPDF={handleDownloadPDF}
+        onClose={onClose}
+        disabled={!logoReady}
+        disabledTitle="Loading company logo…"
+        printLabel={language === 'id' ? 'Cetak' : 'Print'}
+        pdfLabel="PDF"
+      >
 
           {hasQuotedUsdWithoutRate && (
             <div className="doc-print-hide mx-6 mt-4 flex items-center justify-between rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 shadow-sm">
@@ -699,8 +680,7 @@ export function ProformaInvoiceView({
               </p>
             </div>
           </div>
-        </div>
-      </div>
+      </ResponsiveDocumentPreview>
 
       {showRateModal && (
         <EditSalesOrderFxRateModal
@@ -737,6 +717,6 @@ export function ProformaInvoiceView({
           }
         }
       `}</style>
-    </div>
+    </>
   );
 }
