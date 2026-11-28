@@ -8,6 +8,11 @@ import {
 import * as XLSX from 'xlsx';
 import { sanitizeExportRows } from '../../utils/csvSafe';
 import { useFinance } from '../../contexts/FinanceContext';
+import {
+  summarizePostedGlFx,
+  computeSupplierSettlementBridge,
+  type RevaluationLineRef,
+} from '../../utils/fxReportCalculations';
 
 interface SupplierFxLine {
   id: string;
@@ -24,9 +29,13 @@ interface SupplierFxLine {
   original_idr_carrying: number;
   usd_settled: number;
   settlement_rate: number;
+  is_usd_bank_settlement: boolean;
+  prior_revaluation_fx: number;
+  carrying_before_settlement_idr: number;
   actual_idr_paid: number;
   carrying_idr_settled: number;
-  fx_gain_loss: number; // positive = loss, negative = gain
+  fx_gain_loss: number; // realized FX on settlement: positive = loss, negative = gain
+  cumulative_historical_rate_variance: number; // analytical: actual_idr_paid - original carrying settled
   bank_charge: number;
   bank_account_name: string;
   journal_entry_id: string | null;
@@ -86,6 +95,8 @@ interface PostedGlFxLine {
   debit: number;
   credit: number;
   description: string;
+  is_revaluation: boolean;
+  revaluation_number?: string | null;
 }
 
 interface MonthFxSummary {
@@ -125,7 +136,8 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
   const [activeTab, setActiveTab] = useState<'summary' | 'supplier' | 'customer' | 'exposure' | 'monthly' | 'by_supplier' | 'posted_gl' | 'revaluations'>('summary');
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [currentMarketRate, setCurrentMarketRate] = useState<number>(17800);
+  const [manualMarketRate, setManualMarketRate] = useState<string>('');
+  const [latestPostedRevalRate, setLatestPostedRevalRate] = useState<number | null>(null);
 
   const [supplierLines, setSupplierLines] = useState<SupplierFxLine[]>([]);
   const [customerLines, setCustomerLines] = useState<CustomerFxLine[]>([]);
@@ -142,7 +154,69 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
   const loadData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch USD Purchase Invoices
+      const startDate = dateRange?.startDate || '2025-01-01';
+      const endDate = dateRange?.endDate || '2026-12-31';
+
+      // 1. Fetch Revaluations Audit Trail FIRST so GL entries are classified by fx_revaluations.journal_entry_id
+      let revDataList: any[] = [];
+      try {
+        const { data: revData } = await supabase
+          .from('fx_revaluations')
+          .select(`
+            id, revaluation_number, revaluation_date, period_name, currency, closing_rate,
+            rate_source, total_gain_loss, status, journal_entry_id, created_at,
+            journal_entries(entry_number, description),
+            fx_revaluation_lines(
+              id, purchase_invoice_id, line_type, foreign_amount, carrying_rate, carrying_amount_idr,
+              revalued_rate, revalued_amount_idr, fx_difference, gain_loss_type,
+              purchase_invoices(invoice_number),
+              bank_accounts(account_name)
+            )
+          `)
+          .order('revaluation_date', { ascending: false });
+
+        if (revData) {
+          revDataList = revData;
+          setRevaluationsList(revData);
+        }
+      } catch (revErr) {
+        console.warn('Could not fetch fx_revaluations:', revErr);
+      }
+
+      const revalJeMap = new Map<string, string>();
+      const piRevalLinesMap = new Map<string, RevaluationLineRef[]>();
+      let latestPostedRate: number | null = null;
+
+      for (const rev of revDataList) {
+        if (rev.status === 'posted') {
+          if (rev.journal_entry_id) {
+            revalJeMap.set(rev.journal_entry_id, rev.revaluation_number);
+          }
+          if (latestPostedRate === null && (!rev.revaluation_date || rev.revaluation_date.slice(0, 10) <= endDate)) {
+            latestPostedRate = Number(rev.closing_rate || 0) || null;
+          }
+          for (const rl of rev.fx_revaluation_lines || []) {
+            if (rl.purchase_invoice_id) {
+              const list = piRevalLinesMap.get(rl.purchase_invoice_id) || [];
+              list.push({
+                revaluation_date: rev.revaluation_date,
+                status: rev.status,
+                purchase_invoice_id: rl.purchase_invoice_id,
+                line_type: rl.line_type,
+                foreign_amount: Number(rl.foreign_amount || 0),
+                carrying_rate: Number(rl.carrying_rate || 0),
+                revalued_rate: Number(rl.revalued_rate || 0),
+                fx_difference: Number(rl.fx_difference || 0),
+                gain_loss_type: rl.gain_loss_type,
+              });
+              piRevalLinesMap.set(rl.purchase_invoice_id, list);
+            }
+          }
+        }
+      }
+      setLatestPostedRevalRate(latestPostedRate);
+
+      // 2. Fetch USD Purchase Invoices
       const { data: piData, error: piErr } = await supabase
         .from('purchase_invoices')
         .select(`
@@ -154,7 +228,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
 
       if (piErr) throw piErr;
 
-      // 2. Fetch Payment Vouchers with FX (exchange_rate > 1)
+      // 3. Fetch ALL posted Payment Vouchers (both IDR-bank FX conversions AND USD-bank settlements)
       const { data: pvData, error: pvErr } = await supabase
         .from('payment_vouchers')
         .select(`
@@ -163,114 +237,108 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           bank_accounts(bank_name, account_name, account_number, currency),
           journal_entries(id, entry_number)
         `)
-        .gt('exchange_rate', 1)
+        .eq('is_posted', true)
         .order('voucher_date', { ascending: true });
 
       if (pvErr) throw pvErr;
 
-      // 3. Fetch Voucher Allocations for these payment vouchers and purchase invoices
-      const pvIds = (pvData || []).map(p => p.id);
-      const piIds = (piData || []).map(p => p.id);
+      // 4. Fetch Voucher Allocations (paginated if large)
+      const allocData: any[] = [];
+      let allocFrom = 0;
+      const pageSize = 1000;
+      while (true) {
+        const { data: page, error: allocErr } = await supabase
+          .from('voucher_allocations')
+          .select('id, allocated_amount, allocated_currency, purchase_invoice_id, payment_voucher_id, sales_invoice_id, receipt_voucher_id')
+          .range(allocFrom, allocFrom + pageSize - 1);
+        if (allocErr) throw allocErr;
+        if (!page || page.length === 0) break;
+        allocData.push(...page);
+        if (page.length < pageSize) break;
+        allocFrom += pageSize;
+      }
 
-      const { data: allocData, error: allocErr } = await supabase
-        .from('voucher_allocations')
-        .select(`
-          id, allocated_amount, allocated_currency, purchase_invoice_id, payment_voucher_id
-        `);
-
-      if (allocErr) throw allocErr;
-
-      // 4. Fetch GL lines for FX accounts 7300 and 4930
+      // 5. Fetch Posted, Non-Reversed, Non-Cancelled GL lines for FX accounts 7300 and 4930 (paginated + date filtered)
       const glLines: PostedGlFxLine[] = [];
-      const pvRefToFxJeMap = new Map<string, { id: string; entry_number: string }>();
+      const pvRefToFxJeMap = new Map<string, { id: string; entry_number: string; amount: number; account_code: string }>();
 
-      try {
-        const { data: coaData } = await supabase
-          .from('chart_of_accounts')
-          .select('id, code, name')
-          .in('code', ['7300', '4930']);
+      const { data: coaData } = await supabase
+        .from('chart_of_accounts')
+        .select('id, code, name')
+        .in('code', ['7300', '4930']);
 
-        const fxCoaMap = new Map<string, { code: string; name: string }>();
-        (coaData || []).forEach(c => fxCoaMap.set(c.id, { code: c.code, name: c.name }));
+      const fxCoaMap = new Map<string, { code: string; name: string }>();
+      (coaData || []).forEach(c => fxCoaMap.set(c.id, { code: c.code, name: c.name }));
 
-        if (coaData && coaData.length > 0) {
-          const coaIds = coaData.map(c => c.id);
-          const { data: jeLines, error: jelErr } = await supabase
+      if (coaData && coaData.length > 0) {
+        const coaIds = coaData.map(c => c.id);
+        const jeLines: any[] = [];
+        let jeFrom = 0;
+        while (true) {
+          const { data: page, error: jelErr } = await supabase
             .from('journal_entry_lines')
             .select('id, journal_entry_id, account_id, debit, credit, description')
-            .in('account_id', coaIds);
+            .in('account_id', coaIds)
+            .range(jeFrom, jeFrom + pageSize - 1);
+          if (jelErr) throw jelErr;
+          if (!page || page.length === 0) break;
+          jeLines.push(...page);
+          if (page.length < pageSize) break;
+          jeFrom += pageSize;
+        }
 
-          if (jelErr) console.warn('Could not fetch journal_entry_lines for FX accounts:', jelErr);
-
-          if (jeLines && jeLines.length > 0) {
-            const jeIds = Array.from(new Set(jeLines.map(l => l.journal_entry_id)));
+        if (jeLines.length > 0) {
+          const jeIds = Array.from(new Set(jeLines.map(l => l.journal_entry_id)));
+          const jeMap = new Map<string, any>();
+          for (let i = 0; i < jeIds.length; i += 200) {
+            const chunk = jeIds.slice(i, i + 200);
             const { data: jes, error: jesErr } = await supabase
               .from('journal_entries')
-              .select('id, entry_number, entry_date, reference_number, description')
-              .in('id', jeIds);
+              .select('id, entry_number, entry_date, reference_number, description, is_posted, is_reversed, is_cancelled')
+              .in('id', chunk)
+              .eq('is_posted', true)
+              .eq('is_reversed', false)
+              .eq('is_cancelled', false)
+              .gte('entry_date', startDate)
+              .lte('entry_date', endDate);
+            if (jesErr) throw jesErr;
+            for (const j of jes || []) jeMap.set(j.id, j);
+          }
 
-            if (jesErr) console.warn('Could not fetch journal_entries for FX accounts:', jesErr);
+          for (const line of jeLines) {
+            const coa = fxCoaMap.get(line.account_id);
+            const je = jeMap.get(line.journal_entry_id);
+            if (!coa || !je) continue;
 
-            const jeMap = new Map<string, any>((jes || []).map(j => [j.id, j]));
+            const revalNum = revalJeMap.get(je.id) || null;
+            glLines.push({
+              id: line.id,
+              journal_entry_id: je.id,
+              entry_number: je.entry_number,
+              entry_date: je.entry_date,
+              reference_number: je.reference_number || null,
+              account_code: coa.code,
+              account_name: coa.name,
+              debit: Number(line.debit || 0),
+              credit: Number(line.credit || 0),
+              description: line.description || je.description || '',
+              is_revaluation: revalJeMap.has(je.id),
+              revaluation_number: revalNum,
+            });
 
-            for (const line of jeLines) {
-              const coa = fxCoaMap.get(line.account_id);
-              const je = jeMap.get(line.journal_entry_id);
-              if (!coa || !je) continue;
-
-              glLines.push({
-                id: line.id,
-                journal_entry_id: je.id,
+            if (je.reference_number) {
+              const netAmt = coa.code === '7300'
+                ? Number(line.debit || 0) - Number(line.credit || 0)
+                : Number(line.credit || 0) - Number(line.debit || 0);
+              pvRefToFxJeMap.set(je.reference_number.trim(), {
+                id: je.id,
                 entry_number: je.entry_number,
-                entry_date: je.entry_date,
-                reference_number: je.reference_number || null,
+                amount: netAmt,
                 account_code: coa.code,
-                account_name: coa.name,
-                debit: Number(line.debit || 0),
-                credit: Number(line.credit || 0),
-                description: line.description || je.description || '',
               });
-
-              if (je.reference_number) {
-                pvRefToFxJeMap.set(je.reference_number.trim(), {
-                  id: je.id,
-                  entry_number: je.entry_number,
-                });
-              }
             }
           }
         }
-
-        // Direct check for JE2609-0054 or PV/26-26/005 to ensure full reconciliation
-        const { data: specificJes } = await supabase
-          .from('journal_entries')
-          .select('id, entry_number, entry_date, reference_number, description')
-          .or('entry_number.eq.JE2609-0054,reference_number.eq.PV/26-26/005');
-
-        for (const sj of specificJes || []) {
-          if (sj.reference_number) {
-            pvRefToFxJeMap.set(sj.reference_number.trim(), {
-              id: sj.id,
-              entry_number: sj.entry_number,
-            });
-          }
-          if (sj.entry_number === 'JE2609-0054' && !glLines.some(g => g.entry_number === 'JE2609-0054')) {
-            glLines.push({
-              id: `gl-${sj.id}`,
-              journal_entry_id: sj.id,
-              entry_number: sj.entry_number,
-              entry_date: sj.entry_date,
-              reference_number: sj.reference_number || 'PV/26-26/005',
-              account_code: '7300',
-              account_name: 'Foreign Exchange Loss',
-              debit: 41184641.50,
-              credit: 0,
-              description: sj.description || 'Realized FX loss on supplier payment PV/26-26/005 after correcting original USD invoice recognition to historical IDR carrying values.',
-            });
-          }
-        }
-      } catch (err) {
-        console.warn('Error querying GL entries:', err);
       }
 
       glLines.sort((a, b) => new Date(b.entry_date).getTime() - new Date(a.entry_date).getTime());
@@ -280,29 +348,35 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       const piMap = new Map<string, any>((piData || []).map(p => [p.id, p]));
       const pvMap = new Map<string, any>((pvData || []).map(p => [p.id, p]));
 
-      // Build Supplier FX Detail rows
+      // 6. Build Supplier FX Detail rows with Settlement Bridge
       const sLines: SupplierFxLine[] = [];
-      for (const alloc of allocData || []) {
+      for (const alloc of allocData) {
+        if (!alloc.purchase_invoice_id || !alloc.payment_voucher_id) continue;
         const pv = pvMap.get(alloc.payment_voucher_id);
         const pi = piMap.get(alloc.purchase_invoice_id);
         if (!pv || !pi) continue;
 
-        // Filter by settlement date (PV date)
-        if (pv.voucher_date < dateRange.startDate || pv.voucher_date > dateRange.endDate) continue;
+        if (pv.voucher_date < startDate || pv.voucher_date > endDate) continue;
 
         const usdSettled = Number(alloc.allocated_amount || 0);
         const piRecRate = Number(pi.exchange_rate || 0);
         const pvSettleRate = Number(pv.exchange_rate || 1);
+        const bankObj: any = Array.isArray(pv.bank_accounts) ? pv.bank_accounts[0] : pv.bank_accounts;
+        const isUsdBank = (bankObj?.currency || '').toUpperCase() === 'USD';
 
-        const carryingIdr = usdSettled * piRecRate;
-        const actualIdrPaid = usdSettled * pvSettleRate;
-        const fxDiff = actualIdrPaid - carryingIdr; // > 0 is LOSS, < 0 is GAIN
+        const bridge = computeSupplierSettlementBridge({
+          usdSettled,
+          originalPiRate: piRecRate,
+          settlementRate: pvSettleRate,
+          settlementDate: pv.voucher_date,
+          isUsdBankSettlement: isUsdBank,
+          priorRevalLines: piRevalLinesMap.get(pi.id) || [],
+        });
 
         const suppObj: any = Array.isArray(pi.suppliers) ? pi.suppliers[0] : pi.suppliers;
-        const bankObj: any = Array.isArray(pv.bank_accounts) ? pv.bank_accounts[0] : pv.bank_accounts;
-        const bankDisplay = bankObj 
-          ? `${bankObj.account_name || bankObj.bank_name || 'Bank'} (${bankObj.account_number || ''})` 
-          : 'BCA IDR';
+        const bankDisplay = bankObj
+          ? `${bankObj.account_name || bankObj.bank_name || 'Bank'} (${bankObj.currency || 'IDR'})`
+          : 'Bank';
 
         const jeObj: any = Array.isArray(pv.journal_entries) ? pv.journal_entries[0] : pv.journal_entries;
         const fxJe = pvRefToFxJeMap.get(pv.voucher_number.trim());
@@ -313,7 +387,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           voucher_number: pv.voucher_number,
           voucher_id: pv.id,
           supplier_id: suppObj?.id || null,
-          supplier_name: suppObj?.company_name || 'Anzen Exports Private Limited',
+          supplier_name: suppObj?.company_name || 'Supplier',
           invoice_id: pi.id,
           invoice_number: pi.invoice_number,
           invoice_date: pi.invoice_date,
@@ -321,10 +395,14 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           recognition_rate: piRecRate,
           original_idr_carrying: Number(pi.total_amount || 0) * piRecRate,
           usd_settled: usdSettled,
-          settlement_rate: pvSettleRate,
-          actual_idr_paid: actualIdrPaid,
-          carrying_idr_settled: carryingIdr,
-          fx_gain_loss: fxDiff,
+          settlement_rate: isUsdBank && pvSettleRate <= 1 ? bridge.effective_carrying_rate_before_settlement : pvSettleRate,
+          is_usd_bank_settlement: isUsdBank,
+          prior_revaluation_fx: bridge.prior_revaluation_fx,
+          carrying_before_settlement_idr: bridge.carrying_before_settlement_idr,
+          actual_idr_paid: bridge.actual_settlement_idr,
+          carrying_idr_settled: bridge.carrying_before_settlement_idr,
+          fx_gain_loss: bridge.realized_fx_on_settlement,
+          cumulative_historical_rate_variance: bridge.cumulative_historical_rate_variance,
           bank_charge: Number(pv.bank_charge || 0),
           bank_account_name: bankDisplay,
           journal_entry_id: jeObj?.id || pv.journal_entry_id || null,
@@ -337,103 +415,128 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       sLines.sort((a, b) => new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime());
       setSupplierLines(sLines);
 
-      // Build Open USD Exposure
+      // 7. Open USD Exposure as of endDate (using carrying rate after prior posted revaluations; no hardcoded 17800)
+      const parsedManualRate = parseFloat(manualMarketRate.replace(/,/g, ''));
+      const effectiveValuationRate = !isNaN(parsedManualRate) && parsedManualRate > 0 ? parsedManualRate : latestPostedRate;
+
+      const settledAsOfEndMap = new Map<string, number>();
+      for (const alloc of allocData) {
+        if (!alloc.purchase_invoice_id || !alloc.payment_voucher_id) continue;
+        const pv = pvMap.get(alloc.payment_voucher_id);
+        if (!pv || pv.voucher_date > endDate) continue;
+        settledAsOfEndMap.set(
+          alloc.purchase_invoice_id,
+          (settledAsOfEndMap.get(alloc.purchase_invoice_id) || 0) + Number(alloc.allocated_amount || 0)
+        );
+      }
+
       const exposures: OpenExposureLine[] = [];
       for (const pi of piData || []) {
-        const balanceUsd = Number(pi.balance_amount || 0);
+        if (pi.invoice_date > endDate) continue;
+        const settledAsOf = settledAsOfEndMap.get(pi.id) || 0;
+        const balanceUsd = Math.max(0, Number(pi.total_amount || 0) - settledAsOf);
         if (balanceUsd > 0.001) {
           const recRate = Number(pi.exchange_rate || 0);
-          const carryingRemaining = balanceUsd * recRate;
-          const unrealized = balanceUsd * (currentMarketRate - recRate);
+          const bridgeAsOf = computeSupplierSettlementBridge({
+            usdSettled: balanceUsd,
+            originalPiRate: recRate,
+            settlementRate: effectiveValuationRate || recRate,
+            settlementDate: endDate,
+            isUsdBankSettlement: false,
+            priorRevalLines: piRevalLinesMap.get(pi.id) || [],
+          });
+          const carryingRateEff = bridgeAsOf.effective_carrying_rate_before_settlement;
+          const carryingRemaining = bridgeAsOf.carrying_before_settlement_idr;
+          const valRate = effectiveValuationRate || carryingRateEff;
+          const unrealized = balanceUsd * (valRate - carryingRateEff);
           const suppObj: any = Array.isArray(pi.suppliers) ? pi.suppliers[0] : pi.suppliers;
 
           exposures.push({
             type: 'supplier_payable',
             party_id: suppObj?.id || null,
-            party_name: suppObj?.company_name || 'Anzen Exports Private Limited',
+            party_name: suppObj?.company_name || 'Supplier',
             document_id: pi.id,
             document_number: pi.invoice_number,
             document_date: pi.invoice_date,
             original_usd: Number(pi.total_amount || 0),
             recognition_rate: recRate,
             original_idr: Number(pi.total_amount || 0) * recRate,
-            usd_settled: Number(pi.paid_amount || 0),
+            usd_settled: settledAsOf,
             usd_remaining: balanceUsd,
             carrying_idr_remaining: carryingRemaining,
-            current_rate: currentMarketRate,
-            unrealized_fx: unrealized, // > 0 is potential loss on payable
+            current_rate: valRate,
+            unrealized_fx: unrealized,
           });
         }
       }
       setOpenExposures(exposures);
 
-      // Customer Receipts audit:
+      // 8. Customer Receipts FX (posted receipts allocated to sales invoices within dateRange)
       const { data: rvData } = await supabase
         .from('receipt_vouchers')
         .select(`
           id, voucher_number, voucher_date, payment_currency, exchange_rate, amount,
           settlement_amount, is_posted, journal_entry_id,
           customers(id, company_name),
-          bank_accounts(bank_name, account_name, account_number),
+          bank_accounts(bank_name, account_name, account_number, currency),
           journal_entries(id, entry_number)
         `)
-        .eq('payment_currency', 'USD');
+        .eq('is_posted', true)
+        .gte('voucher_date', startDate)
+        .lte('voucher_date', endDate);
 
-      const cLines: CustomerFxLine[] = (rvData || []).map((rv: any) => {
+      const { data: siUsdData } = await supabase
+        .from('sales_invoices')
+        .select('id, invoice_number, exchange_rate, total_amount, sales_orders(currency, commercial_usd_to_idr_rate)');
+
+      const siMap = new Map<string, any>((siUsdData || []).map((s: any) => [s.id, s]));
+      const rvMap = new Map<string, any>((rvData || []).map((r: any) => [r.id, r]));
+
+      const cLines: CustomerFxLine[] = [];
+      for (const alloc of allocData) {
+        if (!alloc.receipt_voucher_id || !alloc.sales_invoice_id) continue;
+        const rv = rvMap.get(alloc.receipt_voucher_id);
+        const si = siMap.get(alloc.sales_invoice_id);
+        if (!rv || !si) continue;
+        const isUsdRv = (rv.payment_currency || '').toUpperCase() === 'USD' || (alloc.allocated_currency || '').toUpperCase() === 'USD';
+        if (!isUsdRv) continue;
+
         const custObj: any = Array.isArray(rv.customers) ? rv.customers[0] : rv.customers;
         const bankObj: any = Array.isArray(rv.bank_accounts) ? rv.bank_accounts[0] : rv.bank_accounts;
         const jeObj: any = Array.isArray(rv.journal_entries) ? rv.journal_entries[0] : rv.journal_entries;
-        const recRate = Number(rv.exchange_rate || 1);
-        const usdAmt = Number(rv.amount || 0);
-        const actualIdr = Number(rv.settlement_amount || usdAmt * recRate);
 
-        return {
-          id: rv.id,
+        const rvRate = Number(rv.exchange_rate || 1);
+        const soObj: any = Array.isArray(si.sales_orders) ? si.sales_orders[0] : si.sales_orders;
+        const recRate = Number(si.exchange_rate || soObj?.commercial_usd_to_idr_rate || rvRate);
+        const usdAmt = Number(alloc.allocated_amount || rv.amount || 0);
+        const carryingSettled = Math.round(usdAmt * recRate * 100) / 100;
+        const actualIdr = Math.round(usdAmt * rvRate * 100) / 100;
+        const fxDiff = Math.round((actualIdr - carryingSettled) * 100) / 100; // > 0 is gain on receivable
+
+        cLines.push({
+          id: alloc.id,
           receipt_date: rv.voucher_date,
           voucher_number: rv.voucher_number,
           voucher_id: rv.id,
           customer_id: custObj?.id || null,
           customer_name: custObj?.company_name || 'Customer',
-          invoice_id: '',
-          invoice_number: 'USD Receipt',
-          invoice_total_usd: usdAmt,
+          invoice_id: si.id,
+          invoice_number: si.invoice_number,
+          invoice_total_usd: Number(si.total_amount || usdAmt),
           recognition_rate: recRate,
-          original_idr_carrying: usdAmt * recRate,
+          original_idr_carrying: carryingSettled,
           usd_received: usdAmt,
-          receipt_rate: recRate,
+          receipt_rate: rvRate,
           actual_idr_received: actualIdr,
-          carrying_idr_settled: usdAmt * recRate,
-          fx_gain_loss: 0,
+          carrying_idr_settled: carryingSettled,
+          fx_gain_loss: fxDiff,
           bank_charge: 0,
           bank_account_name: bankObj?.account_name || bankObj?.bank_name || 'Bank',
           journal_entry_id: jeObj?.id || rv.journal_entry_id || null,
           journal_entry_number: jeObj?.entry_number || null,
-        };
-      });
-      setCustomerLines(cLines);
-
-      // 5. Fetch Revaluations Audit Trail
-      try {
-        const { data: revData } = await supabase
-          .from('fx_revaluations')
-          .select(`
-            id, revaluation_number, revaluation_date, period_name, currency, closing_rate,
-            rate_source, total_gain_loss, status, journal_entry_id, created_at,
-            journal_entries(entry_number, description),
-            fx_revaluation_lines(
-              id, line_type, foreign_amount, carrying_rate, carrying_amount_idr,
-              revalued_rate, revalued_amount_idr, fx_difference, gain_loss_type,
-              purchase_invoices(invoice_number),
-              bank_accounts(account_name)
-            )
-          `)
-          .order('revaluation_date', { ascending: false });
-
-        if (revData) setRevaluationsList(revData);
-      } catch (revErr) {
-        console.warn('Could not fetch fx_revaluations:', revErr);
+        });
       }
-
+      setCustomerLines(cLines);
     } catch (err) {
       console.error('Error loading FX Report data:', err);
     } finally {
@@ -468,7 +571,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
 
   useEffect(() => {
     loadData();
-  }, [dateRange]);
+  }, [dateRange, manualMarketRate]);
 
   // ── Aggregations ────────────────────────────────────────────────────────────
   const summary = useMemo(() => {
@@ -479,11 +582,15 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
     let totalUsdSettled = 0;
     let totalActualIdrPaid = 0;
     let totalCarryingSettled = 0;
+    let totalPriorReval = 0;
+    let totalHistVariance = 0;
 
     for (const l of supplierLines) {
       totalUsdSettled += l.usd_settled;
       totalActualIdrPaid += l.actual_idr_paid;
       totalCarryingSettled += l.carrying_idr_settled;
+      totalPriorReval += l.prior_revaluation_fx;
+      totalHistVariance += l.cumulative_historical_rate_variance;
       if (l.fx_gain_loss > 0) supplierLoss += l.fx_gain_loss;
       else if (l.fx_gain_loss < 0) supplierGain += Math.abs(l.fx_gain_loss);
     }
@@ -493,35 +600,44 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       else if (l.fx_gain_loss < 0) customerLoss += Math.abs(l.fx_gain_loss);
     }
 
-    // Posted GL FX loss & gain from 7300 & 4930
-    let postedGl7300Loss = 0;
-    let postedGl4930Gain = 0;
-    for (const gl of postedGlLines) {
-      if (gl.account_code === '7300') postedGl7300Loss += (gl.debit - gl.credit);
-      if (gl.account_code === '4930') postedGl4930Gain += (gl.credit - gl.debit);
-    }
+    // Official GL FX breakdown (A..G) strictly classified by fx_revaluations.journal_entry_id
+    const revalJeSet = new Set<string>(
+      revaluationsList
+        .filter((r) => r.status === 'posted' && r.journal_entry_id)
+        .map((r) => r.journal_entry_id)
+    );
+    const glBreakdown = summarizePostedGlFx(postedGlLines, revalJeSet);
 
-    const netRealized = (supplierGain + customerGain) - (supplierLoss + customerLoss);
+    const netSettlementVariance = (supplierGain + customerGain) - (supplierLoss + customerLoss);
     const totalOpenUsd = openExposures.reduce((s, e) => s + e.usd_remaining, 0);
     const totalOpenCarrying = openExposures.reduce((s, e) => s + e.carrying_idr_remaining, 0);
-    const totalUnrealized = openExposures.reduce((s, e) => s + e.unrealized_fx, 0);
+    const totalUnrealizedExposure = openExposures.reduce((s, e) => s + e.unrealized_fx, 0);
 
     return {
       supplierLoss,
       supplierGain,
       customerLoss,
       customerGain,
-      postedGl7300Loss,
-      postedGl4930Gain,
-      netRealized,
+      totalPriorReval,
+      totalHistVariance,
+      postedGl7300Loss: glBreakdown.realizedLoss + glBreakdown.unrealizedLoss,
+      postedGl4930Gain: glBreakdown.realizedGain + glBreakdown.unrealizedGain,
+      realizedGain: glBreakdown.realizedGain,
+      realizedLoss: glBreakdown.realizedLoss,
+      netRealized: glBreakdown.netRealized,
+      unrealizedGain: glBreakdown.unrealizedGain,
+      unrealizedLoss: glBreakdown.unrealizedLoss,
+      netUnrealized: glBreakdown.netUnrealized,
+      totalNetAccountingFx: glBreakdown.totalNetAccountingFx,
+      netSettlementVariance,
       totalUsdSettled,
       totalActualIdrPaid,
       totalCarryingSettled,
       totalOpenUsd,
       totalOpenCarrying,
-      totalUnrealized,
+      totalUnrealizedExposure,
     };
-  }, [supplierLines, customerLines, openExposures, postedGlLines]);
+  }, [supplierLines, customerLines, openExposures, postedGlLines, revaluationsList]);
 
   // ── Monthly Aggregation ─────────────────────────────────────────────────────
   const monthlyData = useMemo(() => {
@@ -590,25 +706,30 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
   const exportToExcel = () => {
     const wb = XLSX.utils.book_new();
 
-    // 1. Summary Sheet
+    // 1. Summary Sheet (Official GL A..G + Settlement Bridge)
     const summaryRows = [
       { Metric: 'Reporting Range', Value: `${dateRange.startDate} to ${dateRange.endDate}` },
-      { Metric: 'Posted GL FX Loss (Account 7300)', Value: fmt(summary.postedGl7300Loss) },
-      { Metric: 'Total Settlement FX Variance (Loss)', Value: fmt(summary.supplierLoss) },
+      { Metric: 'A. Realized FX Gain (GL 4930)', Value: fmt(summary.realizedGain) },
+      { Metric: 'B. Realized FX Loss (GL 7300)', Value: fmt(summary.realizedLoss) },
+      { Metric: 'C. Net Realized FX Gain / (Loss)', Value: fmt(summary.netRealized) },
+      { Metric: 'D. Unrealized FX Gain (GL 4930 - Revaluations)', Value: fmt(summary.unrealizedGain) },
+      { Metric: 'E. Unrealized FX Loss (GL 7300 - Revaluations)', Value: fmt(summary.unrealizedLoss) },
+      { Metric: 'F. Net Unrealized FX Gain / (Loss)', Value: fmt(summary.netUnrealized) },
+      { Metric: 'G. Total Net Accounting FX Gain / (Loss)', Value: fmt(summary.totalNetAccountingFx) },
       { Metric: 'Total USD Settled', Value: fmt2(summary.totalUsdSettled) },
+      { Metric: 'Pre-Settlement Carrying Value (IDR)', Value: fmt(summary.totalCarryingSettled) },
       { Metric: 'Total IDR Settlement Outflow', Value: fmt(summary.totalActualIdrPaid) },
-      { Metric: 'Total IDR Carrying Settled', Value: fmt(summary.totalCarryingSettled) },
-      { Metric: 'Supplier Realized FX Loss (Dr 7300)', Value: fmt(summary.supplierLoss) },
-      { Metric: 'Supplier Realized FX Gain (Cr 4930)', Value: fmt(summary.supplierGain) },
-      { Metric: 'Net Realized FX Gain / (Loss)', Value: fmt(summary.netRealized) },
-      { Metric: 'Open USD Exposure', Value: fmt2(summary.totalOpenUsd) },
+      { Metric: 'Supplier Realized FX Loss (Bridge)', Value: fmt(summary.supplierLoss) },
+      { Metric: 'Supplier Realized FX Gain (Bridge)', Value: fmt(summary.supplierGain) },
+      { Metric: 'Cumulative Historical Rate Variance (Analytical)', Value: fmt(summary.totalHistVariance) },
+      { Metric: 'Open USD Exposure (as of end date)', Value: fmt2(summary.totalOpenUsd) },
       { Metric: 'Open Carrying Value (IDR)', Value: fmt(summary.totalOpenCarrying) },
     ];
     const wsSummary = XLSX.utils.json_to_sheet(sanitizeExportRows(summaryRows));
-    wsSummary['!cols'] = [{ wch: 35 }, { wch: 25 }];
+    wsSummary['!cols'] = [{ wch: 44 }, { wch: 25 }];
     XLSX.utils.book_append_sheet(wb, wsSummary, 'FX Summary');
 
-    // 2. Supplier Detail Sheet
+    // 2. Supplier Detail Sheet (Settlement Bridge)
     const suppRows = supplierLines.map(l => ({
       'Payment Date': l.payment_date,
       'Voucher No': l.voucher_number,
@@ -616,17 +737,19 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       'Invoice No': l.invoice_number,
       'Original USD': l.invoice_total_usd,
       'Rec Rate': l.recognition_rate,
-      'Original IDR Carrying': l.original_idr_carrying,
       'USD Settled': l.usd_settled,
+      'Original Carrying (Settled)': Math.round(l.usd_settled * l.recognition_rate * 100) / 100,
+      'Prior Reval Gain/(Loss)': l.prior_revaluation_fx,
+      'Carrying Before Settlement': l.carrying_before_settlement_idr,
       'Settlement Rate': l.settlement_rate,
-      'Actual IDR Paid': l.actual_idr_paid,
-      'Carrying Settled': l.carrying_idr_settled,
-      'Realized FX Diff': l.fx_gain_loss,
+      'Actual Settlement (IDR)': l.actual_idr_paid,
+      'Realized FX on Settlement': l.fx_gain_loss,
       'Type': l.fx_gain_loss > 0 ? 'FX LOSS' : l.fx_gain_loss < 0 ? 'FX GAIN' : 'EVEN',
+      'Cumul. Historical Rate Variance': l.cumulative_historical_rate_variance,
       'Bank Charge': l.bank_charge,
       'Bank Account': l.bank_account_name,
       'Payment Journal': l.journal_entry_number || '',
-      'FX Loss Journal': l.fx_journal_number || '',
+      'FX Journal': l.fx_journal_number || '',
     }));
     const wsSupp = XLSX.utils.json_to_sheet(sanitizeExportRows(suppRows));
     XLSX.utils.book_append_sheet(wb, wsSupp, 'Supplier FX Detail');
@@ -636,6 +759,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       'Entry Date': gl.entry_date,
       'Journal Number': gl.entry_number,
       'Reference': gl.reference_number || '',
+      'Classification': gl.is_revaluation ? `Unrealized (${gl.revaluation_number || 'Reval'})` : 'Realized',
       'Account Code': gl.account_code,
       'Account Name': gl.account_name,
       'Debit (IDR)': gl.debit,
@@ -740,26 +864,32 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       {/* 2. Compact 4-KPI Strip (~72px height) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
         <div className="bg-white px-3.5 py-2 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between min-h-[72px]">
-          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Posted FX Loss (GL 7300)</span>
+          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">G. Total Net Accounting FX</span>
           <div className="mt-1">
-            <div className="text-base font-bold text-red-700 leading-tight">Rp {fmt(summary.postedGl7300Loss)}</div>
-            <div className="text-[10px] text-slate-400 mt-0.5">Posted in General Ledger</div>
+            <div className={`text-base font-bold leading-tight ${summary.totalNetAccountingFx >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+              {summary.totalNetAccountingFx < 0 ? `-Rp ${fmt(Math.abs(summary.totalNetAccountingFx))}` : `Rp ${fmt(summary.totalNetAccountingFx)}`}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5">Posted GL 4930 − GL 7300</div>
           </div>
         </div>
 
         <div className="bg-white px-3.5 py-2 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between min-h-[72px]">
-          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Settlement Variance</span>
+          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">C. Net Realized FX</span>
           <div className="mt-1">
-            <div className="text-base font-bold text-rose-700 leading-tight">Rp {fmt(summary.supplierLoss)}</div>
-            <div className="text-[10px] text-slate-400 mt-0.5">{supplierLines.length} settlement allocations</div>
+            <div className={`text-base font-bold leading-tight ${summary.netRealized >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+              {summary.netRealized < 0 ? `-Rp ${fmt(Math.abs(summary.netRealized))}` : `Rp ${fmt(summary.netRealized)}`}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5">Gain Rp {fmt(summary.realizedGain)} / Loss Rp {fmt(summary.realizedLoss)}</div>
           </div>
         </div>
 
         <div className="bg-white px-3.5 py-2 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between min-h-[72px]">
-          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Total USD Settled</span>
+          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">F. Net Unrealized FX</span>
           <div className="mt-1">
-            <div className="text-base font-bold text-slate-900 leading-tight">${fmt2(summary.totalUsdSettled)}</div>
-            <div className="text-[10px] text-slate-400 mt-0.5">Paid: Rp {fmt(summary.totalActualIdrPaid)}</div>
+            <div className={`text-base font-bold leading-tight ${summary.netUnrealized >= 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {summary.netUnrealized < 0 ? `-Rp ${fmt(Math.abs(summary.netUnrealized))}` : `Rp ${fmt(summary.netUnrealized)}`}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5">From posted FX revaluations</div>
           </div>
         </div>
 
@@ -803,33 +933,41 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
         <div className="bg-white rounded-b-2xl border border-slate-200 border-t-0 p-6 space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="border border-slate-200 rounded-xl p-5 shadow-xs">
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-4">Realized FX Accounting Summary</h3>
+              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-4">Official GL FX Summary (Accounts 4930 & 7300)</h3>
               <table className="w-full text-xs">
                 <tbody className="divide-y divide-slate-100">
                   <tr>
-                    <td className="py-2.5 text-slate-600 font-medium">Posted Supplier FX Loss (GL Account 7300)</td>
-                    <td className="py-2.5 text-right font-bold text-red-600 tabular-nums">Rp {fmt(summary.postedGl7300Loss)}</td>
+                    <td className="py-2 text-slate-600">A. Realized FX Gain (GL 4930)</td>
+                    <td className="py-2 text-right font-semibold text-emerald-600 tabular-nums">Rp {fmt(summary.realizedGain)}</td>
                   </tr>
                   <tr>
-                    <td className="py-2.5 text-slate-600 font-medium">Calculated Supplier Settlement Variance</td>
-                    <td className="py-2.5 text-right font-bold text-rose-600 tabular-nums">Rp {fmt(summary.supplierLoss)}</td>
+                    <td className="py-2 text-slate-600">B. Realized FX Loss (GL 7300)</td>
+                    <td className="py-2 text-right font-semibold text-red-600 tabular-nums">Rp {fmt(summary.realizedLoss)}</td>
+                  </tr>
+                  <tr className="bg-slate-50/70 font-semibold">
+                    <td className="py-2 text-slate-800">C. Net Realized FX (A &minus; B)</td>
+                    <td className={`py-2 text-right tabular-nums ${summary.netRealized >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                      {summary.netRealized < 0 ? `(Rp ${fmt(Math.abs(summary.netRealized))})` : `Rp ${fmt(summary.netRealized)}`}
+                    </td>
                   </tr>
                   <tr>
-                    <td className="py-2.5 text-slate-600">Supplier FX Gain (Account 4930)</td>
-                    <td className="py-2.5 text-right font-semibold text-emerald-600 tabular-nums">Rp {fmt(summary.supplierGain)}</td>
+                    <td className="py-2 text-slate-600">D. Unrealized FX Gain (GL 4930 &bull; Revaluations)</td>
+                    <td className="py-2 text-right font-semibold text-emerald-600 tabular-nums">Rp {fmt(summary.unrealizedGain)}</td>
                   </tr>
                   <tr>
-                    <td className="py-2.5 text-slate-600">Customer FX Gain (Account 4930)</td>
-                    <td className="py-2.5 text-right font-semibold text-emerald-600 tabular-nums">Rp {fmt(summary.customerGain)}</td>
+                    <td className="py-2 text-slate-600">E. Unrealized FX Loss (GL 7300 &bull; Revaluations)</td>
+                    <td className="py-2 text-right font-semibold text-red-600 tabular-nums">Rp {fmt(summary.unrealizedLoss)}</td>
                   </tr>
-                  <tr>
-                    <td className="py-2.5 text-slate-600">Customer FX Loss (Account 7300)</td>
-                    <td className="py-2.5 text-right font-semibold text-red-600 tabular-nums">Rp {fmt(summary.customerLoss)}</td>
+                  <tr className="bg-slate-50/70 font-semibold">
+                    <td className="py-2 text-slate-800">F. Net Unrealized FX (D &minus; E)</td>
+                    <td className={`py-2 text-right tabular-nums ${summary.netUnrealized >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                      {summary.netUnrealized < 0 ? `(Rp ${fmt(Math.abs(summary.netUnrealized))})` : `Rp ${fmt(summary.netUnrealized)}`}
+                    </td>
                   </tr>
                   <tr className="border-t-2 border-slate-300 font-bold">
-                    <td className="py-3 text-slate-900 text-sm">Net Settlement Rate Variance (Loss)</td>
-                    <td className={`py-3 text-right tabular-nums text-sm ${summary.netRealized >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-                      {summary.netRealized < 0 ? `(${fmt(Math.abs(summary.netRealized))})` : `Rp ${fmt(summary.netRealized)}`}
+                    <td className="py-3 text-slate-900 text-sm">G. Total Net Accounting FX Gain / (Loss)</td>
+                    <td className={`py-3 text-right tabular-nums text-sm ${summary.totalNetAccountingFx >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                      {summary.totalNetAccountingFx < 0 ? `(Rp ${fmt(Math.abs(summary.totalNetAccountingFx))})` : `Rp ${fmt(summary.totalNetAccountingFx)}`}
                     </td>
                   </tr>
                 </tbody>
@@ -884,13 +1022,15 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
                   <th className="py-2.5 px-2.5">Invoice</th>
                   <th className="py-2.5 px-2.5 text-right">Settled USD</th>
                   <th className="py-2.5 px-2.5 text-right">Rec Rate</th>
+                  <th className="py-2.5 px-2.5 text-right">Prior Reval</th>
+                  <th className="py-2.5 px-2.5 text-right">Pre-Settle Carrying</th>
                   <th className="py-2.5 px-2.5 text-right">Settle Rate</th>
-                  <th className="py-2.5 px-2.5 text-right">Carrying Settled</th>
-                  <th className="py-2.5 px-2.5 text-right">Actual IDR Paid</th>
-                  <th className="py-2.5 px-3 text-right font-bold">Realized FX Diff</th>
+                  <th className="py-2.5 px-2.5 text-right">Actual Settlement</th>
+                  <th className="py-2.5 px-3 text-right font-bold">Realized FX</th>
+                  <th className="py-2.5 px-2.5 text-right" title="Analytical only: Actual Settlement minus Original PI Carrying">Hist. Variance</th>
                   <th className="py-2.5 px-2.5">Bank</th>
                   <th className="py-2.5 px-2.5 text-center">Payment JE</th>
-                  <th className="py-2.5 px-2.5 text-center">FX Loss JE</th>
+                  <th className="py-2.5 px-2.5 text-center">FX JE</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -909,11 +1049,19 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
                     </td>
                     <td className="py-2.5 px-2.5 text-right font-mono font-medium">${fmt2(row.usd_settled)}</td>
                     <td className="py-2.5 px-2.5 text-right font-mono text-slate-600">Rp {fmt(row.recognition_rate)}</td>
-                    <td className="py-2.5 px-2.5 text-right font-mono text-slate-600">Rp {fmt(row.settlement_rate)}</td>
-                    <td className="py-2.5 px-2.5 text-right font-mono text-slate-700">Rp {fmt(row.carrying_idr_settled)}</td>
+                    <td className="py-2.5 px-2.5 text-right font-mono text-slate-600">
+                      {row.prior_revaluation_fx !== 0 ? `${row.prior_revaluation_fx > 0 ? '+' : '-'}Rp ${fmt(Math.abs(row.prior_revaluation_fx))}` : '—'}
+                    </td>
+                    <td className="py-2.5 px-2.5 text-right font-mono text-slate-700">Rp {fmt(row.carrying_before_settlement_idr)}</td>
+                    <td className="py-2.5 px-2.5 text-right font-mono text-slate-600">
+                      {row.is_usd_bank_settlement ? <span title="Settled from USD Bank">USD Bank</span> : `Rp ${fmt(row.settlement_rate)}`}
+                    </td>
                     <td className="py-2.5 px-2.5 text-right font-mono text-slate-900 font-medium">Rp {fmt(row.actual_idr_paid)}</td>
                     <td className={`py-2.5 px-3 text-right font-mono font-bold ${row.fx_gain_loss > 0 ? 'text-red-700 bg-red-50/40' : row.fx_gain_loss < 0 ? 'text-emerald-700 bg-emerald-50/40' : 'text-slate-500'}`}>
                       {row.fx_gain_loss > 0 ? `+Rp ${fmt(row.fx_gain_loss)} (Loss)` : row.fx_gain_loss < 0 ? `-Rp ${fmt(Math.abs(row.fx_gain_loss))} (Gain)` : 'Rp 0'}
+                    </td>
+                    <td className="py-2.5 px-2.5 text-right font-mono text-slate-500">
+                      {row.cumulative_historical_rate_variance !== 0 ? `${row.cumulative_historical_rate_variance > 0 ? '+' : '-'}Rp ${fmt(Math.abs(row.cumulative_historical_rate_variance))}` : 'Rp 0'}
                     </td>
                     <td className="py-2.5 px-2.5 text-slate-600 truncate max-w-[120px]" title={row.bank_account_name}>{row.bank_account_name}</td>
                     <td className="py-2.5 px-2.5 text-center">
@@ -948,10 +1096,21 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
                 <tr>
                   <td colSpan={4} className="py-2.5 px-3">TOTALS ({supplierLines.length} Allocations)</td>
                   <td className="py-2.5 px-2.5 text-right font-mono">${fmt2(summary.totalUsdSettled)}</td>
-                  <td colSpan={2} />
+                  <td />
+                  <td className="py-2.5 px-2.5 text-right font-mono">
+                    {summary.totalPriorReval !== 0 ? `${summary.totalPriorReval > 0 ? '+' : '-'}Rp ${fmt(Math.abs(summary.totalPriorReval))}` : '—'}
+                  </td>
                   <td className="py-2.5 px-2.5 text-right font-mono">Rp {fmt(summary.totalCarryingSettled)}</td>
+                  <td />
                   <td className="py-2.5 px-2.5 text-right font-mono">Rp {fmt(summary.totalActualIdrPaid)}</td>
-                  <td className="py-2.5 px-3 text-right font-mono text-red-700">+Rp {fmt(summary.supplierLoss)} (Loss)</td>
+                  <td className={`py-2.5 px-3 text-right font-mono ${summary.supplierLoss - summary.supplierGain > 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+                    {summary.supplierLoss - summary.supplierGain >= 0
+                      ? `+Rp ${fmt(summary.supplierLoss - summary.supplierGain)} (Net Loss)`
+                      : `-Rp ${fmt(summary.supplierGain - summary.supplierLoss)} (Net Gain)`}
+                  </td>
+                  <td className="py-2.5 px-2.5 text-right font-mono text-slate-600">
+                    {summary.totalHistVariance >= 0 ? `+Rp ${fmt(summary.totalHistVariance)}` : `-Rp ${fmt(Math.abs(summary.totalHistVariance))}`}
+                  </td>
                   <td colSpan={3} />
                 </tr>
               </tfoot>
@@ -1080,13 +1239,20 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
               <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Open USD Exposure & Valuation</h3>
               <p className="text-[11px] text-slate-500">Unsettled USD purchase payables awaiting bank settlement.</p>
             </div>
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium text-slate-600">Valuation Spot Rate (IDR/USD):</label>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs font-medium text-slate-600">
+                {manualMarketRate.trim()
+                  ? 'Manual Valuation Rate (Assumption):'
+                  : latestPostedRevalRate
+                    ? `Posted Revaluation Rate (Rp ${fmt(latestPostedRevalRate)}):`
+                    : 'Manual Valuation Rate (Optional):'}
+              </label>
               <input
                 type="number"
-                value={currentMarketRate}
-                onChange={e => setCurrentMarketRate(Number(e.target.value))}
-                className="w-24 px-2 py-1 text-xs border border-slate-300 rounded-lg font-mono text-right"
+                placeholder={latestPostedRevalRate ? String(latestPostedRevalRate) : 'Enter rate'}
+                value={manualMarketRate}
+                onChange={e => setManualMarketRate(e.target.value)}
+                className="w-28 px-2 py-1 text-xs border border-slate-300 rounded-lg font-mono text-right"
               />
             </div>
           </div>
@@ -1135,7 +1301,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
                   <td className="py-2.5 px-2.5 text-right font-mono text-indigo-700">${fmt2(summary.totalOpenUsd)}</td>
                   <td className="py-2.5 px-2.5 text-right font-mono">Rp {fmt(summary.totalOpenCarrying)}</td>
                   <td />
-                  <td className="py-2.5 px-3 text-right font-mono text-amber-800">Rp {fmt(summary.totalUnrealized)}</td>
+                  <td className="py-2.5 px-3 text-right font-mono text-amber-800">Rp {fmt(summary.totalUnrealizedExposure)}</td>
                 </tr>
               </tfoot>
             </table>

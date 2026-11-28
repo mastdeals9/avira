@@ -331,14 +331,14 @@ export function Layout({ children }: LayoutProps) {
         </div>
 
         {/* Mobile Drawer Nav Groups */}
-        <nav className="flex-1 overflow-y-auto px-2 py-2 space-y-2 overscroll-contain">
+        <nav className="flex-1 overflow-y-auto px-2 py-1.5 space-y-1.5 overscroll-contain">
           {groups.map((group) => {
             const visibleItems = group.items.filter(item => isItemAccessible(item.id));
             if (visibleItems.length === 0) return null;
 
             return (
               <div key={group.label} className="space-y-0.5">
-                <p className="px-2.5 pt-1 pb-0.5 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                <p className="px-2 pt-0.5 pb-0 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
                   {group.label}
                 </p>
                 <div className="space-y-0.5">
@@ -350,15 +350,15 @@ export function Layout({ children }: LayoutProps) {
                         key={item.id}
                         type="button"
                         onClick={() => navigate((item.path ?? `/${item.id}`).replace(/^\//, ''))}
-                        className={`no-compact w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition-colors min-h-[38px]
+                        className={`no-compact w-full flex items-center justify-between px-2 py-1 rounded-lg text-left transition-colors min-h-[34px]
                           ${isActive
                             ? 'bg-blue-50 text-blue-700 font-semibold'
                             : 'text-gray-700 hover:bg-gray-100 font-medium'
                           }`}
                       >
-                        <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
                           <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-blue-600' : 'text-gray-500'}`} strokeWidth={isActive ? 2 : 1.75} />
-                          <span className="text-[13px] leading-tight truncate">{item.label}</span>
+                          <span className="text-[12px] leading-tight truncate">{item.label}</span>
                         </div>
                         {isActive ? (
                           <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0" />
@@ -376,7 +376,7 @@ export function Layout({ children }: LayoutProps) {
 
         {/* Mobile Drawer User Footer */}
         {profile && (
-          <div className="border-t border-gray-200 bg-gray-50/80 px-3 py-2 flex flex-col gap-1.5 shrink-0">
+          <div className="border-t border-gray-200 bg-gray-50/80 px-3 py-1.5 flex flex-col gap-1 shrink-0">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-xs font-bold text-gray-900 truncate">{profile.full_name || profile.username}</p>
@@ -393,7 +393,7 @@ export function Layout({ children }: LayoutProps) {
             </div>
             <button
               onClick={() => signOut()}
-              className="no-compact w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 text-xs font-medium transition-colors min-h-[36px]"
+              className="no-compact w-full flex items-center justify-center gap-1.5 py-1 px-3 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 text-xs font-medium transition-colors min-h-[34px]"
             >
               <LogOut className="w-3.5 h-3.5" />
               <span>{t('auth.logout')}</span>

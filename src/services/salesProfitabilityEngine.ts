@@ -454,10 +454,40 @@ export async function fetchCanonicalSalesProfitability(options: {
     }
   }
 
+  onProgress?.('Fetching approved credit notes for return reconciliation...', 80);
+
+  // 5b. Fetch approved credit notes in [startDate, endDate] so product, batch, monthly, and company views reconcile identically
+  const { data: cnRows, error: cnErr } = await supabase
+    .from('credit_notes')
+    .select(
+      'id, credit_note_number, credit_note_date, credit_note_type, subtotal, credit_note_items(id, product_id, batch_id, original_invoice_item_id, quantity, total_price)'
+    )
+    .eq('status', 'approved')
+    .gte('credit_note_date', startDate)
+    .lte('credit_note_date', endDate);
+
+  if (cnErr) {
+    console.warn('Could not fetch approved credit notes for reconciliation:', cnErr);
+  }
+
+  // Also fetch unallocated approved sales expenses by month if any exist
+  const { data: unallocRows } = await supabase
+    .from('finance_expenses')
+    .select('expense_date, amount, expense_category')
+    .eq('approval_status', 'approved')
+    .gte('expense_date', startDate)
+    .lte('expense_date', endDate)
+    .is('batch_id', null)
+    .is('import_container_id', null)
+    .is('delivery_challan_id', null)
+    .is('sales_order_id', null)
+    .is('linked_sales_invoice_id', null);
+
   onProgress?.('Reconciling cost-layer profitability across batches and products...', 82);
 
   // 6. Resolve every order line with authoritative layer allocations and compute exact financials
   const batchOrdersMap = new Map<string, OrderSaleRow[]>();
+  const lineUnitCostMap = new Map<string, { unitCost: number; batchId: string }>();
 
   batchesWithOrders.forEach((bwo) => {
     const resolvedOrders = bwo.orders.map((ord) => {
@@ -474,6 +504,10 @@ export async function fetchCanonicalSalesProfitability(options: {
       const grossProfit = Math.round((grossSales - lineCost) * 100) / 100;
       const netProfit = Math.round((grossProfit - salesExp) * 100) / 100;
       const marginPct = grossSales > 0 ? (netProfit / grossSales) * 100 : null;
+
+      if (ord.line_id) {
+        lineUnitCostMap.set(ord.line_id, { unitCost, batchId: bwo.batch.batch_id });
+      }
 
       return {
         ...ord,
@@ -492,7 +526,66 @@ export async function fetchCanonicalSalesProfitability(options: {
     batchOrdersMap.set(bwo.batch.batch_id, resolvedOrders);
   });
 
-  // 7. Reconcile batches: ensure batch totals match sum of reconciled invoice lines
+  // Aggregate credit note deductions by product, batch, and month
+  const prodReturnMap = new Map<string, { qty: number; revenue: number; cogs: number }>();
+  const batchReturnMap = new Map<string, { qty: number; revenue: number; cogs: number }>();
+  const monthReturnMap = new Map<string, { qty: number; revenue: number; cogs: number }>();
+
+  const rawReturnCogsTotal = Number(rawCompany.return_cogs || 0);
+  const rawProdReturnMap = new Map<string, { qty: number; revenue: number; cogs: number }>();
+  rawProducts.forEach((rp) => {
+    // Capture RPC product-level return deltas as fallback when credit note items lack original_invoice_item_id
+    rawProdReturnMap.set(rp.product_id, {
+      qty: Number(rp.sold_qty || 0),
+      revenue: Number(rp.gross_sales || 0),
+      cogs: Number(rp.product_cost || 0),
+    });
+  });
+
+  let totalCnRevenue = 0;
+  let totalCnCogs = 0;
+
+  (cnRows || []).forEach((cn: any) => {
+    const isCommercial = cn.credit_note_type === 'commercial_credit';
+    const monthKey = String(cn.credit_note_date || '').slice(0, 7);
+    const items: any[] = Array.isArray(cn.credit_note_items) ? cn.credit_note_items : [];
+    items.forEach((cni) => {
+      const pid = cni.product_id as string;
+      const qty = isCommercial ? 0 : Number(cni.quantity || 0);
+      const rev = Number(cni.total_price || 0);
+      const linked = cni.original_invoice_item_id ? lineUnitCostMap.get(cni.original_invoice_item_id) : undefined;
+      const batchId = (cni.batch_id as string | undefined) || linked?.batchId;
+      const unitCogs = linked?.unitCost ?? 0;
+      const cogs = isCommercial ? 0 : Math.round(qty * unitCogs * 100) / 100;
+
+      totalCnRevenue += rev;
+      totalCnCogs += cogs;
+
+      if (pid) {
+        const cur = prodReturnMap.get(pid) || { qty: 0, revenue: 0, cogs: 0 };
+        cur.qty += qty;
+        cur.revenue += rev;
+        cur.cogs += cogs;
+        prodReturnMap.set(pid, cur);
+      }
+      if (batchId) {
+        const cur = batchReturnMap.get(batchId) || { qty: 0, revenue: 0, cogs: 0 };
+        cur.qty += qty;
+        cur.revenue += rev;
+        cur.cogs += cogs;
+        batchReturnMap.set(batchId, cur);
+      }
+      if (monthKey) {
+        const cur = monthReturnMap.get(monthKey) || { qty: 0, revenue: 0, cogs: 0 };
+        cur.qty += qty;
+        cur.revenue += rev;
+        cur.cogs += cogs;
+        monthReturnMap.set(monthKey, cur);
+      }
+    });
+  });
+
+  // 7. Reconcile batches: ensure batch totals match sum of reconciled invoice lines minus batch returns
   productsWithBatches.forEach((pb) => {
     pb.batches = pb.batches.map((b) => {
       const bOrders = batchOrdersMap.get(b.batch_id) || [];
@@ -511,6 +604,13 @@ export async function fetchCanonicalSalesProfitability(options: {
         bProductCost += Number(o.line_cost || 0);
         bSalesExp += Number(o.line_sales_expense || 0);
       });
+
+      const bRet = batchReturnMap.get(b.batch_id);
+      if (bRet) {
+        bSoldQty -= bRet.qty;
+        bGrossSales -= bRet.revenue;
+        bProductCost -= bRet.cogs;
+      }
 
       bSoldQty = Math.round(bSoldQty * 1000) / 1000;
       bGrossSales = Math.round(bGrossSales * 100) / 100;
@@ -544,7 +644,8 @@ export async function fetchCanonicalSalesProfitability(options: {
     });
   });
 
-  // 8. Reconcile products: ensure product totals match sum of batches
+  // 8. Reconcile products: sum of invoice lines minus product credit-note deductions
+  //    (so Product Profitability matches on-screen CanonicalSalesProfitReport and Company Net Sales/COGS)
   const reconciledProducts: ProductProfitabilityRow[] = productsWithBatches.map((pb) => {
     const p = pb.product;
     const batches = pb.batches;
@@ -559,11 +660,28 @@ export async function fetchCanonicalSalesProfitability(options: {
     let pSalesExp = 0;
 
     batches.forEach((b) => {
-      pSoldQty += Number(b.sold_qty || 0);
-      pGrossSales += Number(b.gross_sales || 0);
-      pProductCost += Number(b.product_cost || 0);
-      pSalesExp += Number(b.sales_expense || 0);
+      const bOrders = batchOrdersMap.get(b.batch_id) || [];
+      if (bOrders.length > 0) {
+        bOrders.forEach((o) => {
+          pSoldQty += Number(o.quantity || 0);
+          pGrossSales += Number(o.gross_sales || 0);
+          pProductCost += Number(o.line_cost || 0);
+          pSalesExp += Number(o.line_sales_expense || 0);
+        });
+      } else {
+        pSoldQty += Number(b.sold_qty || 0);
+        pGrossSales += Number(b.gross_sales || 0);
+        pProductCost += Number(b.product_cost || 0);
+        pSalesExp += Number(b.sales_expense || 0);
+      }
     });
+
+    const pRet = prodReturnMap.get(p.product_id);
+    if (pRet) {
+      pSoldQty -= pRet.qty;
+      pGrossSales -= pRet.revenue;
+      pProductCost -= pRet.cogs;
+    }
 
     pSoldQty = Math.round(pSoldQty * 1000) / 1000;
     pGrossSales = Math.round(pGrossSales * 100) / 100;
@@ -596,40 +714,151 @@ export async function fetchCanonicalSalesProfitability(options: {
     };
   });
 
-  // 9. Reconcile Executive KPI block
-  let sumProdGrossSales = 0;
-  let sumProdLandedCost = 0;
+  // 9. Reconcile Executive KPI block from invoice lines + credit notes + unallocated expenses
+  let sumLineGrossSales = 0;
+  let sumLineCogs = 0;
   let sumProdSalesExp = 0;
   let sumProdQty = 0;
 
+  batchesWithOrders.forEach((bwo) => {
+    const resolved = batchOrdersMap.get(bwo.batch.batch_id) || [];
+    resolved.forEach((o) => {
+      sumLineGrossSales += Number(o.gross_sales || 0);
+      sumLineCogs += Number(o.line_cost || 0);
+    });
+  });
+
   reconciledProducts.forEach((p) => {
-    sumProdGrossSales += Number(p.gross_sales || 0);
-    sumProdLandedCost += Number(p.product_cost || 0);
     sumProdSalesExp += Number(p.sales_expense || 0);
     sumProdQty += Number(p.sold_qty || 0);
   });
 
-  sumProdGrossSales = Math.round(sumProdGrossSales * 100) / 100;
-  sumProdLandedCost = Math.round(sumProdLandedCost * 100) / 100;
+  sumLineGrossSales = Math.round(sumLineGrossSales * 100) / 100;
+  sumLineCogs = Math.round(sumLineCogs * 100) / 100;
   sumProdSalesExp = Math.round(sumProdSalesExp * 100) / 100;
   sumProdQty = Math.round(sumProdQty * 1000) / 1000;
 
-  const salesReturns = Number(rawCompany.sales_returns || 0);
-  const returnCogs = Number(rawCompany.return_cogs || 0);
-  const netSales = Math.round((sumProdGrossSales - salesReturns) * 100) / 100;
-  const netProductCost = Math.round((sumProdLandedCost - returnCogs) * 100) / 100;
+  const salesReturns = cnRows ? Math.round(totalCnRevenue * 100) / 100 : Number(rawCompany.sales_returns || 0);
+  const returnCogs = cnRows
+    ? Math.round((totalCnCogs > 0 ? totalCnCogs : rawReturnCogsTotal) * 100) / 100
+    : rawReturnCogsTotal;
+  const netSales = Math.round((sumLineGrossSales - salesReturns) * 100) / 100;
+  const netProductCost = Math.round((sumLineCogs - returnCogs) * 100) / 100;
   const unallocatedExp = Number(rawCompany.unallocated_sales_expenses || 0);
   const totalCompanySalesExp = Math.round((sumProdSalesExp + unallocatedExp) * 100) / 100;
   const companyGrossProfit = Math.round((netSales - netProductCost) * 100) / 100;
   const companyNetProfit = Math.round((companyGrossProfit - totalCompanySalesExp) * 100) / 100;
   const companyMarginPct = netSales > 0 ? Math.round((companyNetProfit / netSales) * 10000) / 100 : 0;
 
+  // 10. Reconcile Monthly summary from the exact same invoice lines + credit notes + unallocated expenses
+  const salesCategories = new Set([
+    'delivery_sales',
+    'loading_sales',
+    'marketing_advertising',
+    'other_sales',
+    'sales_distribution',
+    'freight_outward',
+    'delivery_expense',
+    'sales_commission',
+    'travel_sales',
+  ]);
+  const monthUnallocMap = new Map<string, number>();
+  (unallocRows || []).forEach((fe: any) => {
+    if (!salesCategories.has(fe.expense_category)) return;
+    const mk = String(fe.expense_date || '').slice(0, 7);
+    if (mk) monthUnallocMap.set(mk, (monthUnallocMap.get(mk) || 0) + Number(fe.amount || 0));
+  });
+
+  const monthBuckets = new Map<
+    string,
+    {
+      month_start: string;
+      month_label: string;
+      gross_sales: number;
+      product_cost: number;
+      sales_expenses: number;
+      total_qty_sold: number;
+      invoiceIds: Set<string>;
+    }
+  >();
+
+  const ensureMonthBucket = (mk: string) => {
+    if (!monthBuckets.has(mk)) {
+      const [y, m] = mk.split('-').map(Number);
+      const dt = new Date(Date.UTC(y || 2025, (m || 1) - 1, 1));
+      const label = dt.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+      monthBuckets.set(mk, {
+        month_start: `${mk}-01`,
+        month_label: label,
+        gross_sales: 0,
+        product_cost: 0,
+        sales_expenses: 0,
+        total_qty_sold: 0,
+        invoiceIds: new Set<string>(),
+      });
+    }
+    return monthBuckets.get(mk)!;
+  };
+
+  batchesWithOrders.forEach((bwo) => {
+    const resolved = batchOrdersMap.get(bwo.batch.batch_id) || [];
+    resolved.forEach((o) => {
+      const mk = String(o.invoice_date || '').slice(0, 7);
+      if (!mk) return;
+      const b = ensureMonthBucket(mk);
+      b.gross_sales += Number(o.gross_sales || 0);
+      b.product_cost += Number(o.line_cost || 0);
+      b.sales_expenses += Number(o.line_sales_expense || 0);
+      b.total_qty_sold += Number(o.quantity || 0);
+      if (o.invoice_id) b.invoiceIds.add(o.invoice_id);
+    });
+  });
+
+  monthReturnMap.forEach((mr, mk) => {
+    const b = ensureMonthBucket(mk);
+    b.gross_sales -= mr.revenue;
+    b.product_cost -= mr.cogs;
+    b.total_qty_sold -= mr.qty;
+  });
+
+  monthUnallocMap.forEach((amt, mk) => {
+    if (amt > 0) {
+      const b = ensureMonthBucket(mk);
+      b.sales_expenses += amt;
+    }
+  });
+
+  const reconciledMonthly: MonthlyProfitabilitySummaryRow[] =
+    monthBuckets.size > 0
+      ? Array.from(monthBuckets.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([, b]) => {
+            const mSales = Math.round(b.gross_sales * 100) / 100;
+            const mCogs = Math.round(b.product_cost * 100) / 100;
+            const mExp = Math.round(b.sales_expenses * 100) / 100;
+            const mGP = Math.round((mSales - mCogs) * 100) / 100;
+            const mNP = Math.round((mGP - mExp) * 100) / 100;
+            return {
+              month_label: b.month_label,
+              month_start: b.month_start,
+              gross_sales: mSales,
+              product_cost: mCogs,
+              sales_expenses: mExp,
+              gross_profit: mGP,
+              profit_after_sales_expenses: mNP,
+              profit_margin_pct: mSales > 0 ? Math.round((mNP / mSales) * 10000) / 100 : 0,
+              total_qty_sold: Math.round(b.total_qty_sold * 1000) / 1000,
+              order_count: b.invoiceIds.size,
+            };
+          })
+      : adaptedSummary.monthly;
+
   const reconciledCompany: CompanyProfitabilitySummary = {
     ...rawCompany,
-    gross_sales: sumProdGrossSales,
+    gross_sales: sumLineGrossSales,
     sales_returns: salesReturns,
     net_sales: netSales,
-    product_cost: sumProdLandedCost,
+    product_cost: sumLineCogs,
     return_cogs: returnCogs,
     net_product_cost: netProductCost,
     sales_expenses: totalCompanySalesExp,
@@ -649,7 +878,7 @@ export async function fetchCanonicalSalesProfitability(options: {
   return {
     company: reconciledCompany,
     products: reconciledProducts,
-    monthly: adaptedSummary.monthly,
+    monthly: reconciledMonthly,
     unitTotals,
     productsWithBatches,
     batchOrdersMap,

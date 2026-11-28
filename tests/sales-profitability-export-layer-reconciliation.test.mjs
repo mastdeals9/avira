@@ -73,7 +73,7 @@ test('sales profitability engine defines authoritative cost-layer resolution', (
   );
 });
 
-test('excel export script enforces required 4-sheet order, total rows, and layer-reconciled data', () => {
+test('excel export script enforces required 3-sheet order, total rows, and layer-reconciled data', () => {
   const exportCode = readFileSync(excelExportFile, 'utf8');
 
   // Verify canonical data fetch
@@ -83,43 +83,28 @@ test('excel export script enforces required 4-sheet order, total rows, and layer
     'Must use fetchCanonicalSalesProfitability to get reconciled data'
   );
 
-  // Verify 4-sheet order (Section 10 of prompt):
-  // 1: Product Summary, 2: Batch Breakdown, 3: Detailed Audit, 4: Orders & Challans
-  const prodSummaryIdx = exportCode.indexOf("wb.addWorksheet('Product Summary'");
-  const batchBreakdownIdx = exportCode.indexOf("wb.addWorksheet('Batch Breakdown'");
-  const detailedAuditIdx = exportCode.indexOf("wb.addWorksheet('Detailed Audit'");
-  const ordersChallansIdx = exportCode.indexOf("wb.addWorksheet('Orders & Challans'");
+  // Verify 3-sheet order: SUMMARY, PRODUCT PROFITABILITY, SALES DETAIL
+  const summaryIdx = exportCode.indexOf("wb.addWorksheet('SUMMARY'");
+  const prodSummaryIdx = exportCode.indexOf("wb.addWorksheet('PRODUCT PROFITABILITY'");
+  const detailedAuditIdx = exportCode.indexOf("wb.addWorksheet('SALES DETAIL'");
 
-  assert.ok(prodSummaryIdx !== -1, 'Must have Product Summary sheet');
-  assert.ok(batchBreakdownIdx !== -1, 'Must have Batch Breakdown sheet');
-  assert.ok(detailedAuditIdx !== -1, 'Must have Detailed Audit sheet');
-  assert.ok(ordersChallansIdx !== -1, 'Must have Orders & Challans sheet');
+  assert.ok(summaryIdx !== -1, 'Must have SUMMARY sheet');
+  assert.ok(prodSummaryIdx !== -1, 'Must have PRODUCT PROFITABILITY sheet');
+  assert.ok(detailedAuditIdx !== -1, 'Must have SALES DETAIL sheet');
 
   assert.ok(
-    prodSummaryIdx < batchBreakdownIdx,
-    'Sheet 1 (Product Summary) must precede Sheet 2 (Batch Breakdown)'
+    summaryIdx < prodSummaryIdx,
+    'Sheet 1 (SUMMARY) must precede Sheet 2 (PRODUCT PROFITABILITY)'
   );
   assert.ok(
-    batchBreakdownIdx < detailedAuditIdx,
-    'Sheet 2 (Batch Breakdown) must precede Sheet 3 (Detailed Audit)'
-  );
-  assert.ok(
-    detailedAuditIdx < ordersChallansIdx,
-    'Sheet 3 (Detailed Audit) must precede Sheet 4 (Orders & Challans)'
+    prodSummaryIdx < detailedAuditIdx,
+    'Sheet 2 (PRODUCT PROFITABILITY) must precede Sheet 3 (SALES DETAIL)'
   );
 
-  // Verify Detailed Audit column 16 is Net Realization / Unit
-  assert.match(
-    exportCode,
-    /'Net Realization \/ Unit \(IDR\)'/,
-    'Detailed Audit must have Net Realization / Unit header'
-  );
-
-  // Verify total rows on all 4 sheets
-  assert.match(exportCode, /PRODUCT SUMMARY TOTAL/, 'Product Summary must have total row');
-  assert.match(exportCode, /BATCH BREAKDOWN TOTAL/, 'Batch Breakdown must have total row');
-  assert.match(exportCode, /ALL INVOICES AUDIT RECONCILIATION TOTAL/, 'Detailed Audit must have total row');
-  assert.match(exportCode, /ORDERS & DELIVERY CHALLANS TOTAL/, 'Orders & Challans must have total row');
+  // Verify total rows on sheets
+  assert.match(exportCode, /MONTHLY TOTAL/, 'SUMMARY monthly table must have MONTHLY TOTAL row');
+  assert.match(exportCode, /TOTAL \(\$\{products\.length\} products\)/, 'PRODUCT PROFITABILITY must have total row');
+  assert.match(exportCode, /NET COMPANY TOTAL/, 'Must have NET COMPANY TOTAL reconciliation row');
 });
 
 test('export modal defaults to detailed 4-sheet export', () => {

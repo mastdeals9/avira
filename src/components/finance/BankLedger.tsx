@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { BookOpen, Download, RefreshCw } from 'lucide-react';
+import { BookOpen, ChevronDown, Download, FileSpreadsheet, RefreshCw, Search } from 'lucide-react';
 import { FinanceModal as Modal } from './FinanceModal';
 import { MoneyInput } from '../MoneyInput';
 import { useFinance } from '../../contexts/FinanceContext';
 import { getSignedUrlCached } from '../../utils/signedUrlCache';
 import { formatCurrency } from '../../utils/currency';
 import { fetchInBatches } from '../../utils/batchQuery';
+import { exportBankLedgerCsv, exportBankLedgerExcel } from '../../utils/bankLedgerExport';
 
 interface BankAccount {
   id: string;
@@ -45,6 +46,8 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
   const [selectedBank, setSelectedBank] = useState<string>('');
   const [ledgerEntries, setLedgerEntries] = useState<any[]>([]);
   const [showUnreconciledOnly, setShowUnreconciledOnly] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState<any | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -186,11 +189,9 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
           entries.push({
             id: line.id,
             entry_date: line.transaction_date,
-            particulars: line.description || 'Bank Transaction',
+            particulars: line.notes?.trim() || line.description || 'Bank Transaction',
+            bank_narration: line.description || '',
             reference: line.reference || '-',
-            // canonical_reference: the user-facing voucher number from the
-            // linked source module (Expenses / Receipt / Journal) so this
-            // page matches what Expenses / Petty Cash / Ledger show.
             canonical_reference: line.reference || '-',
             debit: Number(line.debit_amount || 0),
             credit: Number(line.credit_amount || 0),
@@ -252,35 +253,43 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
       const allocationTaxIds = allocationRows.filter((a: any) => a.document_type === 'tax_payment').map((a: any) => a.document_id);
       const [canonicalExp, canonicalRec, canonicalPay, canonicalEntry, canonicalFund, canonicalPetty, canonicalTax] = await Promise.all([
         allocationExpenseIds.length
-          ? fetchInBatches<any>(allocationExpenseIds, b => supabase.from('finance_expenses').select('id, voucher_number').in('id', b))
-              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, x.voucher_number])))
-          : Promise.resolve({} as Record<string, string>),
+          ? fetchInBatches<any>(allocationExpenseIds, b => supabase.from('finance_expenses').select('id, voucher_number, description').in('id', b))
+              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, { ref: x.voucher_number, remark: x.description }])))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
         allocationReceiptIds.length
-          ? fetchInBatches<any>(allocationReceiptIds, b => supabase.from('receipt_vouchers').select('id, voucher_number').in('id', b))
-              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, x.voucher_number])))
-          : Promise.resolve({} as Record<string, string>),
+          ? fetchInBatches<any>(allocationReceiptIds, b => supabase.from('receipt_vouchers').select('id, voucher_number, notes, customers(company_name)').in('id', b))
+              .then(rows => Object.fromEntries(rows.map((x: any) => {
+                const cust = Array.isArray(x.customers) ? x.customers[0]?.company_name : x.customers?.company_name;
+                const remark = x.notes?.trim() || (cust ? `Customer payment – ${cust}` : '');
+                return [x.id, { ref: x.voucher_number, remark }];
+              })))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
         allocationPaymentIds.length
-          ? fetchInBatches<any>(allocationPaymentIds, b => supabase.from('payment_vouchers').select('id, voucher_number').in('id', b))
-              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, x.voucher_number])))
-          : Promise.resolve({} as Record<string, string>),
+          ? fetchInBatches<any>(allocationPaymentIds, b => supabase.from('payment_vouchers').select('id, voucher_number, notes, suppliers(company_name)').in('id', b))
+              .then(rows => Object.fromEntries(rows.map((x: any) => {
+                const sup = Array.isArray(x.suppliers) ? x.suppliers[0]?.company_name : x.suppliers?.company_name;
+                const remark = x.notes?.trim() || (sup ? `Supplier payment – ${sup}` : '');
+                return [x.id, { ref: x.voucher_number, remark }];
+              })))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
         allocationEntryIds.length
-          ? fetchInBatches<any>(allocationEntryIds.filter(Boolean), b => supabase.from('journal_entries').select('id, reference_number, entry_number').in('id', b))
-              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, x.reference_number || x.entry_number])))
-          : Promise.resolve({} as Record<string, string>),
+          ? fetchInBatches<any>(allocationEntryIds.filter(Boolean), b => supabase.from('journal_entries').select('id, reference_number, entry_number, description').in('id', b))
+              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, { ref: x.reference_number || x.entry_number, remark: x.description }])))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
         allocationFundIds.length
-          ? fetchInBatches<any>(allocationFundIds, b => supabase.from('fund_transfers').select('id, transfer_number').in('id', b))
-              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, x.transfer_number])))
-          : Promise.resolve({} as Record<string, string>),
+          ? fetchInBatches<any>(allocationFundIds, b => supabase.from('fund_transfers').select('id, transfer_number, notes').in('id', b))
+              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, { ref: x.transfer_number, remark: x.notes?.trim() || 'Fund transfer' }])))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
         allocationPettyIds.length
-          ? fetchInBatches<any>(allocationPettyIds, b => supabase.from('petty_cash_transactions').select('id, description').in('id', b))
-              .then(rows => Object.fromEntries(rows.map((x: any) => [x.description || 'Petty Cash'])))
-          : Promise.resolve({} as Record<string, string>),
+          ? fetchInBatches<any>(allocationPettyIds, b => supabase.from('petty_cash_transactions').select('id, transaction_number, description').in('id', b))
+              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, { ref: x.transaction_number || 'Petty Cash', remark: x.description }])))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
         allocationTaxIds.length
           ? fetchInBatches<any>(allocationTaxIds, b => supabase.from('tax_payments').select('id, tax_type, payment_date').in('id', b))
-              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, `${x.tax_type} ${x.payment_date}`])))
-          : Promise.resolve({} as Record<string, string>),
+              .then(rows => Object.fromEntries(rows.map((x: any) => [x.id, { ref: `${x.tax_type} ${x.payment_date}`, remark: `Tax payment – ${x.tax_type}` }])))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
       ]);
-      const canonicalRef = (a: any) => a.document_type === 'expense' ? canonicalExp[a.document_id]
+      const canonicalDocInfo = (a: any) => a.document_type === 'expense' ? canonicalExp[a.document_id]
         : a.document_type === 'receipt' ? canonicalRec[a.document_id]
         : a.document_type === 'payment' ? canonicalPay[a.document_id]
         : a.document_type === 'fund_transfer' ? canonicalFund[a.document_id]
@@ -288,7 +297,12 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
         : a.document_type === 'tax_payment' ? canonicalTax[a.document_id]
         : canonicalEntry[a.document_id || a.journal_entry_id];
       const byLine = new Map<string, any[]>();
-      allocationRows.forEach((a: any) => { const list = byLine.get(a.bank_statement_line_id) || []; list.push({ ...a, reference: canonicalRef(a) || a.document_id, amount: Number(a.allocation_amount || 0) }); byLine.set(a.bank_statement_line_id, list); });
+      allocationRows.forEach((a: any) => {
+        const info = canonicalDocInfo(a);
+        const list = byLine.get(a.bank_statement_line_id) || [];
+        list.push({ ...a, reference: info?.ref || a.document_id, remark: info?.remark || '', amount: Number(a.allocation_amount || 0) });
+        byLine.set(a.bank_statement_line_id, list);
+      });
       entries.forEach((e: any) => {
         const docs = byLine.get(e.id) || [];
         const bankAmount = Math.abs(Number(e.debit || 0) - Number(e.credit || 0));
@@ -298,6 +312,10 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
         if (docs.length) {
           e.allocations = docs;
           e.canonical_reference = docs.map(d => `${d.reference} (${formatAmount(d.amount, selectedBankData?.currency || 'IDR')})`).join(' + ');
+          const voucherRemarks = Array.from(new Set(docs.map((d: any) => String(d.remark || '').trim()).filter(Boolean))).join('; ');
+          if (voucherRemarks) {
+            e.particulars = voucherRemarks;
+          }
           e.linkedId = docs[0].document_id;
           const journals = Array.from(new Set(docs.map((doc: any) => doc.journal_entry_id).filter(Boolean)));
           const ledger = journals.reduce((sum: any, journalId: any) => {
@@ -314,9 +332,7 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
         }
       });
 
-      // Resolve canonical reference (voucher number) for matched entries —
-      // single batched lookup per source table so the Ref No column matches
-      // what the Expenses / Receipt / Journal pages display.
+      // Resolve canonical reference & voucher remarks for legacy matched entries
       const expenseIds = Array.from(new Set(entries.map(e => e.matched_expense_id).filter(Boolean)));
       const receiptIds = Array.from(new Set(entries.map(e => e.matched_receipt_id).filter(Boolean)));
       const paymentIds = Array.from(new Set(entries.map(e => e.matched_payment_id).filter(Boolean)));
@@ -324,21 +340,27 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
 
       const [expMap, recMap, payMap, entMap] = await Promise.all([
         expenseIds.length
-          ? supabase.from('finance_expenses').select('id, voucher_number').in('id', expenseIds)
-              .then(r => Object.fromEntries((r.data || []).map((x: any) => [x.id, x.voucher_number])))
-          : Promise.resolve({} as Record<string, string>),
+          ? supabase.from('finance_expenses').select('id, voucher_number, description').in('id', expenseIds)
+              .then(r => Object.fromEntries((r.data || []).map((x: any) => [x.id, { ref: x.voucher_number, remark: x.description }])))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
         receiptIds.length
-          ? supabase.from('receipt_vouchers').select('id, voucher_number').in('id', receiptIds)
-              .then(r => Object.fromEntries((r.data || []).map((x: any) => [x.id, x.voucher_number])))
-          : Promise.resolve({} as Record<string, string>),
+          ? supabase.from('receipt_vouchers').select('id, voucher_number, notes, customers(company_name)').in('id', receiptIds)
+              .then(r => Object.fromEntries((r.data || []).map((x: any) => {
+                const cust = Array.isArray(x.customers) ? x.customers[0]?.company_name : x.customers?.company_name;
+                return [x.id, { ref: x.voucher_number, remark: x.notes?.trim() || (cust ? `Customer payment – ${cust}` : '') }];
+              })))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
         paymentIds.length
-          ? supabase.from('payment_vouchers').select('id, voucher_number').in('id', paymentIds)
-              .then(r => Object.fromEntries((r.data || []).map((x: any) => [x.id, x.voucher_number])))
-          : Promise.resolve({} as Record<string, string>),
+          ? supabase.from('payment_vouchers').select('id, voucher_number, notes, suppliers(company_name)').in('id', paymentIds)
+              .then(r => Object.fromEntries((r.data || []).map((x: any) => {
+                const sup = Array.isArray(x.suppliers) ? x.suppliers[0]?.company_name : x.suppliers?.company_name;
+                return [x.id, { ref: x.voucher_number, remark: x.notes?.trim() || (sup ? `Supplier payment – ${sup}` : '') }];
+              })))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
         entryIds.length
-          ? supabase.from('journal_entries').select('id, reference_number, entry_number').in('id', entryIds)
-              .then(r => Object.fromEntries((r.data || []).map((x: any) => [x.id, x.reference_number || x.entry_number])))
-          : Promise.resolve({} as Record<string, string>),
+          ? supabase.from('journal_entries').select('id, reference_number, entry_number, description').in('id', entryIds)
+              .then(r => Object.fromEntries((r.data || []).map((x: any) => [x.id, { ref: x.reference_number || x.entry_number, remark: x.description }])))
+          : Promise.resolve({} as Record<string, { ref: string; remark?: string }>),
       ]);
 
       entries.forEach(e => {
@@ -348,7 +370,12 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
           (e.matched_receipt_id && recMap[e.matched_receipt_id]) ||
           (e.matched_payment_id && payMap[e.matched_payment_id]) ||
           (e.matched_entry_id && entMap[e.matched_entry_id]);
-        if (resolved) e.canonical_reference = resolved;
+        if (resolved) {
+          e.canonical_reference = resolved.ref;
+          if (resolved.remark?.trim()) {
+            e.particulars = resolved.remark.trim();
+          }
+        }
       });
 
       // Sort by date
@@ -431,35 +458,33 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
     return formatCurrency(amount, currency, { zeroAsDash: true });
   };
 
-  const exportToExcel = () => {
-    const selectedBankData = banks.find(b => b.id === selectedBank);
-    if (!selectedBankData) return;
+  const getExportParams = () => {
+    const bank = banks.find(b => b.id === selectedBank);
+    if (!bank) return null;
+    return {
+      bankName: bank.bank_name,
+      accountNumber: bank.account_number,
+      currency: bank.currency,
+      startDate: globalDateRange.startDate,
+      endDate: globalDateRange.endDate,
+      openingBalance,
+      totalDebit,
+      totalCredit,
+      closingBalance,
+      entries: visibleLedgerEntries,
+    };
+  };
 
-    const headers = ['Date', 'Particulars', 'Reference', 'Debit (Dr)', 'Credit (Cr)', 'Balance'];
-    const rows = ledgerEntries.map(entry => [
-      new Date(entry.entry_date).toLocaleDateString('id-ID'),
-      entry.particulars,
-      entry.canonical_reference || entry.reference,
-      entry.debit > 0 ? formatAmount(entry.debit, selectedBankData.currency) : '',
-      entry.credit > 0 ? formatAmount(entry.credit, selectedBankData.currency) : '',
-      formatAmount(entry.running_balance, selectedBankData.currency),
-    ]);
+  const handleExportExcel = async () => {
+    const params = getExportParams();
+    if (!params) return;
+    await exportBankLedgerExcel(params);
+  };
 
-    const csv = [
-      `Bank Ledger - ${selectedBankData.bank_name} (${selectedBankData.account_number})`,
-      `Currency: ${selectedBankData.currency}`,
-      `Period: ${new Date(globalDateRange.startDate).toLocaleDateString('id-ID')} to ${new Date(globalDateRange.endDate).toLocaleDateString('id-ID')}`,
-      `Opening Balance: ${formatAmount(openingBalance, selectedBankData.currency)}`,
-      '',
-      headers.join(','),
-      ...rows.map(row => row.join(',')),
-    ].join('\n');
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `bank_ledger_${selectedBankData.bank_name}_${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
+  const handleExportCsv = () => {
+    const params = getExportParams();
+    if (!params) return;
+    exportBankLedgerCsv(params);
   };
 
   const selectedBankData = banks.find(b => b.id === selectedBank);
@@ -473,9 +498,17 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
   const reconciliationDifference = statementMovement - ledgerMovement;
   const reconciledAmount = ledgerEntries.reduce((sum, e) => sum + Number(e.allocated_amount || 0), 0);
   const unreconciledAmount = ledgerEntries.reduce((sum, e) => sum + Number(e.unreconciled_amount || 0), 0);
-  const visibleLedgerEntries = showUnreconciledOnly
-    ? ledgerEntries.filter(entry => Number(entry.unreconciled_amount || 0) > 0.01)
-    : ledgerEntries;
+  const visibleLedgerEntries = ledgerEntries.filter(entry => {
+    if (showUnreconciledOnly && Number(entry.unreconciled_amount || 0) <= 0.01) return false;
+    if (searchTerm.trim()) {
+      const q = searchTerm.toLowerCase();
+      const matchesDesc = String(entry.particulars || '').toLowerCase().includes(q);
+      const matchesBankNarration = String(entry.bank_narration || '').toLowerCase().includes(q);
+      const matchesRef = String(entry.canonical_reference || entry.reference || '').toLowerCase().includes(q);
+      return matchesDesc || matchesBankNarration || matchesRef;
+    }
+    return true;
+  });
   const closingBalance = openingBalance + totalCredit - totalDebit;
   const glDifference = glClosingBalance === null ? null : glClosingBalance - closingBalance;
 
@@ -489,105 +522,173 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
           </h1>
           <span className="text-[10px] text-gray-400 truncate">Bank Book</span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={loadLedgerEntries}
             disabled={!selectedBank || loading}
-            className="inline-flex items-center gap-1 h-7 px-2 bg-blue-600 text-white rounded text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1 h-7 px-2.5 bg-blue-600 text-white rounded text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
           <button
-            onClick={exportToExcel}
+            onClick={() => void handleExportExcel()}
             disabled={!selectedBank || ledgerEntries.length === 0}
-            className="inline-flex items-center gap-1 h-7 px-2 bg-green-600 text-white rounded text-xs font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1 h-7 px-2.5 bg-emerald-600 text-white rounded text-xs font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Export formatted Excel (.xlsx)"
+          >
+            <FileSpreadsheet className="w-3 h-3" />
+            Export Excel
+          </button>
+          <button
+            onClick={handleExportCsv}
+            disabled={!selectedBank || ledgerEntries.length === 0}
+            className="inline-flex items-center gap-1 h-7 px-2.5 bg-white text-gray-700 border border-gray-300 rounded text-xs font-semibold hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Export standards-compliant CSV"
           >
             <Download className="w-3 h-3" />
-            Export
+            CSV
           </button>
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow-sm p-4">
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
-          <select name="bank_account" aria-label="Bank Account"
-            value={selectedBank}
-            onChange={(e) => setSelectedBank(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg max-w-md"
-          >
-            <option value="">Select Bank Account</option>
-            {banks.map(bank => (
-              <option key={bank.id} value={bank.id}>
-                {bank.bank_name} - {bank.account_number} ({bank.currency})
-              </option>
-            ))}
-          </select>
-          <p className="text-xs text-gray-500 mt-1">Period is controlled by global date range at top</p>
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-3 sm:p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+          <div className="flex-1 max-w-md">
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Bank Account</label>
+            <select name="bank_account" aria-label="Bank Account"
+              value={selectedBank}
+              onChange={(e) => setSelectedBank(e.target.value)}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
+            >
+              <option value="">Select Bank Account</option>
+              {banks.map(bank => (
+                <option key={bank.id} value={bank.id}>
+                  {bank.bank_name} - {bank.account_number} ({bank.currency})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-64">
+              <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search description or ref..."
+                aria-label="Search description or reference"
+                style={{ paddingLeft: '2rem' }}
+                className="w-full pl-8 pr-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+            <p className="text-xs text-gray-500">
+              Period: <span className="font-medium text-gray-700">{new Date(globalDateRange.startDate).toLocaleDateString('id-ID')} – {new Date(globalDateRange.endDate).toLocaleDateString('id-ID')}</span>
+            </p>
+          </div>
         </div>
 
+        {/* Simplified 4-Figure Bank Ledger Summary */}
         {selectedBankData && (
-          <div className="mb-4 p-3 bg-blue-50 rounded-lg">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-700">Opening Balance (as of {new Date(globalDateRange.startDate).toLocaleDateString('id-ID')})</p>
-                <p className="text-lg font-bold text-blue-600">
-                  {formatAmount(openingBalance, selectedBankData.currency)}
-                </p>
-                {globalDateRange.startDate > selectedBankData.opening_balance_date && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    Adjusted for filtered date range
-                  </p>
-                )}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div className="rounded-lg border border-gray-200 bg-white p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Opening Balance</span>
+                <button
+                  type="button"
+                  onClick={openEditOpeningBalance}
+                  className="text-[11px] font-semibold text-blue-600 hover:text-blue-800"
+                >
+                  Update
+                </button>
               </div>
-              <button
-                onClick={openEditOpeningBalance}
-                className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                Update
-              </button>
+              <p className="text-sm sm:text-base font-bold text-gray-900 mt-1 tabular-nums">
+                {formatAmount(openingBalance, selectedBankData.currency)}
+              </p>
+              <p className="text-[10px] text-gray-400 mt-0.5">
+                As of {new Date(globalDateRange.startDate).toLocaleDateString('id-ID')}
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 bg-white p-3">
+              <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide block">Total Debit (Dr)</span>
+              <p className="text-sm sm:text-base font-bold text-red-600 mt-1 tabular-nums">
+                {formatAmount(totalDebit, selectedBankData.currency)}
+              </p>
+              <p className="text-[10px] text-gray-400 mt-0.5">Outgoing</p>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 bg-white p-3">
+              <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide block">Total Credit (Cr)</span>
+              <p className="text-sm sm:text-base font-bold text-emerald-700 mt-1 tabular-nums">
+                {formatAmount(totalCredit, selectedBankData.currency)}
+              </p>
+              <p className="text-[10px] text-gray-400 mt-0.5">Incoming</p>
+            </div>
+
+            <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3">
+              <span className="text-[11px] font-semibold text-blue-900 uppercase tracking-wide block">Closing Balance</span>
+              <p className="text-sm sm:text-base font-extrabold text-blue-900 mt-1 tabular-nums">
+                {formatAmount(closingBalance, selectedBankData.currency)}
+              </p>
+              <p className="text-[10px] text-blue-700 mt-0.5">
+                As of {new Date(globalDateRange.endDate).toLocaleDateString('id-ID')}
+              </p>
             </div>
           </div>
         )}
 
-        {selectedBankData && glClosingBalance !== null && (
-          <div className={`mb-4 rounded-lg border p-3 text-xs ${Math.abs(glDifference || 0) <= 0.01 ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
-            <div>Statement / Ledger / Difference: <strong>{formatAmount(statementMovement, selectedBankData.currency)} / {formatAmount(ledgerMovement, selectedBankData.currency)} / {formatAmount(reconciliationDifference, selectedBankData.currency)}</strong></div>
-            <div className="mt-1">GL closing balance: <strong>{formatAmount(glClosingBalance, selectedBankData.currency)}</strong> · Bank closing balance: <strong>{formatAmount(closingBalance, selectedBankData.currency)}</strong></div>
-            <div className="mt-1 text-[10px]">{Math.abs(glDifference || 0) <= 0.01 ? 'No bank-vs-GL difference.' : 'Difference explanation: opening balance / posting cut-off / statement population. This does not classify canonically allocated bank lines as unreconciled.'}</div>
-          </div>
-        )}
+        {/* Separated Expandable Reconciliation Diagnostics */}
         {selectedBankData && (
-          <div className="mb-4 grid grid-cols-1 md:grid-cols-5 gap-2 text-xs">
-            <div className="rounded border border-slate-200 bg-slate-50 p-3">
-              <div className="text-slate-500">Bank Statement Balance / Movement</div>
-              <strong className="text-slate-900">{formatAmount(closingBalance, selectedBankData.currency)}</strong>
-              <div className="text-[10px] text-slate-500">Movement: {formatAmount(statementMovement, selectedBankData.currency)}</div>
-            </div>
-            <div className="rounded border border-emerald-200 bg-emerald-50 p-3">
-              <div className="text-emerald-700">Reconciled Bank Movement</div>
-              <strong className="text-emerald-900">{formatAmount(reconciledAmount, selectedBankData.currency)}</strong>
-            </div>
-            <div className={`rounded border p-3 ${Math.abs(reconciliationDifference) <= 0.01 ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
-              <div className="text-slate-600">Statement / Ledger / Difference</div>
-              <strong className="text-slate-900">{formatAmount(statementMovement, selectedBankData.currency)} / {formatAmount(ledgerMovement, selectedBankData.currency)} / {formatAmount(reconciliationDifference, selectedBankData.currency)}</strong>
-              <div className="text-[10px] text-slate-500">Canonical statement date and allocated bank COA lines</div>
-            </div>
+          <div className="border-t border-gray-100 pt-2">
             <button
               type="button"
-              onClick={() => setShowUnreconciledOnly(value => !value)}
-              className={`rounded border p-3 text-left ${showUnreconciledOnly ? 'border-amber-400 bg-amber-100' : 'border-amber-200 bg-amber-50'}`}
+              onClick={() => setShowDiagnostics(v => !v)}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 hover:text-gray-900"
             >
-              <div className="text-amber-700 underline">Unreconciled Bank Transactions</div>
-              <strong className="text-amber-900">{formatAmount(unreconciledAmount, selectedBankData.currency)}</strong>
-              <div className="text-[10px] text-amber-700">{showUnreconciledOnly ? 'Showing unreconciled lines · click to show all' : 'Click to filter statement lines'}</div>
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showDiagnostics ? 'rotate-180' : ''}`} />
+              <span>Reconciliation Diagnostics</span>
+              {showUnreconciledOnly && (
+                <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold">
+                  Unreconciled Filter Active
+                </span>
+              )}
             </button>
-            {glClosingBalance !== null && (
-              <div className="rounded border border-violet-200 bg-violet-50 p-3">
-                <div className="text-violet-700">Bank vs GL Difference</div>
-                <strong className="text-violet-900">{formatAmount(Math.abs(glDifference || 0), selectedBankData.currency)}</strong>
-                <div className="text-[10px] text-violet-700">Opening / cut-off / statement population</div>
+
+            {showDiagnostics && (
+              <div className="mt-2.5 space-y-2.5">
+                {glClosingBalance !== null && (
+                  <div className={`rounded-lg border p-2.5 text-xs ${Math.abs(glDifference || 0) <= 0.01 ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+                    <div>Statement / Ledger / Difference: <strong>{formatAmount(statementMovement, selectedBankData.currency)} / {formatAmount(ledgerMovement, selectedBankData.currency)} / {formatAmount(reconciliationDifference, selectedBankData.currency)}</strong></div>
+                    <div className="mt-1">GL closing balance: <strong>{formatAmount(glClosingBalance, selectedBankData.currency)}</strong> · Bank closing balance: <strong>{formatAmount(closingBalance, selectedBankData.currency)}</strong></div>
+                    <div className="mt-1 text-[10px]">{Math.abs(glDifference || 0) <= 0.01 ? 'No bank-vs-GL difference.' : 'Difference explanation: opening balance / posting cut-off / statement population. This does not classify canonically allocated bank lines as unreconciled.'}</div>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+                  <div className="rounded border border-emerald-200 bg-emerald-50 p-2.5">
+                    <div className="text-emerald-700">Reconciled Bank Movement</div>
+                    <strong className="text-emerald-900">{formatAmount(reconciledAmount, selectedBankData.currency)}</strong>
+                  </div>
+                  <div className={`rounded border p-2.5 ${Math.abs(reconciliationDifference) <= 0.01 ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
+                    <div className="text-slate-600">Statement / Ledger Diff</div>
+                    <strong className="text-slate-900">{formatAmount(reconciliationDifference, selectedBankData.currency)}</strong>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowUnreconciledOnly(value => !value)}
+                    className={`rounded border p-2.5 text-left ${showUnreconciledOnly ? 'border-amber-400 bg-amber-100' : 'border-amber-200 bg-amber-50'}`}
+                  >
+                    <div className="text-amber-700 underline">Unreconciled Bank Transactions</div>
+                    <strong className="text-amber-900">{formatAmount(unreconciledAmount, selectedBankData.currency)}</strong>
+                    <div className="text-[10px] text-amber-700">{showUnreconciledOnly ? 'Showing unreconciled · click to show all' : 'Click to filter statement lines'}</div>
+                  </button>
+                  {glClosingBalance !== null && (
+                    <div className="rounded border border-violet-200 bg-violet-50 p-2.5">
+                      <div className="text-violet-700">Bank vs GL Difference</div>
+                      <strong className="text-violet-900">{formatAmount(Math.abs(glDifference || 0), selectedBankData.currency)}</strong>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -595,44 +696,44 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
       </div>
 
       {selectedBank && (
-        <div className="bg-white rounded-lg shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+          <div className="overflow-auto max-h-[calc(100vh-260px)]">
             <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
+              <thead className="bg-gray-50 sticky top-0 z-10 shadow-[0_1px_0_0_rgba(229,231,235,1)]">
                 <tr>
-                  <th className="px-1.5 py-1 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Date</th>
-                  <th className="px-1.5 py-1 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Particulars</th>
-                  <th className="px-1.5 py-1 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Ref No</th>
-                  <th className="px-1.5 py-1 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">Debit (Dr)</th>
-                  <th className="px-1.5 py-1 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">Credit (Cr)</th>
-                  <th className="px-1.5 py-1 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">Balance</th>
+                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">Date</th>
+                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-700 uppercase tracking-wider">Description / Remarks</th>
+                  <th className="px-3 py-2 text-left text-[11px] font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">Reference No.</th>
+                  <th className="px-3 py-2 text-right text-[11px] font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">Debit (Dr)</th>
+                  <th className="px-3 py-2 text-right text-[11px] font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">Credit (Cr)</th>
+                  <th className="px-3 py-2 text-right text-[11px] font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">Balance</th>
                 </tr>
               </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                <tr className="bg-blue-50 font-semibold">
-                  <td className="px-2 py-1 whitespace-nowrap text-xs text-gray-900">
+              <tbody className="bg-white divide-y divide-gray-100">
+                <tr className="bg-blue-50/70 font-semibold">
+                  <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-900">
                     {new Date(globalDateRange.startDate).toLocaleDateString('id-ID')}
                   </td>
-                  <td className="px-2 py-1 text-xs text-gray-900" colSpan={2}>
+                  <td className="px-3 py-2 text-xs text-gray-900" colSpan={2}>
                     Opening Balance
                     {globalDateRange.startDate > (selectedBankData?.opening_balance_date || '') && (
-                      <span className="ml-2 text-xs font-normal text-gray-600">(adjusted for date filter)</span>
+                      <span className="ml-2 text-[11px] font-normal text-gray-500">(adjusted for date filter)</span>
                     )}
                   </td>
-                  <td className="px-2 py-1 whitespace-nowrap text-xs text-gray-900 text-right">-</td>
-                  <td className="px-2 py-1 whitespace-nowrap text-xs text-gray-900 text-right">-</td>
-                  <td className="px-2 py-1 whitespace-nowrap text-xs text-gray-900 text-right font-bold">
+                  <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-900 text-right tabular-nums"></td>
+                  <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-900 text-right tabular-nums"></td>
+                  <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-900 text-right font-bold tabular-nums">
                     {selectedBankData && formatAmount(openingBalance, selectedBankData.currency)}
                   </td>
                 </tr>
 
                 {loading ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">Loading entries...</td>
+                    <td colSpan={6} className="px-3 py-8 text-center text-xs text-gray-500">Loading entries...</td>
                   </tr>
                 ) : visibleLedgerEntries.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                    <td colSpan={6} className="px-3 py-8 text-center text-xs text-gray-500">
                       No recorded transactions found for this period
                     </td>
                   </tr>
@@ -640,31 +741,39 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
                   visibleLedgerEntries.map(entry => (
                     <tr
                       key={entry.id}
-                      className="hover:bg-blue-50 cursor-pointer transition-colors"
+                      className="hover:bg-blue-50/50 cursor-pointer transition-colors"
                       onClick={() => {
                         setSelectedEntry(entry);
                         setShowDetailModal(true);
                       }}
                     >
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-gray-900">
+                      <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-900">
                         {new Date(entry.entry_date).toLocaleDateString('id-ID')}
                       </td>
-                      <td className="px-2 py-1 text-xs text-gray-900">
-                        {entry.particulars}
+                      <td
+                        className="px-3 py-2 text-xs text-gray-900 break-words whitespace-normal max-w-md"
+                        title={entry.bank_narration && entry.bank_narration !== entry.particulars ? `Bank narration: ${entry.bank_narration}` : undefined}
+                      >
+                        <div>{entry.particulars}</div>
+                        {entry.bank_narration && entry.bank_narration !== entry.particulars && (
+                          <div className="text-[10px] text-gray-400 mt-0.5 truncate" title={entry.bank_narration}>
+                            Bank: {entry.bank_narration}
+                          </div>
+                        )}
                       </td>
                       <td
-                        className="px-2 py-1 text-xs text-gray-600 font-mono"
+                        className="px-3 py-2 text-xs text-gray-600 font-mono whitespace-nowrap"
                         title={entry.canonical_reference && entry.canonical_reference !== entry.reference ? `Bank statement ref: ${entry.reference}` : undefined}
                       >
                         {entry.canonical_reference || entry.reference}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-red-600 text-right font-medium">
-                        {selectedBankData && (entry.debit > 0 ? formatAmount(entry.debit, selectedBankData.currency) : '-')}
+                      <td className="px-3 py-2 whitespace-nowrap text-xs text-red-600 text-right font-medium tabular-nums">
+                        {selectedBankData && entry.debit > 0 ? formatAmount(entry.debit, selectedBankData.currency) : ''}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-green-600 text-right font-medium">
-                        {selectedBankData && (entry.credit > 0 ? formatAmount(entry.credit, selectedBankData.currency) : '-')}
+                      <td className="px-3 py-2 whitespace-nowrap text-xs text-emerald-700 text-right font-medium tabular-nums">
+                        {selectedBankData && entry.credit > 0 ? formatAmount(entry.credit, selectedBankData.currency) : ''}
                       </td>
-                      <td className="px-2 py-1 whitespace-nowrap text-xs text-gray-900 text-right font-semibold">
+                      <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-900 text-right font-semibold tabular-nums">
                         {selectedBankData && formatAmount(entry.running_balance, selectedBankData.currency)}
                       </td>
                     </tr>
@@ -673,16 +782,16 @@ export default function BankLedger({ selectedBank: propSelectedBank }: BankLedge
 
                 {ledgerEntries.length > 0 && (
                   <tr className="bg-gray-100 font-semibold border-t-2 border-gray-300">
-                    <td className="px-2 py-1 whitespace-nowrap text-xs text-gray-900" colSpan={3}>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-900" colSpan={3}>
                       Closing Balance
                     </td>
-                    <td className="px-2 py-1 whitespace-nowrap text-xs text-red-600 text-right font-bold">
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-red-600 text-right font-bold tabular-nums">
                       {selectedBankData && formatAmount(totalDebit, selectedBankData.currency)}
                     </td>
-                    <td className="px-2 py-1 whitespace-nowrap text-xs text-green-600 text-right font-bold">
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-emerald-700 text-right font-bold tabular-nums">
                       {selectedBankData && formatAmount(totalCredit, selectedBankData.currency)}
                     </td>
-                    <td className="px-2 py-1 whitespace-nowrap text-xs text-gray-900 text-right font-bold">
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-900 text-right font-bold tabular-nums">
                       {selectedBankData && formatAmount(closingBalance, selectedBankData.currency)}
                     </td>
                   </tr>

@@ -51,6 +51,9 @@ export interface CommercialFxTransaction {
   pi_unpaid_usd: number;
   matched_usd_cost: number;
   // Payment allocations
+  va_id?: string | null;
+  raw_va_usd_settled?: number;
+  allocation_share_ratio?: number;
   pv_id: string | null;
   pv_number: string | null;
   pv_date: string | null;
@@ -417,14 +420,18 @@ export function FXBusinessDashboard({
               allocations.forEach((alloc, idx) => {
                 const pv = alloc.pv;
                 const rawPvRate = Number(pv.exchange_rate || 1);
-                const isRealFx = rawPvRate > 1;
-                const usdSettled = Number(alloc.allocated_usd || 0);
-                const idrPaid = isRealFx ? usdSettled * rawPvRate : 0;
+                const bankCurr = (pv.bank_accounts?.currency || '').toUpperCase();
+                const isRealFx = rawPvRate > 1 && bankCurr !== 'USD';
+                const rawAllocatedUsd = Number(alloc.allocated_usd || 0);
+                // Attribute only this SO item's batch/cost share of the PI so shared PIs never repeat full payment
+                const shareRatio = piTotalUsd > 0 ? Math.min(1, Math.max(0, matchedUsdCost / piTotalUsd)) : 1;
+                const usdSettled = Math.round(rawAllocatedUsd * shareRatio * 100) / 100;
+                const idrPaid = isRealFx ? Math.round(usdSettled * rawPvRate * 100) / 100 : 0;
                 const effectivePvRate = isRealFx ? rawPvRate : null;
 
                 const canCalc = isRealFx && soRate !== null && soRate > 0 && usdSettled > 0;
                 const rateDiff = canCalc ? soRate - rawPvRate : null;
-                const impact = canCalc ? usdSettled * (soRate - rawPvRate) : null;
+                const impact = canCalc ? Math.round(usdSettled * (soRate - rawPvRate) * 100) / 100 : null;
 
                 let status: 'Complete' | 'Missing SO Rate' | 'Pending Payment' | 'Unmatched';
                 if (!soRate) {
@@ -467,6 +474,9 @@ export function FXBusinessDashboard({
                   pi_paid_usd: piPaidUsd,
                   pi_unpaid_usd: piUnpaidUsd,
                   matched_usd_cost: matchedUsdCost,
+                  va_id: alloc.va_id || null,
+                  raw_va_usd_settled: rawAllocatedUsd,
+                  allocation_share_ratio: shareRatio,
                   pv_id: pv.id,
                   pv_number: pv.voucher_number,
                   pv_date: pv.voucher_date,
@@ -577,8 +587,10 @@ export function FXBusinessDashboard({
     let missingSoRateCount = 0;
     let completedCount = 0;
 
-    // Track unique SO items to avoid double-counting sales when multiple payments exist
+    // Track unique SO items, unique payment allocations (va_id), and unique purchase invoices (pi_id)
     const seenSoItems = new Set<string>();
+    const seenVaIds = new Set<string>();
+    const seenPiIds = new Set<string>();
 
     filteredTransactions.forEach(t => {
       const soItemKey = `${t.so_id}-${t.product_id}`;
@@ -610,27 +622,29 @@ export function FXBusinessDashboard({
         importWeight += weight;
       }
 
-      // Payment Rate KPI Rules:
-      // EXCLUDE:
-      // - IDR payment with exchange_rate = 1
-      // - USD payment from USD bank with exchange_rate = 1
-      // - domestic IDR transactions
-      // - transactions where customer SO currency = IDR
-      // INCLUDE ONLY actual FX settlements (payment_rate > 1) for USD sales orders:
-      if (t.sale_currency === 'USD' && t.payment_rate && t.payment_rate > 1 && t.usd_settled > 0) {
-        totalUsdPaid += t.usd_settled;
-        totalIdrSettlementValue += t.usd_settled * t.payment_rate;
-        totalUsdActuallySettled += t.usd_settled;
+      // Count each unique voucher_allocation ONLY ONCE in consolidated settlement KPIs
+      if (t.sale_currency === 'USD' && t.payment_rate && t.payment_rate > 1) {
+        const vaKey = t.va_id || t.id;
+        if (!seenVaIds.has(vaKey)) {
+          seenVaIds.add(vaKey);
+          const uniqueSettled = Number(t.raw_va_usd_settled ?? t.usd_settled ?? 0);
+          if (uniqueSettled > 0) {
+            totalUsdPaid += uniqueSettled;
+            totalIdrSettlementValue += uniqueSettled * t.payment_rate;
+            totalUsdActuallySettled += uniqueSettled;
+          }
+        }
       }
 
-      // SO -> Payment FX Impact:
-      // Only for USD sales orders where both SO rate and Payment rate are valid
+      // SO -> Payment Commercial FX Impact (already proportionally allocated per SO item)
       if (t.sale_currency === 'USD' && t.fx_impact_so_payment !== null) {
         totalFxImpact += t.fx_impact_so_payment;
         hasValidImpact = true;
       }
 
-      if (t.sale_currency === 'USD' && t.pi_unpaid_usd > 0) {
+      // Count each unique Purchase Invoice unpaid exposure ONLY ONCE
+      if (t.sale_currency === 'USD' && t.pi_id && t.pi_unpaid_usd > 0 && !seenPiIds.has(t.pi_id)) {
+        seenPiIds.add(t.pi_id);
         totalUnpaidUsd += t.pi_unpaid_usd;
       }
     });

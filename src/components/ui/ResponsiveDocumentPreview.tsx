@@ -1,5 +1,7 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ZoomIn, ZoomOut, Maximize2, Printer, Download, X } from 'lucide-react';
+
+const A4_DOC_WIDTH = 794;
 
 interface ResponsiveDocumentPreviewProps {
   title: ReactNode;
@@ -29,9 +31,47 @@ export function ResponsiveDocumentPreview({
   children,
 }: ResponsiveDocumentPreviewProps) {
   const [zoom, setZoom] = useState<'fit' | 75 | 100 | 125>('fit');
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const [docHeight, setDocHeight] = useState(0);
 
-  const zoomScale =
-    zoom === 75 ? 0.75 : zoom === 100 ? 1 : zoom === 125 ? 1.25 : undefined;
+  useEffect(() => {
+    const viewportEl = viewportRef.current;
+    const contentEl = contentRef.current;
+    if (!viewportEl || !contentEl) return;
+
+    const measure = () => {
+      setViewportWidth(viewportEl.clientWidth);
+      setDocHeight(contentEl.offsetHeight);
+    };
+    measure();
+
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewportEl);
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, []);
+
+  const isNarrowViewport = viewportWidth > 0 && viewportWidth < A4_DOC_WIDTH;
+  const effectiveScale =
+    zoom === 'fit'
+      ? isNarrowViewport
+        ? viewportWidth / A4_DOC_WIDTH
+        : 1
+      : zoom / 100;
+  const canvasWidth = isNarrowViewport ? A4_DOC_WIDTH : undefined;
+  const scaledWidth =
+    canvasWidth !== undefined
+      ? Math.ceil(canvasWidth * effectiveScale)
+      : viewportWidth > 0 && effectiveScale !== 1
+        ? Math.ceil(viewportWidth * effectiveScale)
+        : undefined;
+  const scaledHeight =
+    docHeight > 0 && (effectiveScale !== 1 || isNarrowViewport)
+      ? Math.ceil(docHeight * effectiveScale)
+      : undefined;
 
   return (
     <div className="doc-print-root fixed inset-0 z-50 overflow-y-auto bg-gray-900/75 print:static print:bg-white print:overflow-visible">
@@ -134,16 +174,28 @@ export function ResponsiveDocumentPreview({
           </div>
 
           {/* Scrollable / Zoomable Preview Viewport (Print layout preserved unmodified) */}
-          <div className="w-full overflow-x-auto overscroll-x-contain print:overflow-visible">
+          <div
+            ref={viewportRef}
+            className="w-full overflow-x-auto overscroll-x-contain print:overflow-visible"
+          >
             <div
-              className="origin-top-left print:!transform-none print:!w-full"
-              style={
-                zoomScale
-                  ? { transform: `scale(${zoomScale})`, width: `${100 / zoomScale}%` }
-                  : undefined
-              }
+              className="print:!w-full print:!h-auto print:!overflow-visible"
+              style={{
+                width: zoom === 'fit' && isNarrowViewport ? viewportWidth : scaledWidth,
+                height: scaledHeight,
+                overflow: zoom === 'fit' && isNarrowViewport ? 'hidden' : undefined,
+              }}
             >
-              {children}
+              <div
+                ref={contentRef}
+                className="origin-top-left print:!transform-none print:!w-full"
+                style={{
+                  width: canvasWidth ?? '100%',
+                  transform: effectiveScale !== 1 ? `scale(${effectiveScale})` : undefined,
+                }}
+              >
+                {children}
+              </div>
             </div>
           </div>
         </div>

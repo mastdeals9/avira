@@ -290,8 +290,8 @@ export function buildSalesProfitabilityWorkbook(
     const mHeader = wsSummary.addRow([
       'Month',
       'Invoices',
-      'Gross Sales (IDR)',
-      'Product COGS (IDR)',
+      'Net Sales (IDR)',
+      'Net COGS (IDR)',
       'Sales Expenses (IDR)',
       'Gross Profit (IDR)',
       'Net Profit (IDR)',
@@ -305,16 +305,34 @@ export function buildSalesProfitabilityWorkbook(
       cell.alignment = { vertical: 'middle', horizontal: 'center' };
     });
 
+    let sumMOrders = 0;
+    let sumMSales = 0;
+    let sumMCogs = 0;
+    let sumMExp = 0;
+    let sumMGP = 0;
+    let sumMNP = 0;
+
     monthly.forEach((m, idx) => {
       const mGross = Number(m.gross_sales || 0);
+      const mCogs = Number(m.product_cost || 0);
+      const mExp = Number(m.sales_expenses || 0);
+      const mGP = Number(m.gross_profit || 0);
       const mNet = Number(m.profit_after_sales_expenses || 0);
+
+      sumMOrders += Number(m.order_count || 0);
+      sumMSales += mGross;
+      sumMCogs += mCogs;
+      sumMExp += mExp;
+      sumMGP += mGP;
+      sumMNP += mNet;
+
       const r = wsSummary.addRow([
         m.month_label,
         Number(m.order_count || 0),
         mGross,
-        Number(m.product_cost || 0),
-        Number(m.sales_expenses || 0),
-        Number(m.gross_profit || 0),
+        mCogs,
+        mExp,
+        mGP,
         mNet,
         mGross > 0 ? mNet / mGross : 0,
       ]);
@@ -332,6 +350,31 @@ export function buildSalesProfitabilityWorkbook(
           else cell.numFmt = IDR_NUM_FMT;
         }
       });
+    });
+
+    const mTotalRow = wsSummary.addRow([
+      'MONTHLY TOTAL',
+      sumMOrders,
+      Math.round(sumMSales * 100) / 100,
+      Math.round(sumMCogs * 100) / 100,
+      Math.round(sumMExp * 100) / 100,
+      Math.round(sumMGP * 100) / 100,
+      Math.round(sumMNP * 100) / 100,
+      sumMSales > 0 ? sumMNP / sumMSales : 0,
+    ]);
+    mTotalRow.height = 22;
+    mTotalRow.eachCell((cell, colNum) => {
+      cell.fill = FILL_TOTAL;
+      cell.font = FONT_BOLD;
+      cell.border = BORDER_TOTAL;
+      if (colNum === 1) {
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+      } else {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        if (colNum === 2) cell.numFmt = '#,##0';
+        else if (colNum === 8) cell.numFmt = PCT_NUM_FMT;
+        else cell.numFmt = IDR_NUM_FMT;
+      }
     });
   }
 
@@ -455,6 +498,59 @@ export function buildSalesProfitabilityWorkbook(
       }
     }
   });
+
+  if (unallocatedExp > 0) {
+    const unallocRow = wsProd.addRow([
+      'Unallocated Sales Expenses (Company-level)',
+      '',
+      '',
+      '',
+      '',
+      0,
+      0,
+      unallocatedExp,
+      0,
+      -unallocatedExp,
+      '',
+    ]);
+    unallocRow.height = 20;
+    unallocRow.eachCell((cell, colNum) => {
+      cell.border = BORDER_THIN;
+      cell.font = FONT_DATA;
+      if (colNum >= 6 && typeof cell.value === 'number') {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = IDR_NUM_FMT;
+      }
+    });
+
+    const netCoRow = wsProd.addRow([
+      'NET COMPANY TOTAL (Reconciles to SUMMARY)',
+      prodUnitSummary,
+      '',
+      '',
+      '',
+      netSales,
+      netProductCost,
+      salesExpenses,
+      grossProfit,
+      netProfit,
+      marginRatio,
+    ]);
+    netCoRow.height = 24;
+    netCoRow.eachCell((cell, colNum) => {
+      cell.fill = FILL_HIGHLIGHT;
+      cell.font = FONT_BOLD;
+      cell.border = BORDER_TOTAL;
+      if (colNum <= 2) {
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+      } else {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        if (typeof cell.value === 'number') {
+          cell.numFmt = colNum === 11 ? PCT_NUM_FMT : IDR_NUM_FMT;
+        }
+      }
+    });
+  }
 
   [38, 18, 15, 20, 22, 20, 20, 18, 20, 20, 14].forEach((w, i) => {
     wsProd.getColumn(i + 1).width = w;
@@ -581,6 +677,99 @@ export function buildSalesProfitabilityWorkbook(
         }
       }
     });
+
+    if (salesReturns > 0 || unallocatedExp > 0) {
+      if (salesReturns > 0) {
+        const cnRow = wsDetail.addRow([
+          'CREDIT NOTES',
+          `${startDate}..${endDate}`,
+          'Approved Credit Note Deductions',
+          '—',
+          '—',
+          'All Returned Products',
+          '—',
+          '',
+          '',
+          '',
+          -salesReturns,
+          -returnCogs,
+          0,
+          Math.round((-salesReturns + returnCogs) * 100) / 100,
+          Math.round((-salesReturns + returnCogs) * 100) / 100,
+          '',
+        ]);
+        cnRow.height = 20;
+        cnRow.eachCell((cell, colNum) => {
+          cell.border = BORDER_THIN;
+          cell.font = FONT_DATA;
+          if (colNum >= 11 && typeof cell.value === 'number') {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            cell.numFmt = IDR_NUM_FMT;
+          }
+        });
+      }
+      if (unallocatedExp > 0) {
+        const unRow = wsDetail.addRow([
+          'UNALLOCATED',
+          `${startDate}..${endDate}`,
+          'Unallocated Sales Expenses',
+          '—',
+          '—',
+          'Company-level Sales Overhead',
+          '—',
+          '',
+          '',
+          '',
+          0,
+          0,
+          unallocatedExp,
+          0,
+          -unallocatedExp,
+          '',
+        ]);
+        unRow.height = 20;
+        unRow.eachCell((cell, colNum) => {
+          cell.border = BORDER_THIN;
+          cell.font = FONT_DATA;
+          if (colNum >= 11 && typeof cell.value === 'number') {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            cell.numFmt = IDR_NUM_FMT;
+          }
+        });
+      }
+      const detNetRow = wsDetail.addRow([
+        'NET COMPANY TOTAL',
+        'Reconciled',
+        '',
+        '',
+        '',
+        '',
+        '',
+        prodUnitSummary,
+        '',
+        '',
+        netSales,
+        netProductCost,
+        salesExpenses,
+        grossProfit,
+        netProfit,
+        marginRatio,
+      ]);
+      detNetRow.height = 24;
+      detNetRow.eachCell((cell, colNum) => {
+        cell.fill = FILL_HIGHLIGHT;
+        cell.font = FONT_BOLD;
+        cell.border = BORDER_TOTAL;
+        if (colNum <= 2 || colNum === 8) {
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        } else {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          if (typeof cell.value === 'number') {
+            cell.numFmt = colNum === 16 ? PCT_NUM_FMT : IDR_NUM_FMT;
+          }
+        }
+      });
+    }
 
     [18, 13, 30, 16, 16, 34, 18, 12, 12, 18, 20, 20, 20, 20, 20, 12].forEach((w, i) => {
       wsDetail.getColumn(i + 1).width = w;

@@ -42,11 +42,11 @@ export function DocumentHeader({ co, title, titleClassName = '' }: DocumentHeade
             />
           </div>
           <div className="min-w-0" style={{ maxWidth: '340px' }}>
-            <h1 className="text-base font-bold print:text-sm" style={{ overflowWrap: 'anywhere' }}>
+            <h1 className="text-base font-bold print:text-sm" style={{ overflowWrap: 'break-word' }}>
               {co.company_name}
             </h1>
             {co.company_address && (
-              <p className="text-xs print:text-[10px]" style={{ overflowWrap: 'anywhere', whiteSpace: 'normal' }}>
+              <p className="text-xs print:text-[10px]" style={{ overflowWrap: 'break-word', whiteSpace: 'normal' }}>
                 {co.company_address}
               </p>
             )}
