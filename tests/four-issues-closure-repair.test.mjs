@@ -42,11 +42,16 @@ test('Four Historical Accounting & Workflow Repairs (Rollback-Only DB Verificati
     new URL('../supabase/migrations/20261128030000_fix_ppn_tax_period_reconciliation.sql', import.meta.url),
     'utf8'
   );
+  const mig4 = readFileSync(
+    new URL('../supabase/migrations/20261128040000_secure_vw_ppn_net_by_period.sql', import.meta.url),
+    'utf8'
+  );
 
   await db.query('BEGIN');
   await db.query(mig1);
   await db.query(mig2);
   await db.query(mig3);
+  await db.query(mig4);
 
   await t.test('Issue 1: Zero stale historical PO receiving quantities (<= 2026-11-19)', async () => {
     const res = await db.query(`
@@ -311,6 +316,32 @@ test('Four Historical Accounting & Workflow Repairs (Rollback-Only DB Verificati
       );
       await db.query('ROLLBACK TO SAVEPOINT sp_role_2');
     }
+
+    // Verify vw_ppn_net_by_period has security_invoker=true, blocks anon, allows authenticated
+    const viewRes = await db.query(`
+      SELECT reloptions,
+             has_table_privilege('anon', oid, 'SELECT') AS anon_sel,
+             has_table_privilege('authenticated', oid, 'SELECT') AS auth_sel
+      FROM pg_class
+      WHERE relname = 'vw_ppn_net_by_period'
+    `);
+    assert.ok((viewRes.rows[0].reloptions || []).includes('security_invoker=true'));
+    assert.equal(viewRes.rows[0].anon_sel, false);
+    assert.equal(viewRes.rows[0].auth_sel, true);
+
+    await db.query('SAVEPOINT sp_view_anon');
+    await db.query('SET LOCAL ROLE anon');
+    await assert.rejects(
+      db.query('SELECT COUNT(*) FROM public.vw_ppn_net_by_period'),
+      /permission denied/i
+    );
+    await db.query('ROLLBACK TO SAVEPOINT sp_view_anon');
+
+    await db.query('SAVEPOINT sp_view_auth');
+    await db.query('SET LOCAL ROLE authenticated');
+    const authView = await db.query('SELECT COUNT(*)::int AS cnt FROM public.vw_ppn_net_by_period');
+    assert.ok(authView.rows[0].cnt >= 0);
+    await db.query('ROLLBACK TO SAVEPOINT sp_view_auth');
   });
 
   await db.query('ROLLBACK');
