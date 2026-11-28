@@ -22,7 +22,7 @@ const FORBIDDEN_PATTERNS = ['dkrtsqienlhpouohmfki', 'supabase.co', 'pooler.supab
 function assertSafeTestEnvironment(config) {
   const host = String(config.host || '');
   const db = String(config.database || '');
-  const envUrl = String(process.env.DATABASE_URL || '');
+  const envUrl = String(process.env.READONLY_AUDIT_DB_URL || '');
   for (const forbidden of FORBIDDEN_PATTERNS) {
     if (host.includes(forbidden) || db.includes(forbidden) || envUrl.includes(forbidden)) {
       throw new Error(`CRITICAL: Test suite blocked from running against remote/production database (${forbidden})!`);

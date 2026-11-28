@@ -29,14 +29,16 @@ interface SupplierFxLine {
   recognition_rate: number;
   original_idr_carrying: number;
   usd_settled: number;
-  settlement_rate: number;
+  settlement_rate: number | null;
   is_usd_bank_settlement: boolean;
   prior_revaluation_fx: number;
   carrying_before_settlement_idr: number;
-  actual_idr_paid: number;
+  actual_idr_paid: number | null;
   carrying_idr_settled: number;
-  fx_gain_loss: number; // realized FX on settlement: positive = loss, negative = gain
-  cumulative_historical_rate_variance: number; // analytical: actual_idr_paid - original carrying settled
+  fx_gain_loss: number | null; // realized FX on settlement: positive = loss, negative = gain, null = unresolved
+  cumulative_historical_rate_variance: number | null; // analytical: actual_idr_paid - original carrying settled
+  evidence_status: 'resolved' | 'unresolved';
+  unresolved_reason?: string;
   bank_charge: number;
   bank_account_name: string;
   journal_entry_id: string | null;
@@ -58,10 +60,12 @@ interface CustomerFxLine {
   recognition_rate: number;
   original_idr_carrying: number;
   usd_received: number;
-  receipt_rate: number;
-  actual_idr_received: number;
+  receipt_rate: number | null;
+  actual_idr_received: number | null;
   carrying_idr_settled: number;
-  fx_gain_loss: number; // positive = gain, negative = loss
+  fx_gain_loss: number | null; // positive = gain, negative = loss, null = unresolved
+  evidence_status: 'resolved' | 'unresolved';
+  unresolved_reason?: string;
   bank_charge: number;
   bank_account_name: string;
   journal_entry_id: string | null;
@@ -146,8 +150,13 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
   const [postedGlLines, setPostedGlLines] = useState<PostedGlFxLine[]>([]);
   const [revaluationsList, setRevaluationsList] = useState<any[]>([]);
   const [showRevalModal, setShowRevalModal] = useState(false);
-  const [revalDate, setRevalDate] = useState('2026-11-30');
-  const [revalRate, setRevalRate] = useState('18200');
+  const getDefaultRevalDate = (end?: string) => {
+    const base = end ? new Date(`${end.slice(0, 10)}T00:00:00Z`) : new Date();
+    const lastDay = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 0));
+    return lastDay.toISOString().slice(0, 10);
+  };
+  const [revalDate, setRevalDate] = useState(() => getDefaultRevalDate(dateRange?.endDate));
+  const [revalRate, setRevalRate] = useState('');
   const [revalSource, setRevalSource] = useState('Bank Indonesia JISDOR');
   const [revalRunning, setRevalRunning] = useState(false);
   const [revalFeedback, setRevalFeedback] = useState<any>(null);
@@ -176,6 +185,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
               )
             `)
             .order('revaluation_date', { ascending: false })
+            .order('id', { ascending: true })
             .range(from, to)
         );
         setRevaluationsList(revDataList);
@@ -226,6 +236,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           `)
           .eq('currency', 'USD')
           .order('invoice_date', { ascending: true })
+          .order('id', { ascending: true })
           .range(from, to)
       );
 
@@ -241,15 +252,17 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           `)
           .eq('is_posted', true)
           .order('voucher_date', { ascending: true })
+          .order('id', { ascending: true })
           .range(from, to)
       );
 
-      // 4. Fetch Voucher Allocations (paginated)
+      // 4. Fetch Voucher Allocations (paginated with deterministic ordering)
       const pageSize = 1000;
       const allocData = await fetchAllPages<any>((from, to) =>
         supabase
           .from('voucher_allocations')
           .select('id, allocated_amount, allocated_currency, purchase_invoice_id, payment_voucher_id, sales_invoice_id, receipt_voucher_id')
+          .order('id', { ascending: true })
           .range(from, to)
       );
 
@@ -274,6 +287,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
             .from('journal_entry_lines')
             .select('id, journal_entry_id, account_id, debit, credit, description')
             .in('account_id', coaIds)
+            .order('id', { ascending: true })
             .range(jeFrom, jeFrom + pageSize - 1);
           if (jelErr) throw jelErr;
           if (!page || page.length === 0) break;
@@ -349,7 +363,44 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       const piMap = new Map<string, any>((piData || []).map(p => [p.id, p]));
       const pvMap = new Map<string, any>((pvData || []).map(p => [p.id, p]));
 
-      // 6. Build Supplier FX Detail rows with Settlement Bridge
+      // 6. Fetch posted bank asset journal lines for USD-bank Payment Vouchers (to derive functional bank credit)
+      const usdBankPvJeIds = pvData
+        .filter((p: any) => {
+          const b: any = Array.isArray(p.bank_accounts) ? p.bank_accounts[0] : p.bank_accounts;
+          return (b?.currency || '').toUpperCase() === 'USD' && Number(p.exchange_rate || 1) <= 1;
+        })
+        .flatMap((p: any) => {
+          const fx = pvRefToFxJeMap.get((p.voucher_number || '').trim());
+          return [p.journal_entry_id, fx?.id].filter(Boolean) as string[];
+        });
+
+      const pvBankNetOutflowMap = new Map<string, number>();
+      if (usdBankPvJeIds.length > 0) {
+        const uniqueJeIds = Array.from(new Set(usdBankPvJeIds));
+        for (let i = 0; i < uniqueJeIds.length; i += 200) {
+          const chunk = uniqueJeIds.slice(i, i + 200);
+          const { data: pvJeLines } = await supabase
+            .from('journal_entry_lines')
+            .select('journal_entry_id, debit, credit, chart_of_accounts(code), journal_entries!inner(is_posted, is_reversed, is_cancelled)')
+            .in('journal_entry_id', chunk)
+            .eq('journal_entries.is_posted', true)
+            .eq('journal_entries.is_reversed', false)
+            .eq('journal_entries.is_cancelled', false);
+
+          for (const jl of pvJeLines || []) {
+            const coaCode = (jl as any).chart_of_accounts?.code;
+            const netBankCredit = Number(jl.credit || 0) - Number(jl.debit || 0);
+            const bankChargeDebit = coaCode === '7100' ? Number(jl.debit || 0) - Number(jl.credit || 0) : 0;
+            if (coaCode && coaCode.startsWith('111')) {
+              pvBankNetOutflowMap.set(jl.journal_entry_id, (pvBankNetOutflowMap.get(jl.journal_entry_id) || 0) + netBankCredit);
+            } else if (bankChargeDebit !== 0) {
+              pvBankNetOutflowMap.set(jl.journal_entry_id, (pvBankNetOutflowMap.get(jl.journal_entry_id) || 0) - bankChargeDebit);
+            }
+          }
+        }
+      }
+
+      // 7. Build Supplier FX Detail rows with Settlement Bridge
       const sLines: SupplierFxLine[] = [];
       for (const alloc of allocData) {
         if (!alloc.purchase_invoice_id || !alloc.payment_voucher_id) continue;
@@ -366,23 +417,30 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
         const isUsdBank = (bankObj?.currency || '').toUpperCase() === 'USD';
 
         const fxJe = pvRefToFxJeMap.get(pv.voucher_number.trim());
-        // For USD-bank settlements (e.g. PV/25-26/003 -> JE2611-0313), derive functional IDR bank outflow
-        // from the linked FX journal when pv.exchange_rate <= 1, never assuming bank rate == PI rate.
+        // For USD-bank settlements (e.g. PV/25-26/003 -> JE2611-0313), derive functional IDR bank credit
+        // from posted, non-reversed, non-cancelled journal lines (never silently assume bank rate == PI rate).
         let actualFunctionalIdr: number | null = null;
-        if (isUsdBank && pvSettleRate <= 1 && fxJe) {
-          const preBridge = computeSupplierSettlementBridge({
-            usdSettled,
-            originalPiRate: piRecRate,
-            settlementRate: pvSettleRate,
-            settlementDate: pv.voucher_date,
-            isUsdBankSettlement: true,
-            priorRevalLines: piRevalLinesMap.get(pi.id) || [],
-          });
-          // 7300 debit = loss (outflow > carrying); 4930 credit = gain (outflow < carrying)
-          actualFunctionalIdr =
-            fxJe.account_code === '7300'
-              ? preBridge.carrying_before_settlement_idr + fxJe.amount
-              : preBridge.carrying_before_settlement_idr - fxJe.amount;
+        if (isUsdBank && pvSettleRate <= 1) {
+          const baseBankOutflow = pv.journal_entry_id ? (pvBankNetOutflowMap.get(pv.journal_entry_id) || 0) : 0;
+          const corrBankOutflow = fxJe?.id && fxJe.id !== pv.journal_entry_id ? (pvBankNetOutflowMap.get(fxJe.id) || 0) : 0;
+          const combinedBankOutflow = baseBankOutflow + corrBankOutflow;
+          const pvTotalUsd = Number(pv.amount || usdSettled) || 0;
+          if (combinedBankOutflow > usdSettled && pvTotalUsd > 0) {
+            actualFunctionalIdr = Math.round((combinedBankOutflow * (usdSettled / pvTotalUsd)) * 100) / 100;
+          } else if (fxJe) {
+            const preBridge = computeSupplierSettlementBridge({
+              usdSettled,
+              originalPiRate: piRecRate,
+              settlementRate: pvSettleRate,
+              settlementDate: pv.voucher_date,
+              isUsdBankSettlement: false,
+              priorRevalLines: piRevalLinesMap.get(pi.id) || [],
+            });
+            actualFunctionalIdr =
+              fxJe.account_code === '7300'
+                ? preBridge.carrying_before_settlement_idr + fxJe.amount
+                : preBridge.carrying_before_settlement_idr - fxJe.amount;
+          }
         }
 
         const bridge = computeSupplierSettlementBridge({
@@ -402,9 +460,11 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
 
         const jeObj: any = Array.isArray(pv.journal_entries) ? pv.journal_entries[0] : pv.journal_entries;
         const derivedSettleRate =
-          isUsdBank && pvSettleRate <= 1 && usdSettled > 0
+          bridge.actual_settlement_idr != null && isUsdBank && pvSettleRate <= 1 && usdSettled > 0
             ? Math.round((bridge.actual_settlement_idr / usdSettled) * 100) / 100
-            : pvSettleRate;
+            : bridge.evidence_status === 'unresolved'
+              ? null
+              : pvSettleRate;
 
         sLines.push({
           id: alloc.id,
@@ -428,6 +488,8 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           carrying_idr_settled: bridge.carrying_before_settlement_idr,
           fx_gain_loss: bridge.realized_fx_on_settlement,
           cumulative_historical_rate_variance: bridge.cumulative_historical_rate_variance,
+          evidence_status: bridge.evidence_status,
+          unresolved_reason: bridge.unresolved_reason,
           bank_charge: Number(pv.bank_charge || 0),
           bank_account_name: bankDisplay,
           journal_entry_id: jeObj?.id || pv.journal_entry_id || null,
@@ -510,6 +572,8 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           .eq('is_posted', true)
           .gte('voucher_date', startDate)
           .lte('voucher_date', endDate)
+          .order('voucher_date', { ascending: true })
+          .order('id', { ascending: true })
           .range(from, to)
       );
 
@@ -520,10 +584,11 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
             id, invoice_number, total_amount, subtotal, journal_entry_id,
             journal_entries(id, entry_number, exchange_rate, transaction_currency, is_posted, is_reversed, is_cancelled)
           `)
+          .order('id', { ascending: true })
           .range(from, to)
       );
 
-      // Fetch posted journal lines for USD-bank receipt vouchers to derive functional bank asset carrying value
+      // Fetch posted, non-reversed, non-cancelled journal lines for USD-bank receipt vouchers
       const usdBankRvJeIds = rvData
         .filter((r: any) => {
           const b: any = Array.isArray(r.bank_accounts) ? r.bank_accounts[0] : r.bank_accounts;
@@ -537,13 +602,16 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           const chunk = usdBankRvJeIds.slice(i, i + 200);
           const { data: rvJeLines } = await supabase
             .from('journal_entry_lines')
-            .select('journal_entry_id, debit, credit, chart_of_accounts(code)')
-            .in('journal_entry_id', chunk);
+            .select('journal_entry_id, debit, credit, chart_of_accounts(code), journal_entries!inner(is_posted, is_reversed, is_cancelled)')
+            .in('journal_entry_id', chunk)
+            .eq('journal_entries.is_posted', true)
+            .eq('journal_entries.is_reversed', false)
+            .eq('journal_entries.is_cancelled', false);
           for (const jl of rvJeLines || []) {
             const coaCode = (jl as any).chart_of_accounts?.code;
-            // Bank asset account (e.g. 111102) debit represents functional IDR bank carrying value
-            if (coaCode && coaCode.startsWith('111') && Number(jl.debit || 0) > 0) {
-              rvBankCarryMap.set(jl.journal_entry_id, (rvBankCarryMap.get(jl.journal_entry_id) || 0) + Number(jl.debit));
+            const netBankDebit = Number(jl.debit || 0) - Number(jl.credit || 0);
+            if (coaCode && coaCode.startsWith('111') && netBankDebit > 0) {
+              rvBankCarryMap.set(jl.journal_entry_id, (rvBankCarryMap.get(jl.journal_entry_id) || 0) + netBankDebit);
             }
           }
         }
@@ -585,10 +653,14 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
         const carryingSettled = Math.round(usdAmt * recRate * 100) / 100;
 
         // For USD customer receipts into USD bank accounts (exchange_rate = 1), derive functional IDR
-        // from actual bank asset carrying value in posted journal lines or linked FX journal (not rate=1)
+        // from actual bank asset carrying value in posted journal lines or linked FX journal;
+        // never silently substitute carrying value when evidence is missing.
         const rvFxJe = pvRefToFxJeMap.get((rv.voucher_number || '').trim());
         const bankAssetIdr = rv.journal_entry_id ? rvBankCarryMap.get(rv.journal_entry_id) : undefined;
-        let actualIdr: number;
+        let actualIdr: number | null = null;
+        let evidenceStatus: 'resolved' | 'unresolved' = 'resolved';
+        let unresolvedReason: string | undefined;
+
         if (isUsdBank && rvRate <= 1) {
           if (bankAssetIdr && bankAssetIdr > usdAmt) {
             const rvTotalUsd = Number(rv.amount || usdAmt) || 1;
@@ -598,15 +670,18 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
               ? Math.round((carryingSettled + rvFxJe.amount) * 100) / 100
               : Math.round((carryingSettled - rvFxJe.amount) * 100) / 100;
           } else {
-            actualIdr = carryingSettled;
+            evidenceStatus = 'unresolved';
+            unresolvedReason = 'Missing posted USD bank receipt journal evidence';
           }
         } else {
           actualIdr = Math.round(usdAmt * rvRate * 100) / 100;
         }
-        const effectiveReceiptRate = isUsdBank && rvRate <= 1 && usdAmt > 0
+        const effectiveReceiptRate = actualIdr != null && isUsdBank && rvRate <= 1 && usdAmt > 0
           ? Math.round((actualIdr / usdAmt) * 100) / 100
-          : rvRate;
-        const fxDiff = Math.round((actualIdr - carryingSettled) * 100) / 100; // > 0 is gain on receivable
+          : evidenceStatus === 'unresolved'
+            ? null
+            : rvRate;
+        const fxDiff = actualIdr != null ? Math.round((actualIdr - carryingSettled) * 100) / 100 : null;
 
         cLines.push({
           id: alloc.id,
@@ -625,6 +700,8 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
           actual_idr_received: actualIdr,
           carrying_idr_settled: carryingSettled,
           fx_gain_loss: fxDiff,
+          evidence_status: evidenceStatus,
+          unresolved_reason: unresolvedReason,
           bank_charge: 0,
           bank_account_name: bankObj?.account_name || bankObj?.bank_name || 'Bank',
           journal_entry_id: jeObj?.id || rv.journal_entry_id || null,
@@ -679,18 +756,30 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
     let totalCarryingSettled = 0;
     let totalPriorReval = 0;
     let totalHistVariance = 0;
+    let unresolvedSupplierCount = 0;
+    let unresolvedCustomerCount = 0;
 
     for (const l of supplierLines) {
       totalUsdSettled += l.usd_settled;
-      totalActualIdrPaid += l.actual_idr_paid;
       totalCarryingSettled += l.carrying_idr_settled;
       totalPriorReval += l.prior_revaluation_fx;
-      totalHistVariance += l.cumulative_historical_rate_variance;
+      if (l.evidence_status === 'unresolved' || l.fx_gain_loss == null || l.actual_idr_paid == null) {
+        unresolvedSupplierCount += 1;
+        continue;
+      }
+      totalActualIdrPaid += l.actual_idr_paid;
+      if (l.cumulative_historical_rate_variance != null) {
+        totalHistVariance += l.cumulative_historical_rate_variance;
+      }
       if (l.fx_gain_loss > 0) supplierLoss += l.fx_gain_loss;
       else if (l.fx_gain_loss < 0) supplierGain += Math.abs(l.fx_gain_loss);
     }
 
     for (const l of customerLines) {
+      if (l.evidence_status === 'unresolved' || l.fx_gain_loss == null) {
+        unresolvedCustomerCount += 1;
+        continue;
+      }
       if (l.fx_gain_loss > 0) customerGain += l.fx_gain_loss;
       else if (l.fx_gain_loss < 0) customerLoss += Math.abs(l.fx_gain_loss);
     }
@@ -731,6 +820,8 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       totalOpenUsd,
       totalOpenCarrying,
       totalUnrealizedExposure,
+      unresolvedSupplierCount,
+      unresolvedCustomerCount,
     };
   }, [supplierLines, customerLines, openExposures, postedGlLines, revaluationsList]);
 
@@ -753,8 +844,10 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
         });
       }
       const entry = monthMap.get(m)!;
-      if (l.fx_gain_loss > 0) entry.supplier_fx_loss += l.fx_gain_loss;
-      else if (l.fx_gain_loss < 0) entry.supplier_fx_gain += Math.abs(l.fx_gain_loss);
+      if (l.evidence_status !== 'unresolved' && l.fx_gain_loss != null) {
+        if (l.fx_gain_loss > 0) entry.supplier_fx_loss += l.fx_gain_loss;
+        else if (l.fx_gain_loss < 0) entry.supplier_fx_gain += Math.abs(l.fx_gain_loss);
+      }
     }
 
     const result = Array.from(monthMap.values()).map(e => {
@@ -788,9 +881,11 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       const p = map.get(s)!;
       p.usd_settled += l.usd_settled;
       p.recognition_idr += l.carrying_idr_settled;
-      p.settlement_idr += l.actual_idr_paid;
-      if (l.fx_gain_loss > 0) p.fx_loss += l.fx_gain_loss;
-      else if (l.fx_gain_loss < 0) p.fx_gain += Math.abs(l.fx_gain_loss);
+      if (l.evidence_status !== 'unresolved' && l.actual_idr_paid != null && l.fx_gain_loss != null) {
+        p.settlement_idr += l.actual_idr_paid;
+        if (l.fx_gain_loss > 0) p.fx_loss += l.fx_gain_loss;
+        else if (l.fx_gain_loss < 0) p.fx_gain += Math.abs(l.fx_gain_loss);
+      }
       p.net_fx = p.fx_gain - p.fx_loss;
     }
 
@@ -836,11 +931,12 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
       'Original Carrying (Settled)': Math.round(l.usd_settled * l.recognition_rate * 100) / 100,
       'Prior Reval Gain/(Loss)': l.prior_revaluation_fx,
       'Carrying Before Settlement': l.carrying_before_settlement_idr,
-      'Settlement Rate': l.settlement_rate,
-      'Actual Settlement (IDR)': l.actual_idr_paid,
-      'Realized FX on Settlement': l.fx_gain_loss,
-      'Type': l.fx_gain_loss > 0 ? 'FX LOSS' : l.fx_gain_loss < 0 ? 'FX GAIN' : 'EVEN',
-      'Cumul. Historical Rate Variance': l.cumulative_historical_rate_variance,
+      'Settlement Rate': l.settlement_rate ?? 'Unresolved',
+      'Actual Settlement (IDR)': l.actual_idr_paid ?? 'Unresolved',
+      'Realized FX on Settlement': l.fx_gain_loss ?? 'Unresolved',
+      'Type': l.evidence_status === 'unresolved' || l.fx_gain_loss == null ? 'UNRESOLVED' : l.fx_gain_loss > 0 ? 'FX LOSS' : l.fx_gain_loss < 0 ? 'FX GAIN' : 'EVEN',
+      'Cumul. Historical Rate Variance': l.cumulative_historical_rate_variance ?? 'Unresolved',
+      'Evidence Status': l.evidence_status === 'unresolved' ? `Unresolved: ${l.unresolved_reason || 'Missing posted bank journal'}` : 'Resolved',
       'Bank Charge': l.bank_charge,
       'Bank Account': l.bank_account_name,
       'Payment Journal': l.journal_entry_number || '',
@@ -997,6 +1093,19 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
         </div>
       </div>
 
+      {(summary.unresolvedSupplierCount > 0 || summary.unresolvedCustomerCount > 0) && (
+        <div className="flex items-start gap-2.5 px-3.5 py-2.5 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900">
+          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <span className="font-bold">Unresolved USD Settlement Exceptions:</span>{' '}
+            {summary.unresolvedSupplierCount > 0 && `${summary.unresolvedSupplierCount} supplier settlement(s)`}
+            {summary.unresolvedSupplierCount > 0 && summary.unresolvedCustomerCount > 0 && ' and '}
+            {summary.unresolvedCustomerCount > 0 && `${summary.unresolvedCustomerCount} customer receipt(s)`}{' '}
+            lack a posted, non-reversed USD bank asset journal line. They are flagged as exceptions and excluded from confirmed realized FX totals.
+          </div>
+        </div>
+      )}
+
       {/* 3. Compact Navigation Tabs */}
       <div className="flex flex-wrap border-b border-slate-200 bg-white px-2.5 pt-1.5 rounded-t-xl gap-1">
         {[
@@ -1149,14 +1258,20 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
                     </td>
                     <td className="py-2.5 px-2.5 text-right font-mono text-slate-700">Rp {fmt(row.carrying_before_settlement_idr)}</td>
                     <td className="py-2.5 px-2.5 text-right font-mono text-slate-600">
-                      {row.is_usd_bank_settlement ? <span title="Settled from USD Bank">USD Bank</span> : `Rp ${fmt(row.settlement_rate)}`}
+                      {row.is_usd_bank_settlement ? <span title="Settled from USD Bank">USD Bank</span> : row.settlement_rate != null ? `Rp ${fmt(row.settlement_rate)}` : <span className="text-amber-700">Unresolved</span>}
                     </td>
-                    <td className="py-2.5 px-2.5 text-right font-mono text-slate-900 font-medium">Rp {fmt(row.actual_idr_paid)}</td>
-                    <td className={`py-2.5 px-3 text-right font-mono font-bold ${row.fx_gain_loss > 0 ? 'text-red-700 bg-red-50/40' : row.fx_gain_loss < 0 ? 'text-emerald-700 bg-emerald-50/40' : 'text-slate-500'}`}>
-                      {row.fx_gain_loss > 0 ? `+Rp ${fmt(row.fx_gain_loss)} (Loss)` : row.fx_gain_loss < 0 ? `-Rp ${fmt(Math.abs(row.fx_gain_loss))} (Gain)` : 'Rp 0'}
+                    <td className="py-2.5 px-2.5 text-right font-mono text-slate-900 font-medium">
+                      {row.actual_idr_paid != null ? `Rp ${fmt(row.actual_idr_paid)}` : <span className="text-amber-700 font-semibold" title={row.unresolved_reason}>Unresolved</span>}
+                    </td>
+                    <td className={`py-2.5 px-3 text-right font-mono font-bold ${row.evidence_status === 'unresolved' || row.fx_gain_loss == null ? 'text-amber-800 bg-amber-50/70' : row.fx_gain_loss > 0 ? 'text-red-700 bg-red-50/40' : row.fx_gain_loss < 0 ? 'text-emerald-700 bg-emerald-50/40' : 'text-slate-500'}`}>
+                      {row.evidence_status === 'unresolved' || row.fx_gain_loss == null ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-semibold" title={row.unresolved_reason}>
+                          Unresolved
+                        </span>
+                      ) : row.fx_gain_loss > 0 ? `+Rp ${fmt(row.fx_gain_loss)} (Loss)` : row.fx_gain_loss < 0 ? `-Rp ${fmt(Math.abs(row.fx_gain_loss))} (Gain)` : 'Rp 0'}
                     </td>
                     <td className="py-2.5 px-2.5 text-right font-mono text-slate-500">
-                      {row.cumulative_historical_rate_variance !== 0 ? `${row.cumulative_historical_rate_variance > 0 ? '+' : '-'}Rp ${fmt(Math.abs(row.cumulative_historical_rate_variance))}` : 'Rp 0'}
+                      {row.cumulative_historical_rate_variance == null ? '—' : row.cumulative_historical_rate_variance !== 0 ? `${row.cumulative_historical_rate_variance > 0 ? '+' : '-'}Rp ${fmt(Math.abs(row.cumulative_historical_rate_variance))}` : 'Rp 0'}
                     </td>
                     <td className="py-2.5 px-2.5 text-slate-600 truncate max-w-[120px]" title={row.bank_account_name}>{row.bank_account_name}</td>
                     <td className="py-2.5 px-2.5 text-center">
@@ -1313,9 +1428,15 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
                       <td className="py-2.5 px-2.5">{row.customer_name}</td>
                       <td className="py-2.5 px-2.5 text-right font-mono">${fmt2(row.usd_received)}</td>
                       <td className="py-2.5 px-2.5 text-right font-mono">{fmt(row.recognition_rate)}</td>
-                      <td className="py-2.5 px-2.5 text-right font-mono">{fmt(row.receipt_rate)}</td>
-                      <td className="py-2.5 px-2.5 text-right font-mono">Rp {fmt(row.actual_idr_received)}</td>
-                      <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-700">Rp {fmt(row.fx_gain_loss)}</td>
+                      <td className="py-2.5 px-2.5 text-right font-mono">{row.receipt_rate != null ? fmt(row.receipt_rate) : <span className="text-amber-700">Unresolved</span>}</td>
+                      <td className="py-2.5 px-2.5 text-right font-mono">{row.actual_idr_received != null ? `Rp ${fmt(row.actual_idr_received)}` : <span className="text-amber-700" title={row.unresolved_reason}>Unresolved</span>}</td>
+                      <td className={`py-2.5 px-3 text-right font-mono font-bold ${row.evidence_status === 'unresolved' || row.fx_gain_loss == null ? 'text-amber-800 bg-amber-50/70' : row.fx_gain_loss >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                        {row.evidence_status === 'unresolved' || row.fx_gain_loss == null ? (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-semibold" title={row.unresolved_reason}>
+                            Unresolved
+                          </span>
+                        ) : row.fx_gain_loss < 0 ? `-Rp ${fmt(Math.abs(row.fx_gain_loss))}` : `Rp ${fmt(row.fx_gain_loss)}`}
+                      </td>
                       <td className="py-2.5 px-2.5">{row.bank_account_name}</td>
                     </tr>
                   ))}
@@ -1640,7 +1761,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
                     className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-1 focus:ring-blue-500"
                   />
                   <span className="text-[10px] text-slate-500 mt-0.5 block">
-                    e.g. 2026-11-30. October 2026 is protected and will return authoritative JE2611-0314.
+                    Enter the period-end date to revalue open USD monetary balances.
                   </span>
                 </div>
 
@@ -1650,7 +1771,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
                     type="text"
                     value={revalRate}
                     onChange={(e) => setRevalRate(e.target.value)}
-                    placeholder="18200"
+                    placeholder="Enter verified closing rate (e.g. 16500)"
                     className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-mono focus:ring-1 focus:ring-blue-500"
                   />
                   <span className="text-[10px] text-slate-500 mt-0.5 block">
@@ -1678,7 +1799,7 @@ export function FXReport({ onViewInvoice, onViewJournal, onSwitchToCommercialDas
                   </button>
                   <button
                     type="button"
-                    disabled={revalRunning}
+                    disabled={revalRunning || !revalDate || !(parseFloat(revalRate.replace(/,/g, '')) > 0)}
                     onClick={handleRunRevaluation}
                     className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg font-semibold flex items-center gap-1.5"
                   >

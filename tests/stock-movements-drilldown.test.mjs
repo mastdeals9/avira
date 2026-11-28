@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import pg from 'pg';
 
-const DB_CONNECTION = process.env.DATABASE_URL;
+const DB_CONNECTION = process.env.READONLY_AUDIT_DB_URL;
 
 let client = null;
 if (DB_CONNECTION) {

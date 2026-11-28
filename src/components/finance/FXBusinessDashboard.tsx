@@ -146,6 +146,7 @@ export function FXBusinessDashboard({
             )
           `)
           .order('so_date', { ascending: false })
+          .order('id', { ascending: true })
           .range(from, to)
       );
 
@@ -159,6 +160,7 @@ export function FXBusinessDashboard({
               id, product_id, batch_id, quantity, unit_price, line_total
             )
           `)
+          .order('id', { ascending: true })
           .range(from, to)
       );
 
@@ -167,6 +169,7 @@ export function FXBusinessDashboard({
         supabase
           .from('batches')
           .select('id, batch_number, import_quantity, import_price_usd, purchase_invoice_id')
+          .order('id', { ascending: true })
           .range(from, to)
       );
 
@@ -178,6 +181,7 @@ export function FXBusinessDashboard({
             id, invoice_number, invoice_date, currency, exchange_rate, total_amount, paid_amount, balance_amount,
             suppliers(id, company_name)
           `)
+          .order('id', { ascending: true })
           .range(from, to)
       );
 
@@ -192,6 +196,7 @@ export function FXBusinessDashboard({
               bank_accounts(bank_name, account_name, account_number, currency)
             )
           `)
+          .order('id', { ascending: true })
           .range(from, to)
       );
 

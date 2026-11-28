@@ -10,7 +10,7 @@ const linkingFile = fs.readFileSync(path.resolve('src/components/finance/bankTra
 const commandsFile = fs.readFileSync(path.resolve('src/services/financeCommands.ts'), 'utf8');
 
 const DB_CONNECTION =
-  process.env.SUPABASE_DB_URL ||
+  process.env.READONLY_AUDIT_DB_URL ||
   (process.env.READONLY_AUDIT_DB_URL || '');
 
 // -----------------------------------------------------------------------------

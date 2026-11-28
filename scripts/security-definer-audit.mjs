@@ -24,7 +24,7 @@ function extractRpcNames(text) {
 }
 
 async function main() {
-  const dbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL || process.env.POSTGRES_URL;
+  const dbUrl = process.env.READONLY_AUDIT_DB_URL || process.env.READONLY_AUDIT_DB_URL || process.env.READONLY_AUDIT_DB_URL;
   if (!dbUrl) throw new Error('Missing SUPABASE_DB_URL (or DATABASE_URL/POSTGRES_URL).');
 
   const rpcNames = new Set();

@@ -9,7 +9,7 @@ const generalJournalFile = fs.readFileSync(path.resolve('src/components/finance/
 const viewerFile = fs.readFileSync(path.resolve('src/components/finance/JournalEntryViewerEnhanced.tsx'), 'utf8');
 
 const DB_CONNECTION =
-  process.env.SUPABASE_DB_URL ||
+  process.env.READONLY_AUDIT_DB_URL ||
   (process.env.READONLY_AUDIT_DB_URL || '');
 
 // -----------------------------------------------------------------------------

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 
 const { Client } = pg;
-const connectionString = process.env.SUPABASE_DB_URL;
+const connectionString = process.env.READONLY_AUDIT_DB_URL;
 if (!connectionString) {
   throw new Error('SUPABASE_DB_URL environment variable is required');
 }

@@ -28,7 +28,7 @@ test('1. Frontend Contract: All ledger, tax, and bank-recon queries exclude canc
 });
 
 test('2. Live DB Integrity: Trial Balance, BCA 111101, Petty Cash, and EXP/26/365 reconcile to the cent', async (t) => {
-  const conn = process.env.SUPABASE_DB_URL;
+  const conn = process.env.READONLY_AUDIT_DB_URL;
   if (!conn) {
     t.skip('SUPABASE_DB_URL not set; skipping live DB assertions');
     return;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 
 const DB_CONNECTION =
-  process.env.SUPABASE_DB_URL ||
+  process.env.READONLY_AUDIT_DB_URL ||
   (process.env.READONLY_AUDIT_DB_URL || '');
 
 test('Sandi Prasetyo Salary Advance via Petty Cash Verification Suite', async (t) => {

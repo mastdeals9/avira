@@ -181,7 +181,7 @@ function classifyPhone(rawPhone, trustedRegion = 'ID') {
 }
 
 async function runAudit() {
-  const dbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
+  const dbUrl = process.env.READONLY_AUDIT_DB_URL || process.env.READONLY_AUDIT_DB_URL;
   if (!dbUrl) {
     console.error('ERROR: SUPABASE_DB_URL environment variable is required.');
     process.exit(1);

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import pg from 'pg';
 
-const DB_CONNECTION = process.env.DATABASE_URL;
+const DB_CONNECTION = process.env.READONLY_AUDIT_DB_URL;
 
 async function withDbClient(callback) {
   if (!DB_CONNECTION) {

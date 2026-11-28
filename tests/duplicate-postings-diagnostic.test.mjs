@@ -6,7 +6,7 @@ import pg from 'pg';
 
 const { Client } = pg;
 const connectionString =
-  process.env.SUPABASE_DB_URL ||
+  process.env.READONLY_AUDIT_DB_URL ||
   (process.env.READONLY_AUDIT_DB_URL || '');
 
 function getDbClient() {

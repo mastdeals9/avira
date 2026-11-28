@@ -4,7 +4,7 @@
 
 import { Client } from 'pg';
 
-const dbUrl = process.env.SUPABASE_DB_URL || process.env.READONLY_AUDIT_DB_URL || process.env.POSTGRES_URL;
+const dbUrl = process.env.READONLY_AUDIT_DB_URL || process.env.READONLY_AUDIT_DB_URL || process.env.READONLY_AUDIT_DB_URL;
 if (!dbUrl) {
   console.error('Missing SUPABASE_DB_URL (or DATABASE_URL/POSTGRES_URL).');
   process.exit(1);

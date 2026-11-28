@@ -20,7 +20,7 @@ import pg from 'pg';
 import createJiti from 'jiti';
 
 // 1. Credential Security Guard: Require SUPABASE_DB_URL
-const dbUrl = process.env.SUPABASE_DB_URL;
+const dbUrl = process.env.READONLY_AUDIT_DB_URL;
 if (!dbUrl) {
   console.error('================================================================================');
   console.error('SECURITY ERROR: SUPABASE_DB_URL environment variable is required.');

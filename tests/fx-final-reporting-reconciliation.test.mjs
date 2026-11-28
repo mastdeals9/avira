@@ -2,10 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import ts from 'typescript';
 import { Client } from 'pg';
 
 const READONLY_DB_URL = process.env.READONLY_AUDIT_DB_URL || '';
 const root = process.cwd();
+
+async function loadFxCalcModule() {
+  const tsSource = readFileSync(resolve(root, 'src/utils/fxReportCalculations.ts'), 'utf8');
+  const { outputText } = ts.transpileModule(tsSource, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+}
 
 test('1. Code & Security Contracts: no hardcoded DB credentials, no JE2609-0054 fallback, no hardcoded 17800, Customer FX uses journal rate, Commercial FX deduplicates & tracks unsold share', () => {
   const selfSource = readFileSync(resolve(root, 'tests/fx-final-reporting-reconciliation.test.mjs'), 'utf8');
@@ -19,21 +31,140 @@ test('1. Code & Security Contracts: no hardcoded DB credentials, no JE2609-0054 
   // FXReport checks
   assert.doesNotMatch(fxReport, /41184641\.50/, 'Hardcoded JE2609-0054 amount must be removed');
   assert.doesNotMatch(fxReport, /useState<number>\(17800\)/, 'Hardcoded 17800 market rate must be removed');
+  assert.doesNotMatch(fxReport, /useState\(['"]2026-11-30['"]\)/, 'Hardcoded 2026-11-30 revaluation date default must be removed');
+  assert.doesNotMatch(fxReport, /useState\(['"]18200['"]\)/, 'Hardcoded 18200 revaluation rate default must be removed');
   assert.doesNotMatch(fxReport, /soObj\?\.commercial_usd_to_idr_rate/, 'Must never substitute commercial SO rate for Customer FX accounting recognition rate');
   assert.match(fxReport, /summarizePostedGlFx/);
   assert.match(fxReport, /computeSupplierSettlementBridge/);
+  assert.match(fxReport, /evidence_status/);
+  assert.match(fxReport, /Unresolved USD Settlement Exceptions/);
   assert.match(fxReport, /\.eq\('is_posted', true\)/);
   assert.match(fxReport, /\.eq\('is_reversed', false\)/);
   assert.match(fxReport, /\.eq\('is_cancelled', false\)/);
+  assert.match(fxReport, /\.order\('id', \{ ascending: true \}\)/);
 
   // USD-bank settlement check in pure helper
   assert.match(fxCalc, /actualFunctionalSettlementIdr/);
+  assert.match(fxCalc, /evidence_status:\s*'unresolved'/);
 
-  // Commercial FX deduplication + unsold/unmatched exposure
+  // Commercial FX deduplication + unsold/unmatched exposure + deterministic pagination
   assert.match(fxBiz, /seenVaIds/);
   assert.match(fxBiz, /seenPiIds/);
   assert.match(fxBiz, /allocation_share_ratio/);
   assert.match(fxBiz, /unmatchedPiExposures/);
+  assert.match(fxBiz, /\.order\('id', \{ ascending: true \}\)/);
+});
+
+test('1b. Pagination Regression (> 1,000 records): fetchAllPages returns all 2,500 records across 3 pages with zero duplicates', async () => {
+  const { fetchAllPages } = await loadFxCalcModule();
+  const totalRows = 2500;
+  const dataset = Array.from({ length: totalRows }, (_, i) => ({
+    id: `row-${String(i + 1).padStart(4, '0')}`,
+    amount: i + 1,
+  }));
+
+  let queryCount = 0;
+  const rows = await fetchAllPages(async (from, to) => {
+    queryCount += 1;
+    return { data: dataset.slice(from, to + 1), error: null };
+  }, 1000);
+
+  assert.equal(queryCount, 3);
+  assert.equal(rows.length, totalRows);
+  assert.equal(new Set(rows.map((r) => r.id)).size, totalRows);
+  assert.equal(rows[0].id, 'row-0001');
+  assert.equal(rows[totalRows - 1].id, 'row-2500');
+});
+
+test('1c. Two Successive Month-End Revaluations + Partial Supplier Payments between Revaluation Dates', async () => {
+  const { computeSupplierSettlementBridge } = await loadFxCalcModule();
+  const priorRevalLines = [
+    { revaluation_date: '2026-10-31', status: 'posted', carrying_rate: 16000, revalued_rate: 16500 },
+    { revaluation_date: '2026-11-30', status: 'posted', carrying_rate: 16500, revalued_rate: 16800 },
+  ];
+
+  // Partial payment 1 on 2026-11-10 (only Oct reval applies)
+  const p1 = computeSupplierSettlementBridge({
+    usdSettled: 400,
+    originalPiRate: 16000,
+    settlementRate: 16400,
+    settlementDate: '2026-11-10',
+    isUsdBankSettlement: false,
+    priorRevalLines,
+  });
+  assert.equal(p1.evidence_status, 'resolved');
+  assert.equal(p1.prior_revaluation_fx, 200000);
+  assert.equal(p1.carrying_before_settlement_idr, 6600000);
+  assert.equal(p1.actual_settlement_idr, 6560000);
+  assert.equal(p1.realized_fx_on_settlement, -40000); // Gain
+  assert.equal(p1.cumulative_historical_rate_variance, 160000);
+
+  // Partial payment 2 on 2026-12-05 (both Oct and Nov revals apply)
+  const p2 = computeSupplierSettlementBridge({
+    usdSettled: 600,
+    originalPiRate: 16000,
+    settlementRate: 16700,
+    settlementDate: '2026-12-05',
+    isUsdBankSettlement: false,
+    priorRevalLines,
+  });
+  assert.equal(p2.evidence_status, 'resolved');
+  assert.equal(p2.prior_revaluation_fx, 480000);
+  assert.equal(p2.carrying_before_settlement_idr, 10080000);
+  assert.equal(p2.actual_settlement_idr, 10020000);
+  assert.equal(p2.realized_fx_on_settlement, -60000); // Gain
+  assert.equal(p2.cumulative_historical_rate_variance, 420000);
+});
+
+test('1d. USD Bank Settlement Evidence & Missing/Reversed Journal Fail-Closed + Posted GL Classification', async () => {
+  const { computeSupplierSettlementBridge, summarizePostedGlFx } = await loadFxCalcModule();
+
+  // Resolved USD bank settlement with posted bank credit minus charge
+  const resolvedUsdBank = computeSupplierSettlementBridge({
+    usdSettled: 40000,
+    originalPiRate: 16600,
+    settlementRate: 1,
+    settlementDate: '2026-11-15',
+    isUsdBankSettlement: true,
+    priorRevalLines: [],
+    actualFunctionalSettlementIdr: 663720000,
+  });
+  assert.equal(resolvedUsdBank.evidence_status, 'resolved');
+  assert.equal(resolvedUsdBank.actual_settlement_idr, 663720000);
+  assert.equal(resolvedUsdBank.realized_fx_on_settlement, -280000); // Gain of Rp 280,000
+
+  // Missing or reversed USD bank journal must NOT default to zero FX
+  const unresolvedUsdBank = computeSupplierSettlementBridge({
+    usdSettled: 40000,
+    originalPiRate: 16600,
+    settlementRate: 1,
+    settlementDate: '2026-11-15',
+    isUsdBankSettlement: true,
+    priorRevalLines: [],
+    actualFunctionalSettlementIdr: null,
+  });
+  assert.equal(unresolvedUsdBank.evidence_status, 'unresolved');
+  assert.equal(unresolvedUsdBank.actual_settlement_idr, null);
+  assert.equal(unresolvedUsdBank.realized_fx_on_settlement, null);
+  assert.equal(unresolvedUsdBank.cumulative_historical_rate_variance, null);
+
+  // Posted GL FX classification by fx_revaluations.journal_entry_id
+  const glSummary = summarizePostedGlFx(
+    [
+      { journal_entry_id: 'je-1', account_code: '4930', debit: 0, credit: 280000 },
+      { journal_entry_id: 'je-2', account_code: '7300', debit: 150000, credit: 0 },
+      { journal_entry_id: 'je-rev', account_code: '4930', debit: 0, credit: 500000 },
+      { journal_entry_id: 'je-rev', account_code: '7300', debit: 120000, credit: 0 },
+    ],
+    new Set(['je-rev'])
+  );
+  assert.equal(glSummary.realizedGain, 280000);
+  assert.equal(glSummary.realizedLoss, 150000);
+  assert.equal(glSummary.netRealized, 130000);
+  assert.equal(glSummary.unrealizedGain, 500000);
+  assert.equal(glSummary.unrealizedLoss, 120000);
+  assert.equal(glSummary.netUnrealized, 380000);
+  assert.equal(glSummary.totalNetAccountingFx, 510000);
 });
 
 test('2. Live Read-Only DB Reconciliation (runs only when READONLY_AUDIT_DB_URL is provided)', async (t) => {
@@ -44,6 +175,7 @@ test('2. Live Read-Only DB Reconciliation (runs only when READONLY_AUDIT_DB_URL 
 
   const client = new Client({ connectionString: READONLY_DB_URL });
   await client.connect();
+  await client.query('SET default_transaction_read_only = on');
 
   try {
     await t.test('A. Posted GL Accounts 7300 & 4930 reconcile to exact A..G figures', async () => {

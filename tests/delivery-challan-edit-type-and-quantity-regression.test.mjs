@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
 
-const DB_CONNECTION = process.env.DATABASE_URL;
+const DB_CONNECTION = process.env.READONLY_AUDIT_DB_URL;
 
 async function withDbClient(callback) {
   if (!DB_CONNECTION) {

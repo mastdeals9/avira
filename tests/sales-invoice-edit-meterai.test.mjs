@@ -83,14 +83,14 @@ test('6. Role permission guard protects posted invoice editing', () => {
 });
 
 test('7. Verification of SAPJ-26-046 and SAPJ-26-047 in database', async () => {
-  if (!process.env.DATABASE_URL) {
+  if (!process.env.READONLY_AUDIT_DB_URL) {
     console.warn('Skipping live database verification: DATABASE_URL is not set.');
     return;
   }
   const pg = (await import('pg')).default;
   const { Client } = pg;
   const client = new Client({
-    connectionString: process.env.DATABASE_URL
+    connectionString: process.env.READONLY_AUDIT_DB_URL
   });
   await client.connect();
 

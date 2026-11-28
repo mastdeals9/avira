@@ -23,7 +23,7 @@ const batchSize = 20;
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
-const dbUrl = process.env.DATABASE_URL;
+const dbUrl = process.env.READONLY_AUDIT_DB_URL;
 
 async function main() {
   console.log('================================================================');

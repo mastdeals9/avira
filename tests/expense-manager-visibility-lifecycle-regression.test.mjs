@@ -161,12 +161,12 @@ test('ExpenseManager filter conditions include ACTIVE and REPLACED in default Op
 });
 
 test('Live DB population regression: all expenses match authoritative state with 0 discrepancies', async () => {
-  if (!process.env.DATABASE_URL) {
+  if (!process.env.READONLY_AUDIT_DB_URL) {
     console.warn('Skipping live database test: DATABASE_URL is not set.');
     return;
   }
   const client = new Client({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: process.env.READONLY_AUDIT_DB_URL,
     ssl: { rejectUnauthorized: false }
   });
   await client.connect();

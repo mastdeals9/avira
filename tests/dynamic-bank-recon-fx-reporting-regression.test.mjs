@@ -21,6 +21,7 @@ test('SAPJ Dynamic Bank Recon & FX Accounting Regression Suite', async (t) => {
   }
   const client = new Client({ connectionString: CONNECTION_STRING });
   await client.connect();
+  await client.query('SET default_transaction_read_only = on');
 
   try {
     // ── 1. IDR Bank Statement Import ─────────────────────────────────────────

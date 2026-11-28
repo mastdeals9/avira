@@ -83,6 +83,7 @@ test('13. Live-schema-compatible read-only validation (runs only when READONLY_A
 
   const client = new Client({ connectionString: dbUrl });
   await client.connect();
+  await client.query('SET default_transaction_read_only = on');
   try {
     const colCheck = await client.query(`
       SELECT table_name, column_name

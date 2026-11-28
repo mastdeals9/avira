@@ -101,16 +101,18 @@ export interface SupplierSettlementBridgeResult {
   original_idr_carrying_settled: number;
   prior_revaluation_fx: number; // + = prior unrealized loss (increased liability), - = prior unrealized gain
   carrying_before_settlement_idr: number;
-  actual_settlement_idr: number;
-  realized_fx_on_settlement: number; // + = loss, - = gain
-  cumulative_historical_rate_variance: number; // actual_settlement_idr - original_idr_carrying_settled
+  actual_settlement_idr: number | null;
+  realized_fx_on_settlement: number | null; // + = loss, - = gain, null = unresolved
+  cumulative_historical_rate_variance: number | null; // actual_settlement_idr - original_idr_carrying_settled
   effective_carrying_rate_before_settlement: number;
+  evidence_status: 'resolved' | 'unresolved';
+  unresolved_reason?: string;
 }
 
 /**
  * Computes the accounting settlement bridge for a supplier USD invoice allocation:
  * Original Carrying -> Prior Month-End Revaluations -> Carrying Before Settlement -> Actual Settlement -> Realized FX.
- * Prevents double-counting prior month-end revaluations (e.g. Oct 2026 revaluation on PV/26-26/034).
+ * Never silently substitutes carrying value when USD-bank functional settlement evidence is missing.
  */
 export function computeSupplierSettlementBridge(params: {
   usdSettled: number;
@@ -158,27 +160,45 @@ export function computeSupplierSettlementBridge(params: {
   priorRevalFx = Math.round(priorRevalFx * 100) / 100;
   const carryingBeforeSettlement = Math.round((originalCarrying + priorRevalFx) * 100) / 100;
 
-  // For USD-bank settlements (e.g. PV/25-26/003), use actual functional IDR carrying relief from posted journals;
-  // never assume USD bank asset carrying rate equals the supplier invoice carrying rate.
-  let actualSettlementIdr: number;
-  if (actualFunctionalSettlementIdr != null && actualFunctionalSettlementIdr > 0) {
-    actualSettlementIdr = Math.round(actualFunctionalSettlementIdr * 100) / 100;
-  } else if (isUsdBankSettlement && settlementRate <= 1) {
-    actualSettlementIdr = carryingBeforeSettlement;
-  } else {
-    actualSettlementIdr = Math.round(usdSettled * settlementRate * 100) / 100;
+  // For USD-bank settlements (e.g. PV/25-26/003), require actual functional IDR bank credit evidence;
+  // never silently substitute carrying value or assume bank rate == invoice rate.
+  if (isUsdBankSettlement && settlementRate <= 1) {
+    if (actualFunctionalSettlementIdr != null && Number.isFinite(actualFunctionalSettlementIdr) && actualFunctionalSettlementIdr > 0) {
+      const actualSettlementIdr = Math.round(actualFunctionalSettlementIdr * 100) / 100;
+      return {
+        original_idr_carrying_settled: originalCarrying,
+        prior_revaluation_fx: priorRevalFx,
+        carrying_before_settlement_idr: carryingBeforeSettlement,
+        actual_settlement_idr: actualSettlementIdr,
+        realized_fx_on_settlement: Math.round((actualSettlementIdr - carryingBeforeSettlement) * 100) / 100,
+        cumulative_historical_rate_variance: Math.round((actualSettlementIdr - originalCarrying) * 100) / 100,
+        effective_carrying_rate_before_settlement: effectiveCarryingRate,
+        evidence_status: 'resolved',
+      };
+    }
+
+    return {
+      original_idr_carrying_settled: originalCarrying,
+      prior_revaluation_fx: priorRevalFx,
+      carrying_before_settlement_idr: carryingBeforeSettlement,
+      actual_settlement_idr: null,
+      realized_fx_on_settlement: null,
+      cumulative_historical_rate_variance: null,
+      effective_carrying_rate_before_settlement: effectiveCarryingRate,
+      evidence_status: 'unresolved',
+      unresolved_reason: 'Missing posted USD bank journal evidence',
+    };
   }
 
-  const realizedFx = Math.round((actualSettlementIdr - carryingBeforeSettlement) * 100) / 100;
-  const cumulativeVariance = Math.round((actualSettlementIdr - originalCarrying) * 100) / 100;
-
+  const actualSettlementIdr = Math.round(usdSettled * settlementRate * 100) / 100;
   return {
     original_idr_carrying_settled: originalCarrying,
     prior_revaluation_fx: priorRevalFx,
     carrying_before_settlement_idr: carryingBeforeSettlement,
     actual_settlement_idr: actualSettlementIdr,
-    realized_fx_on_settlement: realizedFx,
-    cumulative_historical_rate_variance: cumulativeVariance,
+    realized_fx_on_settlement: Math.round((actualSettlementIdr - carryingBeforeSettlement) * 100) / 100,
+    cumulative_historical_rate_variance: Math.round((actualSettlementIdr - originalCarrying) * 100) / 100,
     effective_carrying_rate_before_settlement: effectiveCarryingRate,
+    evidence_status: 'resolved',
   };
 }

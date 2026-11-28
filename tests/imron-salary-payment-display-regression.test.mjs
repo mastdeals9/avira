@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { Client } from 'pg';
 
 const expenseManagerSrc = fs.readFileSync('src/components/finance/ExpenseManager.tsx', 'utf8');
-const DB_CONNECTION = process.env.DATABASE_URL;
+const DB_CONNECTION = process.env.READONLY_AUDIT_DB_URL;
 
 test('1. ExpenseManager Payment section resolves Bank Transfer and Settled states when payment_method is null', () => {
   // Verifies that null payment_method is not blindly rendered as A/P Outstanding

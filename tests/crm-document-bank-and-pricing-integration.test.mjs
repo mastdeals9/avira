@@ -1,13 +1,13 @@
 import { Client } from 'pg';
 
 async function runTests() {
-  if (!process.env.DATABASE_URL) {
+  if (!process.env.READONLY_AUDIT_DB_URL) {
     console.warn('Skipping CRM integration test: DATABASE_URL environment variable is not set.');
     return;
   }
 
   const client = new Client({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: process.env.READONLY_AUDIT_DB_URL,
     ssl: { rejectUnauthorized: false }
   });
   await client.connect();

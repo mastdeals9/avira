@@ -462,13 +462,13 @@ $test$;
 ROLLBACK;
 `;
 
-  if (!process.env.DATABASE_URL) {
+  if (!process.env.READONLY_AUDIT_DB_URL) {
     console.warn('Skipping live database simulation: DATABASE_URL is not set.');
     return;
   }
 
   const client = new Client({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: process.env.READONLY_AUDIT_DB_URL,
     ssl: { rejectUnauthorized: false },
   });
   await client.connect();

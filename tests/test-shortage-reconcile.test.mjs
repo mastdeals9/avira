@@ -4,7 +4,7 @@ import pg from 'pg';
 import fs from 'fs';
 import path from 'path';
 
-const DB_CONNECTION = process.env.DATABASE_URL;
+const DB_CONNECTION = process.env.READONLY_AUDIT_DB_URL;
 
 async function withDb(fn) {
   if (!DB_CONNECTION) {

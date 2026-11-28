@@ -7,7 +7,7 @@ const linkFieldSrc = fs.readFileSync('src/components/finance/BankTransactionLink
 const expenseManagerSrc = fs.readFileSync('src/components/finance/ExpenseManager.tsx', 'utf8');
 const financeCommandsSrc = fs.readFileSync('src/services/financeCommands.ts', 'utf8');
 
-const DB_CONNECTION = process.env.DATABASE_URL;
+const DB_CONNECTION = process.env.READONLY_AUDIT_DB_URL;
 
 test('1. BankTransactionLinkField passes confirmedAllocation into onSelect', () => {
   assert.match(

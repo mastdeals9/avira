@@ -12,9 +12,9 @@ import { spawnSync } from 'node:child_process';
 import process from 'node:process';
 
 const databaseUrl =
-  process.env.SUPABASE_DB_URL ||
-  process.env.DATABASE_URL ||
-  process.env.POSTGRES_URL;
+  process.env.READONLY_AUDIT_DB_URL ||
+  process.env.READONLY_AUDIT_DB_URL ||
+  process.env.READONLY_AUDIT_DB_URL;
 const includeMigration = process.argv.includes('--with-migration');
 const useLinked = process.argv.includes('--linked') || !databaseUrl;
 const regressionPath = 'scripts/inventory-v1-regression.sql';

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { Client } from 'pg';
 
-const DB_CONNECTION = process.env.DATABASE_URL;
+const DB_CONNECTION = process.env.READONLY_AUDIT_DB_URL;
 
 const migrationFix = fs.readFileSync(
   'supabase/migrations/20261013190000_bank_reconciliation_permanent_integrity_fix.sql',

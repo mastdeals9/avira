@@ -9,7 +9,7 @@ import {
 
 const expenseManagerSrc = fs.readFileSync('src/components/finance/ExpenseManager.tsx', 'utf8');
 
-const DB_CONNECTION = process.env.DATABASE_URL;
+const DB_CONNECTION = process.env.READONLY_AUDIT_DB_URL;
 
 test('1. Salary fully settled by advance + remaining bank payment reconciles completely', () => {
   // EXP/26/285 verified case
