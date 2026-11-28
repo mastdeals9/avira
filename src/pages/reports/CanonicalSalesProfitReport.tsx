@@ -22,8 +22,10 @@ import { formatCurrency, formatNumber } from '../../utils/currency';
 import { ExportSalesProfitModal } from '../../components/ExportSalesProfitModal';
 import {
   resolveAuthoritativeInvoiceItemCOGS,
-  normalizeProductProfitabilityRow,
-  normalizeBatchProfitabilityRow,
+  adaptProfitabilitySummaryResponse,
+  adaptProductBatchesResponse,
+  adaptBatchOrdersResponse,
+  summarizeQuantitiesByUnit,
 } from '../../services/salesProfitabilityEngine';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -256,6 +258,8 @@ export function CanonicalSalesProfitReport() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [customerFilter, setCustomerFilter] = useState<string>('all');
+  const [customerOptions, setCustomerOptions] = useState<Array<{ id: string; company_name: string }>>([]);
 
   // Inline drilldown states
   const [expandedProductIds, setExpandedProductIds] = useState<Set<string>>(new Set());
@@ -279,7 +283,7 @@ export function CanonicalSalesProfitReport() {
     setLoading(true);
     setError(null);
     try {
-      const [{ data: res, error: rpcErr }, { data: stockData, error: stockErr }] = await Promise.all([
+      const [{ data: res, error: rpcErr }, { data: stockData, error: stockErr }, { data: custData }] = await Promise.all([
         supabase.rpc('get_sales_profitability_summary', {
           p_start_date: startDate,
           p_end_date: endDate,
@@ -287,10 +291,17 @@ export function CanonicalSalesProfitReport() {
         supabase
           .from('inventory_v1_stock_summary')
           .select('product_id, total_current_stock, reserved_stock, available_quantity'),
+        supabase
+          .from('customers')
+          .select('id, company_name')
+          .order('company_name'),
       ]);
 
       if (rpcErr) throw rpcErr;
       if (stockErr) console.warn('Could not load inventory_v1_stock_summary:', stockErr);
+      if (Array.isArray(custData)) {
+        setCustomerOptions(custData);
+      }
 
       const stockMap = new Map<string, { current: number; reserved: number; available: number }>();
       (stockData || []).forEach((row: any) => {
@@ -301,15 +312,8 @@ export function CanonicalSalesProfitReport() {
         });
       });
 
-      const rawSummary = res as any;
-      if (rawSummary?.products) {
-        rawSummary.products = rawSummary.products.map((p: any) => {
-          const canonical = stockMap.get(p.product_id);
-          return normalizeProductProfitabilityRow(p, canonical);
-        });
-      }
-
-      setData(rawSummary as ProfitabilitySummaryResponse);
+      const adapted = adaptProfitabilitySummaryResponse(res, stockMap);
+      setData(adapted as ProfitabilitySummaryResponse);
     } catch (err: any) {
       console.error('Error loading sales profitability summary:', err);
       setError(err.message || 'Failed to load profitability summary');
@@ -350,8 +354,7 @@ export function CanonicalSalesProfitReport() {
         p_end_date: endDate,
       });
       if (rpcErr) throw rpcErr;
-      const rawBatches = Array.isArray(res) ? res : (res?.batches || []);
-      const bList = rawBatches.map(normalizeBatchProfitabilityRow);
+      const bList = adaptProductBatchesResponse(res, productId) as BatchProfitabilityRow[];
       setBatchesCache(prev => ({ ...prev, [productId]: bList }));
       return bList;
     } catch (err: any) {
@@ -372,7 +375,7 @@ export function CanonicalSalesProfitReport() {
         p_end_date: endDate,
       });
       if (rpcErr) throw rpcErr;
-      const rawOrders = (Array.isArray(res) ? res : (res?.orders || [])) as any[];
+      const rawOrders = adaptBatchOrdersResponse(res, batchId) as any[];
 
       // Resolve authoritative cost layer allocations
       const lineIds = rawOrders.map(o => o.line_id).filter(Boolean);
@@ -440,11 +443,15 @@ export function CanonicalSalesProfitReport() {
         next.delete(productId);
       } else {
         next.add(productId);
-        void fetchProductBatches(productId);
+        void fetchProductBatches(productId).then((batches) => {
+          batches.forEach((b) => {
+            if (b.batch_id) void fetchBatchOrders(b.batch_id);
+          });
+        });
       }
       return next;
     });
-  }, [fetchProductBatches]);
+  }, [fetchProductBatches, fetchBatchOrders]);
 
   const toggleBatchExpand = useCallback((batchId: string) => {
     setExpandedBatchIds(prev => {
@@ -493,6 +500,13 @@ export function CanonicalSalesProfitReport() {
   }, [data?.products, search]);
 
   const company = data?.company;
+  const unitTotals = useMemo(
+    () => summarizeQuantitiesByUnit((data?.products || []).map((p) => ({ unit: p.product_unit, quantity: p.sold_qty }))),
+    [data?.products]
+  );
+  const unitTotalsLabel = unitTotals.length > 0
+    ? unitTotals.map((u) => `${formatNumber(u.quantity, 0)} ${u.unit}`).join(' · ')
+    : '0 units';
 
   return (
     <div className="space-y-3">
@@ -618,103 +632,119 @@ export function CanonicalSalesProfitReport() {
         </div>
       )}
 
-      {/* ─── Compact Company Summary KPIs ─── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-        {/* Gross Sales */}
+      {/* ─── Executive Summary KPIs (8 clean metrics) ─── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2">
+        {/* 1. Gross Sales */}
         <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
           <p className="text-[11px] text-gray-500 font-medium flex items-center justify-between">
-            <TooltipHeader title="Gross Sales" tooltip="Total realized sales revenue from finalized sales invoices (ex-PPN)." />
+            <span>Gross Sales</span>
             <span className="text-[10px] text-gray-400">{company?.order_count || 0} inv</span>
           </p>
-          <p className="text-sm lg:text-base font-bold text-gray-900 mt-0.5 leading-tight">
+          <p className="text-sm font-bold text-gray-900 mt-0.5 tabular-nums">
             {formatCurrency(company?.gross_sales || 0)}
           </p>
-          {Boolean(company?.sales_returns && company.sales_returns > 0) && (
-            <p className="text-[10px] text-amber-700 font-medium mt-0.5 truncate" title={`Less Returns: -${formatCurrency(company?.sales_returns || 0)}`}>
-              Net: {formatCurrency(company?.net_sales || (company?.gross_sales || 0) - (company?.sales_returns || 0))}
-            </p>
-          )}
         </div>
 
-        {/* Product Cost */}
+        {/* 2. Sales Returns */}
+        <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+          <p className="text-[11px] text-gray-500 font-medium">Sales Returns</p>
+          <p className="text-sm font-bold text-amber-700 mt-0.5 tabular-nums">
+            {formatCurrency(company?.sales_returns || 0)}
+          </p>
+        </div>
+
+        {/* 3. Net Sales */}
+        <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+          <p className="text-[11px] text-gray-500 font-medium">Net Sales</p>
+          <p className="text-sm font-bold text-gray-900 mt-0.5 tabular-nums">
+            {formatCurrency(company?.net_sales ?? ((company?.gross_sales || 0) - (company?.sales_returns || 0)))}
+          </p>
+        </div>
+
+        {/* 4. Product COGS */}
         <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
           <p className="text-[11px] text-gray-500 font-medium flex items-center justify-between">
-            <TooltipHeader title="Posted COGS (GL 5100)" tooltip="Posted COGS recorded in the sales invoice's GL 5100 journal." />
+            <span>Product COGS</span>
             <span className="text-[10px] text-gray-400">GL 5100</span>
           </p>
-          <p className="text-sm lg:text-base font-bold text-gray-800 mt-0.5 leading-tight">
+          <p className="text-sm font-bold text-gray-800 mt-0.5 tabular-nums">
             {formatCurrency(company?.product_cost || 0)}
           </p>
           {Boolean(company?.return_cogs && company.return_cogs > 0) && (
-            <p className="text-[10px] text-emerald-700 font-medium mt-0.5 truncate" title={`Less Return COGS: -${formatCurrency(company?.return_cogs || 0)}`}>
-              Net: {formatCurrency(company?.net_product_cost || (company?.product_cost || 0) - (company?.return_cogs || 0))}
+            <p className="text-[10px] text-emerald-700 font-medium mt-0.5 truncate">
+              Net: {formatCurrency(company?.net_product_cost ?? ((company?.product_cost || 0) - (company?.return_cogs || 0)))}
             </p>
           )}
         </div>
 
-        {/* Sales Expenses */}
+        {/* 5. Gross Profit */}
         <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
-          <p className="text-[11px] text-gray-500 font-medium flex items-center justify-between">
-            <TooltipHeader title="Sales Expenses" tooltip="Attributable sales expenses (delivery, loading, commission/marketing) allocated to Delivery Challans." />
-            <span className="text-[10px] text-gray-400 truncate">Delivery/Sales</span>
-          </p>
-          <p className="text-sm lg:text-base font-bold text-amber-700 mt-0.5 leading-tight">
-            {formatCurrency(company?.sales_expenses || 0)}
-          </p>
-        </div>
-
-        {/* Gross Profit */}
-        <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
-          <p className="text-[11px] text-gray-500 font-medium flex items-center justify-between">
-            <TooltipHeader title="Gross Profit" tooltip="Net Sales (Gross Sales minus Sales Returns) minus Net Product Cost (Product Cost minus Return COGS)." />
-            <span className="text-[10px] text-gray-400">{company?.sales_returns && company.sales_returns > 0 ? 'Net GP' : 'Pre-exp'}</span>
-          </p>
-          <p className={`text-sm lg:text-base font-bold mt-0.5 leading-tight ${(company?.gross_profit || 0) >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+          <p className="text-[11px] text-gray-500 font-medium">Gross Profit</p>
+          <p className={`text-sm font-bold mt-0.5 tabular-nums ${(company?.gross_profit || 0) >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
             {formatCurrency(company?.gross_profit || 0)}
           </p>
         </div>
 
-        {/* Profit After Sales Expenses — Highlight KPI */}
-        <div className="bg-emerald-50/70 border-2 border-emerald-500 rounded-lg px-3 py-2 shadow-sm">
-          <p className="text-[11px] font-semibold text-emerald-900 flex items-center justify-between">
-            <TooltipHeader title="Profit After Expenses" tooltip="Primary bottom line: Net Sales minus Net Product Cost minus Attributable Sales Expenses." />
-            <span className="text-[10px] text-emerald-700 font-medium">Net</span>
+        {/* 6. Sales Expenses */}
+        <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+          <p className="text-[11px] text-gray-500 font-medium">Sales Expenses</p>
+          <p className="text-sm font-bold text-amber-700 mt-0.5 tabular-nums">
+            {formatCurrency(company?.sales_expenses || 0)}
           </p>
-          <p className={`text-sm lg:text-base font-extrabold mt-0.5 leading-tight ${(company?.profit_after_sales_expenses || 0) >= 0 ? 'text-emerald-800' : 'text-red-600'}`}>
+        </div>
+
+        {/* 7. Profit After Sales Expenses */}
+        <div className="bg-emerald-50/70 border border-emerald-400 rounded-lg px-3 py-2 shadow-sm">
+          <p className="text-[11px] font-semibold text-emerald-900">Profit After Expenses</p>
+          <p className={`text-sm font-extrabold mt-0.5 tabular-nums ${(company?.profit_after_sales_expenses || 0) >= 0 ? 'text-emerald-800' : 'text-red-600'}`}>
             {formatCurrency(company?.profit_after_sales_expenses || 0)}
           </p>
         </div>
 
-        {/* Profit Margin % */}
-        <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-[11px] text-gray-500 font-medium">
-              <TooltipHeader title="Profit Margin" tooltip="Profit After Sales Expenses divided by Net Sales × 100." />
+        {/* 8. Profit Margin */}
+        <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[11px] text-gray-500 font-medium">Profit Margin</p>
+            <p className="text-[10px] text-gray-400 mt-0.5 truncate" title={unitTotalsLabel}>
+              {unitTotalsLabel}
             </p>
-            <p className="text-[10px] text-gray-400 mt-0.5">{formatNumber(company?.total_qty_sold || 0, 0)} units sold</p>
           </div>
-          <div>
-            <MarginBadge pct={company?.profit_margin_pct ?? null} />
-          </div>
+          <MarginBadge pct={company?.profit_margin_pct ?? null} />
         </div>
       </div>
 
-      {/* ─── Main Product Profitability Table ─── */}
+      {/* ─── Main Product Profitability Table (9 columns + Product -> Invoice Details) ─── */}
       <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="px-4 py-2 border-b border-gray-200 flex items-center justify-between gap-3 bg-gray-50/70">
+        <div className="px-4 py-2 border-b border-gray-200 flex flex-wrap items-center justify-between gap-2 bg-gray-50/70">
           <div className="flex items-center gap-2">
             <h2 className="text-xs font-bold text-gray-800 uppercase tracking-wider">Product Profitability</h2>
             <span className="text-[11px] text-gray-400 font-normal">({filteredProducts.length} items)</span>
           </div>
-          <div className="relative w-56">
-            <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input name="search" aria-label="Search product..."
-              type="text"
-              placeholder="Search product..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="w-full pl-8 pr-3 py-1 border border-gray-300 rounded-md text-xs focus:ring-1 focus:ring-blue-500 bg-white"
-            />
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              aria-label="Filter by customer"
+              value={customerFilter}
+              onChange={(e) => setCustomerFilter(e.target.value)}
+              className="border border-gray-300 rounded-md px-2.5 py-1 text-xs bg-white text-gray-700 focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="all">All Customers</option>
+              {customerOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.company_name}
+                </option>
+              ))}
+            </select>
+            <div className="relative w-52">
+              <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input name="search" aria-label="Search product..."
+                type="text"
+                placeholder="Search product..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                style={{ paddingLeft: '2rem' }}
+                className="w-full pl-8 pr-3 py-1 border border-gray-300 rounded-md text-xs focus:ring-1 focus:ring-blue-500 bg-white"
+              />
+            </div>
           </div>
         </div>
 
@@ -722,44 +752,28 @@ export function CanonicalSalesProfitReport() {
           <table className="w-full text-xs text-left">
             <thead className="bg-gray-50 text-gray-600 font-semibold border-b border-gray-200 select-none">
               <tr>
-                <th className="px-4 py-3 min-w-[200px]">Product</th>
-                <th className="px-3 py-3 text-right">
-                  <TooltipHeader title="Stock (Cur / Res / Avail)" tooltip="Canonical inventory: Current physical stock, active order reservations, and net available stock." />
-                </th>
-                <th className="px-3 py-3 text-right">
-                  <TooltipHeader title="Sold Qty" tooltip="Total quantity sold on finalized invoices in the selected date range." />
-                </th>
-                <th className="px-3 py-3 text-right">
-                  <TooltipHeader title="Avg Landed Cost" tooltip="Weighted average product landed cost: SUM(qty × batch cost) / SUM(qty)." />
-                </th>
-                <th className="px-3 py-3 text-right">
-                  <TooltipHeader title="Avg Selling Price" tooltip="Weighted average realized selling price: SUM(qty × price) / SUM(qty)." />
-                </th>
-                <th className="px-3 py-3 text-right">
-                  <TooltipHeader title="Sales Exp / Unit" tooltip="Allocated sales expense (delivery, loading, commission) per sold unit." />
-                </th>
-                <th className="px-3 py-3 text-right">
-                  <TooltipHeader title="Net Realization" tooltip="Avg Selling Price minus Sales Expense per unit." />
-                </th>
-                <th className="px-3 py-3 text-right">
-                  <TooltipHeader title="Profit / Unit" tooltip="Profit after sales expenses per unit: Net Selling Price minus Landed Cost." />
-                </th>
-                <th className="px-3 py-3 text-right">Margin</th>
-                <th className="px-4 py-3 text-right font-bold text-gray-900">Total Profit</th>
-                <th className="px-3 py-3 text-center">Action</th>
+                <th className="px-4 py-2.5 min-w-[200px]">Product</th>
+                <th className="px-3 py-2.5 text-center">Unit</th>
+                <th className="px-3 py-2.5 text-right">Sold Qty</th>
+                <th className="px-3 py-2.5 text-right">Gross Sales</th>
+                <th className="px-3 py-2.5 text-right">Product Cost</th>
+                <th className="px-3 py-2.5 text-right">Sales Expenses</th>
+                <th className="px-3 py-2.5 text-right">Gross Profit</th>
+                <th className="px-3 py-2.5 text-right font-bold text-gray-900">Net Profit</th>
+                <th className="px-3 py-2.5 text-right">Margin</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading && !data ? (
                 <tr>
-                  <td colSpan={11} className="py-12 text-center text-gray-400">
+                  <td colSpan={9} className="py-12 text-center text-gray-400">
                     <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-blue-500" />
                     Loading profitability data...
                   </td>
                 </tr>
               ) : filteredProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="py-12 text-center text-gray-400">
+                  <td colSpan={9} className="py-12 text-center text-gray-400">
                     <Package className="w-8 h-8 mx-auto mb-2 opacity-30" />
                     No product sales found for the selected date range.
                   </td>
@@ -772,6 +786,12 @@ export function CanonicalSalesProfitReport() {
                   const isExpanded = expandedProductIds.has(p.product_id);
                   const pBatches = batchesCache[p.product_id] || [];
                   const isBatchesLoading = !!loadingBatchesMap[p.product_id];
+                  const isAnyOrdersLoading = pBatches.some(b => Boolean(loadingOrdersMap[b.batch_id]));
+                  const flattenedOrders = pBatches.flatMap((b) =>
+                    (ordersCache[b.batch_id] || [])
+                      .filter((ord) => customerFilter === 'all' || ord.customer_id === customerFilter)
+                      .map((ord) => ({ batchNumber: b.batch_number, ord }))
+                  );
 
                   return (
                     <Fragment key={p.product_id}>
@@ -779,7 +799,7 @@ export function CanonicalSalesProfitReport() {
                         onClick={() => toggleProductExpand(p.product_id)}
                         className={`hover:bg-blue-50/40 cursor-pointer transition-colors group ${isExpanded ? 'bg-blue-50/25' : ''}`}
                       >
-                        <td className="px-4 py-3 font-medium text-gray-900">
+                        <td className="px-4 py-2.5 font-medium text-gray-900">
                           <div className="flex items-center gap-1.5 font-semibold text-blue-900 group-hover:text-blue-600 transition-colors">
                             {isExpanded ? (
                               <ChevronDown className="w-4 h-4 text-blue-600 shrink-0" />
@@ -788,358 +808,127 @@ export function CanonicalSalesProfitReport() {
                             )}
                             <span>{p.product_name}</span>
                           </div>
-                          <div className="text-[11px] text-gray-400 pl-5">{p.product_code || '—'}</div>
+                          {p.product_code && (
+                            <div className="text-[11px] text-gray-400 pl-5">{p.product_code}</div>
+                          )}
                         </td>
-                        <td className="px-3 py-3 text-right font-medium text-gray-700">
-                          <div className="font-semibold text-gray-900">
-                            {formatNumber(p.current_stock, 0)} {p.product_unit}
-                          </div>
-                          <div className="text-[11px] text-gray-500 whitespace-nowrap mt-0.5">
-                            <span className="text-amber-700 font-medium">Res: {formatNumber(p.reserved_stock || 0, 0)}</span>
-                            <span className="mx-1 text-gray-300">|</span>
-                            <span className="text-emerald-700 font-medium">Avail: {formatNumber(p.available_stock ?? (p.current_stock - (p.reserved_stock || 0)), 0)}</span>
-                          </div>
+                        <td className="px-3 py-2.5 text-center text-gray-600 font-medium">
+                          {p.product_unit}
                         </td>
-                        <td className="px-3 py-3 text-right font-semibold text-gray-900">
-                          {formatNumber(p.sold_qty, 0)} {p.product_unit}
+                        <td className="px-3 py-2.5 text-right font-semibold text-gray-900 tabular-nums">
+                          {formatNumber(p.sold_qty, 0)}
                         </td>
-                        <td className="px-3 py-3 text-right text-gray-700">
+                        <td className="px-3 py-2.5 text-right font-medium text-gray-900 tabular-nums">
+                          {formatCurrency(p.gross_sales)}
+                        </td>
+                        <td className="px-3 py-2.5 text-right text-gray-700 tabular-nums">
                           {p.costed_lines === 0 ? (
-                            <span className="text-amber-700">Cost unavailable</span>
+                            <span className="text-amber-700 font-medium">Cost Unresolved</span>
                           ) : hasPartialCostCoverage ? (
                             <div>
-                              <span className="font-medium">{formatCurrency(p.avg_landed_cost)}</span>
-                              <div className="text-[10px] text-amber-700 font-normal">
-                                Known {formatCurrency(p.product_cost ?? 0)} ({p.costed_lines}/{p.total_lines} lines)
+                              <span className="font-medium">{formatCurrency(p.product_cost ?? 0)}</span>
+                              <div className="text-[10px] text-amber-700">
+                                {p.costed_lines}/{p.total_lines} lines
                               </div>
                             </div>
                           ) : (
-                            formatCurrency(p.avg_landed_cost)
+                            formatCurrency(p.product_cost ?? 0)
                           )}
                         </td>
-                        <td className="px-3 py-3 text-right text-gray-900 font-medium">
-                          {formatCurrency(p.avg_selling_price)}
+                        <td className="px-3 py-2.5 text-right text-amber-700 tabular-nums">
+                          {p.sales_expense > 0 ? formatCurrency(p.sales_expense) : '—'}
                         </td>
-                        <td className="px-3 py-3 text-right text-amber-700">
-                          {p.sales_expense > 0 ? formatCurrency(p.sales_expense_per_unit) : '—'}
+                        <td className={`px-3 py-2.5 text-right font-medium tabular-nums ${(p.gross_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                          {p.gross_profit != null ? formatCurrency(p.gross_profit) : '—'}
                         </td>
-                        <td className="px-3 py-3 text-right text-gray-800">
-                          {formatCurrency(p.net_selling_price_per_unit)}
+                        <td className={`px-3 py-2.5 text-right font-bold tabular-nums ${isPositive ? 'text-emerald-700' : 'text-red-600'}`}>
+                          {p.profit_after_sales_expense != null ? formatCurrency(p.profit_after_sales_expense) : '—'}
                         </td>
-                        <td className={`px-3 py-3 text-right font-medium ${isPositive ? 'text-green-700' : 'text-red-600'}`}>
-                          {p.profit_per_unit != null ? (
-                            <div>
-                              <span>{formatCurrency(p.profit_per_unit)}</span>
-                              {hasPartialCostCoverage && <div className="text-[10px] text-amber-600 font-normal">(costed vol)</div>}
-                            </div>
-                          ) : '—'}
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          {p.profit_margin_pct != null ? (
-                            <div className="flex flex-col items-end gap-0.5">
-                              <MarginBadge pct={p.profit_margin_pct} />
-                              {hasPartialCostCoverage && <span className="text-[10px] text-amber-600 font-medium">Partial coverage</span>}
-                            </div>
-                          ) : (
-                            <span className="text-xs text-amber-700 font-medium">Cost unavailable</span>
-                          )}
-                        </td>
-                        <td className={`px-4 py-3 text-right font-bold text-sm ${isPositive ? 'text-green-700' : 'text-red-600'}`}>
-                          {p.profit_after_sales_expense != null ? (
-                            <div>
-                              <span>{formatCurrency(p.profit_after_sales_expense)}</span>
-                              {hasPartialCostCoverage && (
-                                <div className="text-[10px] text-amber-700 font-normal font-sans">
-                                  Known {p.costed_lines}/{p.total_lines} lines
-                                </div>
-                              )}
-                            </div>
-                          ) : '—'}
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          <div className="inline-flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
-                            <button
-                              onClick={() => toggleProductExpand(p.product_id)}
-                              className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-800 hover:underline"
-                            >
-                              {isExpanded ? 'Hide' : 'Batches'}
-                              {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                            </button>
-                            <button
-                              onClick={() => handleOpenProduct(p)}
-                              title="Open Pop-up View"
-                              className="p-1 rounded text-gray-400 hover:text-blue-700 hover:bg-blue-50 transition"
-                            >
-                              <Maximize2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
+                        <td className="px-3 py-2.5 text-right">
+                          <MarginBadge pct={p.profit_margin_pct ?? null} />
                         </td>
                       </tr>
 
-                      {/* ─── Inline Batches Subtable ─── */}
+                      {/* ─── Simple 1-Level Expansion: Product -> Invoice Details ─── */}
                       {isExpanded && (
                         <tr className="bg-slate-50/70">
-                          <td colSpan={11} className="p-3 sm:p-4 border-b border-gray-200">
-                            <div className="bg-white rounded-xl border border-gray-200 shadow-xs overflow-hidden">
-                              {/* Subtable Header */}
-                              <div className="p-3 bg-gray-50/80 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <td colSpan={9} className="p-3 border-b border-gray-200">
+                            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between gap-2">
                                 <div className="flex items-center gap-2">
-                                  <Layers className="w-4 h-4 text-blue-600" />
+                                  <Layers className="w-3.5 h-3.5 text-blue-600" />
                                   <span className="text-xs font-bold text-gray-900">
-                                    Batch Breakdown — {p.product_name}
+                                    Invoice Details — {p.product_name}
                                   </span>
                                   <span className="text-[11px] text-gray-500">
-                                    ({pBatches.length} {pBatches.length === 1 ? 'batch' : 'batches'})
+                                    ({flattenedOrders.length} line{flattenedOrders.length === 1 ? '' : 's'})
                                   </span>
                                 </div>
                                 <button
+                                  type="button"
                                   onClick={() => handleOpenProduct(p)}
-                                  className="inline-flex items-center gap-1 self-start sm:self-auto px-2.5 py-1 text-[11px] font-medium text-blue-700 bg-white border border-blue-200 rounded-lg hover:bg-blue-50 shadow-xs transition"
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-blue-700 bg-white border border-blue-200 rounded hover:bg-blue-50 transition"
                                 >
                                   <Maximize2 className="w-3 h-3" />
-                                  Open Pop-up View
+                                  Batch Breakdown
                                 </button>
                               </div>
 
-                              {/* Subtable Body */}
-                              {isBatchesLoading ? (
-                                <div className="py-10 text-center text-gray-400 text-xs">
-                                  <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-2 text-blue-500" />
-                                  Loading batch profitability...
+                              {isBatchesLoading || isAnyOrdersLoading ? (
+                                <div className="py-6 text-center text-gray-400 text-xs">
+                                  <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1.5 text-blue-500" />
+                                  Loading invoice details...
                                 </div>
-                              ) : pBatches.length === 0 ? (
-                                <div className="py-8 text-center text-gray-400 text-xs">
-                                  No batch sales records found for this product in the selected period.
+                              ) : flattenedOrders.length === 0 ? (
+                                <div className="py-6 text-center text-gray-400 text-xs">
+                                  No invoice lines found for this product in the selected filter.
                                 </div>
                               ) : (
                                 <div className="overflow-x-auto">
-                                  <table className="w-full text-xs text-left">
+                                  <table className="w-full text-[11px] text-left">
                                     <thead className="bg-gray-50 text-gray-600 font-semibold border-b border-gray-200">
                                       <tr>
-                                        <th className="px-3 py-2.5">Batch Number</th>
-                                        <th className="px-3 py-2.5 text-right">Batch Physical Stock</th>
-                                        <th className="px-3 py-2.5 text-right">Sold Qty</th>
-                                        <th className="px-3 py-2.5 text-right">Landed Cost/Unit</th>
-                                        <th className="px-3 py-2.5 text-right">Avg Sell Price</th>
-                                        <th className="px-3 py-2.5 text-right">Sales Exp/Unit</th>
-                                        <th className="px-3 py-2.5 text-right">Profit/Unit</th>
-                                        <th className="px-3 py-2.5 text-right">Margin</th>
-                                        <th className="px-3 py-2.5 text-right font-bold">Total Profit</th>
-                                        <th className="px-3 py-2.5 text-center">Orders</th>
+                                        <th className="px-2.5 py-2 whitespace-nowrap">Invoice #</th>
+                                        <th className="px-2.5 py-2 whitespace-nowrap">Date</th>
+                                        <th className="px-2.5 py-2">Customer</th>
+                                        <th className="px-2.5 py-2 whitespace-nowrap">Sales Order</th>
+                                        <th className="px-2.5 py-2 whitespace-nowrap">Delivery Challan</th>
+                                        <th className="px-2.5 py-2">Product</th>
+                                        <th className="px-2.5 py-2 whitespace-nowrap">Batch</th>
+                                        <th className="px-2.5 py-2 text-right whitespace-nowrap">Qty & Unit</th>
+                                        <th className="px-2.5 py-2 text-right whitespace-nowrap">Selling Price</th>
+                                        <th className="px-2.5 py-2 text-right whitespace-nowrap">Gross Sales</th>
+                                        <th className="px-2.5 py-2 text-right whitespace-nowrap">Historical COGS</th>
+                                        <th className="px-2.5 py-2 text-right whitespace-nowrap">Sales Expense</th>
+                                        <th className="px-2.5 py-2 text-right whitespace-nowrap font-bold">Profit After Exp</th>
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-gray-100">
-                                      {pBatches.map(b => {
-                                        const isBatchExpanded = expandedBatchIds.has(b.batch_id);
-                                        const bOrders = ordersCache[b.batch_id] || [];
-                                        const isOrdersLoading = !!loadingOrdersMap[b.batch_id];
-
-                                        return (
-                                          <Fragment key={b.batch_id}>
-                                            <tr
-                                              onClick={() => toggleBatchExpand(b.batch_id)}
-                                              className={`hover:bg-blue-50/40 cursor-pointer transition group ${isBatchExpanded ? 'bg-blue-50/25' : ''}`}
-                                            >
-                                              <td className="px-3 py-2.5 font-mono font-bold text-blue-900 group-hover:text-blue-600">
-                                                <span className="inline-flex items-center gap-1">
-                                                  {isBatchExpanded ? (
-                                                    <ChevronDown className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                                                  ) : (
-                                                    <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-blue-600 shrink-0" />
-                                                  )}
-                                                  {b.batch_number}
-                                                </span>
-                                                <span className="ml-1.5 text-[10px] font-sans font-normal px-1.5 py-0.2 rounded bg-gray-100 text-gray-600">
-                                                  {b.is_imported ? 'Import' : 'Local'}
-                                                </span>
-                                              </td>
-                                              <td className="px-3 py-2.5 text-right font-medium text-gray-700">
-                                                {formatNumber(b.current_stock, 0)}
-                                              </td>
-                                              <td className="px-3 py-2.5 text-right font-semibold text-gray-900">
-                                                {formatNumber(b.sold_qty, 0)}
-                                              </td>
-                                              <td className="px-3 py-2.5 text-right text-gray-700 font-medium">
-                                                {b.cost_per_unit == null ? <span className="text-amber-700">Cost unavailable</span> : formatCurrency(b.cost_per_unit)}
-                                              </td>
-                                              <td className="px-3 py-2.5 text-right text-gray-900">
-                                                {formatCurrency(b.avg_selling_price)}
-                                              </td>
-                                              <td className="px-3 py-2.5 text-right text-amber-700">
-                                                {b.sales_expense > 0 ? formatCurrency(b.sales_expense_per_unit) : '—'}
-                                              </td>
-                                              <td className={`px-3 py-2.5 text-right font-medium ${(b.profit_after_sales_expense ?? 0) >= 0 ? 'text-green-700' : 'text-red-600'}`}>
-                                                {b.profit_per_unit == null ? '—' : formatCurrency(b.profit_per_unit)}
-                                              </td>
-                                              <td className="px-3 py-2.5 text-right">
-                                                <MarginBadge pct={b.profit_margin_pct} />
-                                              </td>
-                                              <td className={`px-3 py-2.5 text-right font-bold ${(b.profit_after_sales_expense ?? 0) >= 0 ? 'text-green-700' : 'text-red-600'}`}>
-                                                {b.profit_after_sales_expense == null ? '—' : formatCurrency(b.profit_after_sales_expense)}
-                                              </td>
-                                              <td className="px-3 py-2.5 text-center">
-                                                <span className="text-blue-600 font-medium text-xs group-hover:underline inline-flex items-center gap-0.5">
-                                                  {isBatchExpanded ? 'Hide' : 'View'} Orders
-                                                </span>
-                                              </td>
-                                            </tr>
-
-                                            {/* ─── Inner Subtable: Batch Orders & Landed Cost Breakdown ─── */}
-                                            {isBatchExpanded && (
-                                              <tr className="bg-slate-50/90">
-                                                <td colSpan={10} className="p-3 sm:p-4 border-b border-gray-200 space-y-3">
-                                                  {/* Cost Breakdown Card */}
-                                                  <div className="p-3 bg-white border border-gray-200 rounded-lg space-y-2">
-                                                    <h4 className="text-xs font-bold text-gray-700 flex items-center gap-1.5">
-                                                      <Info className="w-3.5 h-3.5 text-blue-600" />
-                                                      Landed / Product Cost Breakdown — {b.batch_number}
-                                                    </h4>
-                                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                                                      {b.is_imported ? (
-                                                        <>
-                                                          <div className="bg-gray-50 p-2 rounded border border-gray-200">
-                                                            <span className="text-gray-400 block text-[10px]">Import FOB Price</span>
-                                                            <span className="font-semibold text-gray-900">
-                                                              {b.cost_breakdown.import_price_usd ? `$${b.cost_breakdown.import_price_usd} (Rp ${formatNumber(b.cost_breakdown.import_price || 0, 0)})` : '—'}
-                                                            </span>
-                                                          </div>
-                                                          <div className="bg-gray-50 p-2 rounded border border-gray-200">
-                                                            <span className="text-gray-400 block text-[10px]">Duty Charges</span>
-                                                            <span className="font-semibold text-gray-900">
-                                                              {b.cost_breakdown.duty_charges ? formatCurrency(b.cost_breakdown.duty_charges) : 'Rp 0'}
-                                                            </span>
-                                                          </div>
-                                                          <div className="bg-gray-50 p-2 rounded border border-gray-200">
-                                                            <span className="text-gray-400 block text-[10px]">Freight &amp; Port</span>
-                                                            <span className="font-semibold text-gray-900">
-                                                              {(b.cost_breakdown.freight_charges || 0) + (b.cost_breakdown.other_charges || 0) > 0
-                                                                ? formatCurrency((b.cost_breakdown.freight_charges || 0) + (b.cost_breakdown.other_charges || 0))
-                                                                : 'Rp 0'}
-                                                            </span>
-                                                          </div>
-                                                          <div className="bg-blue-50 p-2 rounded border border-blue-200 font-bold">
-                                                            <span className="text-blue-700 block text-[10px]">Final Landed Cost/Unit</span>
-                                                            <span className="text-blue-950 text-sm">
-                                                              {b.cost_per_unit == null ? 'Cost unavailable' : formatCurrency(b.cost_per_unit)}
-                                                            </span>
-                                                          </div>
-                                                        </>
-                                                      ) : (
-                                                        <>
-                                                          <div className="bg-gray-50 p-2 rounded border border-gray-200">
-                                                            <span className="text-gray-400 block text-[10px]">Purchase Type</span>
-                                                            <span className="font-semibold text-gray-900">Local Purchase</span>
-                                                          </div>
-                                                          <div className="bg-blue-50 p-2 rounded border border-blue-200 font-bold col-span-2">
-                                                            <span className="text-blue-700 block text-[10px]">Actual Local Purchase Cost/Unit</span>
-                                                            <span className="text-blue-950 text-sm">
-                                                              {b.cost_per_unit == null ? 'Cost unavailable' : formatCurrency(b.cost_per_unit)}
-                                                            </span>
-                                                          </div>
-                                                        </>
-                                                      )}
-                                                    </div>
-                                                  </div>
-
-                                                  {/* Realized Orders Table */}
-                                                  <div>
-                                                    <div className="flex items-center justify-between mb-1.5">
-                                                      <h4 className="text-xs font-bold text-gray-800">
-                                                        Realized Customer Orders ({bOrders.length})
-                                                      </h4>
-                                                      <span className="text-[11px] text-gray-500">
-                                                        Sales invoices selling from batch {b.batch_number}
-                                                      </span>
-                                                    </div>
-
-                                                    {isOrdersLoading ? (
-                                                      <div className="py-6 text-center text-gray-400 text-xs">
-                                                        <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1 text-blue-500" />
-                                                        Loading customer order lines...
-                                                      </div>
-                                                    ) : bOrders.length === 0 ? (
-                                                      <div className="py-4 text-center text-gray-400 text-xs bg-white rounded border border-gray-200">
-                                                        No sales invoice lines found for this batch in the selected period.
-                                                      </div>
-                                                    ) : (
-                                                      <div className="border border-gray-200 rounded-lg overflow-x-auto bg-white shadow-xs">
-                                                        <table className="w-full text-xs text-left">
-                                                          <thead className="bg-gray-50 text-gray-600 font-semibold border-b border-gray-200">
-                                                            <tr>
-                                                              <th className="px-3 py-2">Invoice &amp; Date</th>
-                                                              <th className="px-3 py-2">Customer</th>
-                                                              <th className="px-2 py-2">SO / DC</th>
-                                                              <th className="px-2 py-2 text-right">Qty</th>
-                                                              <th className="px-2 py-2 text-right">Sell Price</th>
-                                                              <th className="px-2 py-2 text-right">Gross Sales</th>
-                                                              <th className="px-2 py-2 text-right">Product Cost</th>
-                                                              <th className="px-2 py-2 text-right">Sales Exp</th>
-                                                              <th className="px-2 py-2 text-right">Net Realization</th>
-                                                              <th className="px-3 py-2 text-right font-bold">Profit</th>
-                                                            </tr>
-                                                          </thead>
-                                                          <tbody className="divide-y divide-gray-100">
-                                                            {bOrders.map(o => (
-                                                              <tr key={o.line_id} className="hover:bg-gray-50/70 transition">
-                                                                <td className="px-3 py-2 whitespace-nowrap">
-                                                                  <span className="font-mono font-bold text-blue-700 block">{o.invoice_number}</span>
-                                                                  <span className="text-[10px] text-gray-400">{o.invoice_date}</span>
-                                                                </td>
-                                                                <td className="px-3 py-2 font-medium text-gray-800 max-w-[140px] truncate" title={o.customer_name}>
-                                                                  {o.customer_name}
-                                                                </td>
-                                                                <td className="px-2 py-2 text-[11px] text-gray-500 font-mono whitespace-nowrap">
-                                                                  <div>{o.so_number || '—'}</div>
-                                                                  <div className="text-[10px] text-gray-400">{o.dc_number || '—'}</div>
-                                                                </td>
-                                                                <td className="px-2 py-2 text-right font-semibold text-gray-900">
-                                                                  {formatNumber(o.quantity, 0)}
-                                                                </td>
-                                                                <td className="px-2 py-2 text-right text-gray-800">
-                                                                  {formatCurrency(o.selling_price)}
-                                                                </td>
-                                                                <td className="px-2 py-2 text-right font-medium text-gray-900">
-                                                                  {formatCurrency(o.gross_sales)}
-                                                                </td>
-                                                                <td className="px-2 py-2 text-right text-gray-600">
-                                                                  {o.line_cost == null ? <span className="text-amber-700">Cost unavailable</span> : formatCurrency(o.line_cost)}
-                                                                </td>
-                                                                <td className="px-2 py-2 text-right text-amber-700">
-                                                                  {o.line_sales_expense > 0 ? (
-                                                                    <span
-                                                                      className="underline decoration-dotted cursor-help"
-                                                                      title={o.expenses.map(e => `${e.voucher_number} (${e.category}): ${formatCurrency(e.total_amount)}`).join('\n')}
-                                                                    >
-                                                                      {formatCurrency(o.line_sales_expense)}
-                                                                    </span>
-                                                                  ) : (
-                                                                    '—'
-                                                                  )}
-                                                                </td>
-                                                                <td className="px-2 py-2 text-right text-gray-800">
-                                                                  {formatCurrency(o.net_selling_realization)}
-                                                                </td>
-                                                                <td className={`px-3 py-2 text-right font-bold ${(o.profit ?? 0) >= 0 ? 'text-green-700' : 'text-red-600'}`}>
-                                                                  {o.profit == null ? '—' : formatCurrency(o.profit)}
-                                                                  {o.profit_margin_pct != null && (
-                                                                    <div className="text-[10px] font-normal text-gray-400">
-                                                                      {formatNumber(o.profit_margin_pct, 1)}%
-                                                                    </div>
-                                                                  )}
-                                                                </td>
-                                                              </tr>
-                                                            ))}
-                                                          </tbody>
-                                                        </table>
-                                                      </div>
-                                                    )}
-                                                  </div>
-                                                </td>
-                                              </tr>
-                                            )}
-                                          </Fragment>
-                                        );
-                                      })}
+                                      {flattenedOrders.map(({ batchNumber, ord }) => (
+                                        <tr key={ord.line_id} className="hover:bg-blue-50/30">
+                                          <td className="px-2.5 py-1.5 font-mono font-semibold text-blue-800 whitespace-nowrap">{ord.invoice_number}</td>
+                                          <td className="px-2.5 py-1.5 text-gray-600 whitespace-nowrap">{ord.invoice_date}</td>
+                                          <td className="px-2.5 py-1.5 text-gray-800">{ord.customer_name}</td>
+                                          <td className="px-2.5 py-1.5 font-mono text-gray-600 whitespace-nowrap">{ord.so_number || '—'}</td>
+                                          <td className="px-2.5 py-1.5 font-mono text-gray-600 whitespace-nowrap">{ord.dc_number || '—'}</td>
+                                          <td className="px-2.5 py-1.5 text-gray-800">{p.product_name}</td>
+                                          <td className="px-2.5 py-1.5 font-mono text-gray-700 whitespace-nowrap">{batchNumber}</td>
+                                          <td className="px-2.5 py-1.5 text-right font-medium text-gray-900 whitespace-nowrap tabular-nums">
+                                            {formatNumber(ord.quantity, 0)} {p.product_unit}
+                                          </td>
+                                          <td className="px-2.5 py-1.5 text-right text-gray-700 whitespace-nowrap tabular-nums">{formatCurrency(ord.selling_price)}</td>
+                                          <td className="px-2.5 py-1.5 text-right font-medium text-gray-900 whitespace-nowrap tabular-nums">{formatCurrency(ord.gross_sales)}</td>
+                                          <td className="px-2.5 py-1.5 text-right text-gray-800 whitespace-nowrap tabular-nums">
+                                            {ord.line_cost != null ? formatCurrency(ord.line_cost) : <span className="text-amber-700 font-medium">Cost Unresolved</span>}
+                                          </td>
+                                          <td className="px-2.5 py-1.5 text-right text-amber-700 whitespace-nowrap tabular-nums">
+                                            {ord.line_sales_expense > 0 ? formatCurrency(ord.line_sales_expense) : '—'}
+                                          </td>
+                                          <td className={`px-2.5 py-1.5 text-right font-bold whitespace-nowrap tabular-nums ${(ord.profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                                            {ord.profit != null ? formatCurrency(ord.profit) : '—'}
+                                          </td>
+                                        </tr>
+                                      ))}
                                     </tbody>
                                   </table>
                                 </div>
@@ -1157,20 +946,19 @@ export function CanonicalSalesProfitReport() {
               <tfoot className="bg-gray-100/80 font-bold text-gray-900 border-t-2 border-gray-300">
                 <tr>
                   <td className="px-4 py-3">TOTAL ({filteredProducts.length} products)</td>
-                  <td className="px-3 py-3 text-right">
-                    <div>{formatNumber(filteredProducts.reduce((s, p) => s + p.current_stock, 0), 0)}</div>
-                    <div className="text-[10px] font-normal text-gray-500 whitespace-nowrap">
-                      <span className="text-amber-700">Res: {formatNumber(filteredProducts.reduce((s, p) => s + (p.reserved_stock || 0), 0), 0)}</span>
-                      <span className="mx-1 text-gray-300">|</span>
-                      <span className="text-emerald-700">Avail: {formatNumber(filteredProducts.reduce((s, p) => s + (p.available_stock ?? p.current_stock), 0), 0)}</span>
-                    </div>
+                  <td className="px-3 py-3 text-center text-[11px] font-medium text-gray-600">
+                    {summarizeQuantitiesByUnit(filteredProducts.map(p => ({ unit: p.product_unit, quantity: p.sold_qty })))
+                      .map(u => `${formatNumber(u.quantity, 0)} ${u.unit}`)
+                      .join(' · ')}
                   </td>
-                  <td className="px-3 py-3 text-right">
-                    {formatNumber(filteredProducts.reduce((s, p) => s + p.sold_qty, 0), 0)}
+                  <td className="px-3 py-3 text-right text-gray-500">—</td>
+                  <td className="px-3 py-3 text-right tabular-nums">
+                    {formatCurrency(filteredProducts.reduce((s, p) => s + p.gross_sales, 0))}
                   </td>
-                  <td className="px-3 py-3 text-right">—</td>
-                  <td className="px-3 py-3 text-right">—</td>
-                  <td className="px-3 py-3 text-right text-amber-800">
+                  <td className="px-3 py-3 text-right tabular-nums">
+                    {formatCurrency(filteredProducts.reduce((s, p) => s + (p.product_cost ?? 0), 0))}
+                  </td>
+                  <td className="px-3 py-3 text-right text-amber-800 tabular-nums">
                     <div>{formatCurrency(filteredProducts.reduce((s, p) => s + p.sales_expense, 0))}</div>
                     {(company?.unallocated_sales_expenses || 0) > 0 && (
                       <div className="text-[10px] font-normal text-gray-500">
@@ -1178,12 +966,10 @@ export function CanonicalSalesProfitReport() {
                       </div>
                     )}
                   </td>
-                  <td className="px-3 py-3 text-right">—</td>
-                  <td className="px-3 py-3 text-right">—</td>
-                  <td className="px-3 py-3 text-right">
-                    <MarginBadge pct={company?.profit_margin_pct ?? null} />
+                  <td className="px-3 py-3 text-right tabular-nums">
+                    {formatCurrency(filteredProducts.reduce((s, p) => s + (p.gross_profit ?? 0), 0))}
                   </td>
-                  <td className={`px-4 py-3 text-right text-sm ${(company?.profit_after_sales_expenses || 0) >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+                  <td className={`px-3 py-3 text-right tabular-nums ${(company?.profit_after_sales_expenses || 0) >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
                     <div>{formatCurrency(filteredProducts.reduce((s, p) => s + (p.profit_after_sales_expense ?? 0), 0))}</div>
                     {(company?.unallocated_sales_expenses || 0) > 0 && (
                       <div className="text-[10px] font-normal text-gray-500">
@@ -1191,7 +977,9 @@ export function CanonicalSalesProfitReport() {
                       </div>
                     )}
                   </td>
-                  <td />
+                  <td className="px-3 py-3 text-right">
+                    <MarginBadge pct={company?.profit_margin_pct ?? null} />
+                  </td>
                 </tr>
               </tfoot>
             )}

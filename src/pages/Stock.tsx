@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { Layout } from '../components/Layout';
 import { StockMovementsModal } from '../components/StockMovementsModal';
 import { useLanguage } from '../contexts/LanguageContext';
+import { getStatusLabel } from '../i18n/labelMappings';
 import { supabase } from '../lib/supabase';
 import { Package, AlertTriangle, Search, ChevronDown, ChevronUp, History } from 'lucide-react';
 import { useNavigation } from '../contexts/NavigationContext';
@@ -38,7 +39,7 @@ interface StockBatchDetail {
 }
 
 export function Stock() {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const { setCurrentPage } = useNavigation();
   const [stockSummary, setStockSummary] = useState<StockSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -264,10 +265,135 @@ export function Stock() {
           {loading ? (
             <div className="p-6 text-center">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
-              <p className="mt-2 text-gray-500 text-sm">Loading...</p>
+              <p className="mt-2 text-gray-500 text-sm">{t('common.loading', 'Loading...')}</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+              {/* Mobile Inventory Cards (<768px) */}
+              <div className="md:hidden divide-y divide-gray-100">
+                {filteredData.length === 0 ? (
+                  <div className="p-8 text-center text-gray-400 text-sm">
+                    <Package className="w-10 h-10 mx-auto mb-2 text-gray-300" />
+                    No stock available
+                  </div>
+                ) : (
+                  filteredData.map((item) => {
+                    const isExpanded = expandedProductId === item.product_id;
+                    const makeGroups = isExpanded
+                      ? Array.from(expandedBatches.reduce((groups, batch) => {
+                          const key = batch.make_id || 'not-recorded';
+                          const group = groups.get(key) || { key, name: batch.make_name || 'Not recorded', batches: [] as StockBatchDetail[], stock: 0, reserved: 0 };
+                          group.batches.push(batch);
+                          group.stock += batch.current_stock ?? 0;
+                          group.reserved += batch.reserved_stock ?? 0;
+                          groups.set(key, group);
+                          return groups;
+                        }, new Map<string, { key: string; name: string; batches: StockBatchDetail[]; stock: number; reserved: number }>()).values())
+                      : [];
+                    return (
+                      <div key={item.product_id} className="p-3 space-y-2">
+                        <div
+                          onClick={() => toggleProduct(item)}
+                          className="flex items-start justify-between gap-2 cursor-pointer"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-blue-500 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-gray-400 shrink-0" />}
+                              <span className="font-semibold text-sm text-gray-900 break-words">
+                                {item.product_name || item.product_code || 'Unnamed Product'}
+                              </span>
+                            </div>
+                            {item.category && (
+                              <span className="inline-block mt-0.5 ml-5 text-[11px] text-gray-500">
+                                {getStatusLabel(item.category, language)}
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openProductMovements(item); }}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 shrink-0"
+                          >
+                            <History className="w-3 h-3" />
+                            Movements
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs bg-slate-50 rounded-lg p-2 border border-slate-100">
+                          <div>
+                            <span className="text-[10px] uppercase tracking-wider text-gray-400 block">Total Stock</span>
+                            <span className={`font-semibold ${(item.total_current_stock ?? 0) === 0 ? 'text-gray-400' : (item.total_current_stock ?? 0) < 500 ? 'text-orange-600' : 'text-green-600'}`}>
+                              {(item.total_current_stock ?? 0).toLocaleString()} {formatUnit(item.unit)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] uppercase tracking-wider text-gray-400 block">Available</span>
+                            <span className="font-semibold text-green-600">
+                              {(item.available_quantity ?? 0).toLocaleString()} {formatUnit(item.unit)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] uppercase tracking-wider text-gray-400 block">Reserved</span>
+                            <span className="font-medium text-orange-600">
+                              {(item.reserved_stock ?? 0) > 0 ? `${(item.reserved_stock ?? 0).toLocaleString()} ${formatUnit(item.unit)}` : '—'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] uppercase tracking-wider text-gray-400 block">Batches</span>
+                            <span className="font-medium text-blue-600">
+                              {item.active_batch_count ?? 0} active
+                              {(item.expired_batch_count ?? 0) > 0 && <span className="text-red-500 ml-1">({item.expired_batch_count} exp)</span>}
+                            </span>
+                          </div>
+                        </div>
+
+                        {isExpanded && (
+                          <div className="bg-blue-50/40 border border-blue-100 rounded-lg p-2 space-y-2 text-xs">
+                            {expandedLoading ? (
+                              <p className="text-center text-gray-500 py-2">Loading batches...</p>
+                            ) : makeGroups.length === 0 ? (
+                              <p className="text-center text-gray-400 py-2">No active batches</p>
+                            ) : (
+                              makeGroups.map((group) => (
+                                <div key={group.key} className="space-y-1">
+                                  <div className="flex items-center justify-between font-semibold text-gray-800 text-[11px] bg-blue-100/60 px-2 py-1 rounded">
+                                    <span>Make / Godown: {group.name}</span>
+                                    <span>{group.batches.length} batch{group.batches.length === 1 ? '' : 'es'}</span>
+                                  </div>
+                                  {group.batches.map((batch) => {
+                                    const batchAvailable = Math.max(0, Math.min((batch.current_stock ?? 0) - (batch.reserved_stock ?? 0), item.available_quantity ?? 0));
+                                    return (
+                                      <div
+                                        key={batch.id}
+                                        onClick={() => openBatchMovements(batch, item)}
+                                        className="flex items-center justify-between gap-2 px-2 py-1.5 bg-white rounded border border-gray-200 cursor-pointer"
+                                      >
+                                        <div className="min-w-0">
+                                          <div className="font-mono text-blue-700 font-medium truncate">{batch.batch_number || '—'}</div>
+                                          <div className="text-[10px] text-gray-500">
+                                            Exp: {batch.expiry_date ? formatDate(batch.expiry_date) : '—'}
+                                          </div>
+                                        </div>
+                                        <div className="text-right shrink-0">
+                                          <div className="font-semibold text-gray-900">{(batch.current_stock ?? 0).toLocaleString()} {formatUnit(batch.unit)}</div>
+                                          <div className="text-[10px] text-green-700">Avail: {batchAvailable.toLocaleString()}</div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Desktop Table (768px+) */}
+              <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50 border-b">
                   <tr>
@@ -316,9 +442,11 @@ export function Stock() {
                         <td className="px-3 py-2 text-sm">
                           <span className="inline-flex items-center gap-1.5 font-medium text-gray-900 group-hover:text-blue-700 transition-colors">
                             {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-blue-500" /> : <ChevronDown className="w-3.5 h-3.5 text-gray-400" />}
-                            {item.product_name}
+                            {item.product_name || item.product_code || 'Unnamed Product'}
                           </span>
-                          <span className="text-[10px] text-gray-400 ml-1.5 capitalize">({item.category})</span>
+                          {item.category && (
+                            <span className="text-[10px] text-gray-400 ml-1.5">({getStatusLabel(item.category, language)})</span>
+                          )}
                         </td>
                         <td className={`px-3 py-2 text-sm text-right font-semibold ${(item.total_current_stock ?? 0) === 0 ? 'text-gray-400' : (item.total_current_stock ?? 0) < 500 ? 'text-orange-600' : 'text-green-600'}`}>
                           {(item.total_current_stock ?? 0).toLocaleString()} {formatUnit(item.unit)}
@@ -474,6 +602,7 @@ export function Stock() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </div>
       </div>

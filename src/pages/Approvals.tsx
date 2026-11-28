@@ -327,8 +327,8 @@ export default function Approvals() {
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
             <option value="all">{t('allTypes') || 'All Types'}</option>
-            <option value="material_return">{t('materialReturns') || 'Material Returns'}</option>
-            <option value="stock_rejection">{t('stockRejections') || 'Stock Rejections'}</option>
+            <option value="material_return">{t('nav.materialReturns')}</option>
+            <option value="stock_rejection">{t('nav.stockRejections')}</option>
             <option value="purchase_approval">{t('purchaseApprovals') || 'Purchase Approvals'}</option>
           </select>
         </div>

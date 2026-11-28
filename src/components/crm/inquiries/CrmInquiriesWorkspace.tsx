@@ -12,19 +12,18 @@ import {
   Search,
   List,
   LayoutGrid,
-  Plus,
   RefreshCw,
   FileText,
   AlertTriangle,
   Clock,
   Send,
   CheckCircle2,
-  SlidersHorizontal,
-  X,
   Tag,
-  ArrowRight,
-  TrendingUp,
-  Sparkles,
+  Activity,
+  Users,
+  Inbox,
+  Bell,
+  X,
 } from 'lucide-react';
 
 export type InquiryFilter =
@@ -123,6 +122,7 @@ export function CrmInquiriesWorkspace({
   const [quickFilter, setQuickFilter] = useState<InquiryFilter>(initialFilter);
   const [assignedStaffFilter, setAssignedStaffFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showAllKpis, setShowAllKpis] = useState(false);
 
   // Authoritative shared inquiry & staff loading (single network query with in-flight deduplication)
   const {
@@ -405,69 +405,91 @@ export function CrmInquiriesWorkspace({
 
   return (
     <div className="space-y-3">
-      {/* Top Interactive KPI Cards (Control Center Summary Integration) */}
-      <div className="flex sm:grid sm:grid-cols-3 lg:grid-cols-9 gap-2 overflow-x-auto pb-1 sm:pb-0 min-w-0">
-        {(
-          [
-            ['all', 'All Inquiries', kpis.total, 'text-gray-900', 'border-gray-200', 'bg-white'],
-            ['active', 'Active Inquiries', kpis.active, 'text-blue-700', 'border-blue-200', 'bg-blue-50/50'],
-            ['needs_attention', '⚡ Needs Attention', kpis.needsAttention, 'text-rose-700', 'border-rose-200', 'bg-rose-50/50'],
-            ['waiting_india', '🇮🇳 Waiting India', kpis.waitingIndia, 'text-indigo-700', 'border-indigo-200', 'bg-indigo-50/50'],
-            ['waiting_customer', '🤝 Waiting Customer', kpis.waitingCustomer, 'text-purple-700', 'border-purple-200', 'bg-purple-50/50'],
-            ['price_ready', '🏷️ Price Ready', kpis.priceReady, 'text-emerald-700', 'border-emerald-200', 'bg-emerald-50/50'],
-            ['quote_sent', '📤 Quote Sent', kpis.quoteSent, 'text-teal-700', 'border-teal-200', 'bg-teal-50/50'],
-            ['followup_due', '⚠️ Follow-up Due', kpis.followupDue, 'text-amber-700', 'border-amber-200', 'bg-amber-50/50'],
-            ['closed', '🏆 Won / Closed', kpis.closed, 'text-slate-700', 'border-slate-200', 'bg-slate-50/50'],
-          ] as const
-        ).map(([key, label, count, textColor, borderColor, bgColor]) => {
-          const isSelected = quickFilter === key;
-          return (
-            <button
-              key={key}
-              onClick={() => handleFilterClick(key as InquiryFilter)}
-              className={`p-2 sm:p-2.5 rounded-lg border text-left transition select-none flex flex-col justify-between shadow-2xs shrink-0 min-w-[126px] sm:min-w-0 ${
-                isSelected
-                  ? 'border-blue-600 ring-2 ring-blue-500/30 bg-white font-bold'
-                  : `${borderColor} ${bgColor} hover:border-blue-400 hover:bg-white`
-              }`}
-            >
-              <div className="text-[10.5px] font-semibold text-gray-600 truncate">{label}</div>
-              <div className={`text-base sm:text-lg font-extrabold ${textColor} mt-0.5 sm:mt-1`}>{count}</div>
-            </button>
-          );
-        })}
+      {/* Top Interactive KPI Cards — 3 primary metrics on mobile, 768px & 1024px (with Show More), full 9-card strip on xl+ (1280px+) */}
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-3 xl:grid-cols-9 gap-2 min-w-0">
+          {(
+            [
+              ['all', 'All Inquiries', kpis.total, 'text-slate-900', 'text-slate-500', Inbox, true],
+              ['active', 'Active', kpis.active, 'text-blue-700', 'text-blue-600', Activity, false],
+              ['needs_attention', 'Needs Attention', kpis.needsAttention, 'text-rose-700', 'text-rose-600', AlertTriangle, true],
+              ['waiting_india', 'Waiting India', kpis.waitingIndia, 'text-slate-900', 'text-indigo-600', Clock, false],
+              ['waiting_customer', 'Waiting Customer', kpis.waitingCustomer, 'text-slate-900', 'text-purple-600', Users, false],
+              ['price_ready', 'Price Ready', kpis.priceReady, 'text-emerald-700', 'text-emerald-600', Tag, false],
+              ['quote_sent', 'Quote Sent', kpis.quoteSent, 'text-teal-700', 'text-teal-600', Send, false],
+              ['followup_due', 'Follow-up Due', kpis.followupDue, 'text-amber-700', 'text-amber-600', Bell, true],
+              ['closed', 'Won / Closed', kpis.closed, 'text-slate-700', 'text-emerald-600', CheckCircle2, false],
+            ] as const
+          ).map(([key, label, count, textColor, iconColor, Icon, showOnCompact]) => {
+            const isSelected = quickFilter === key;
+            const visibleCompact = showOnCompact || showAllKpis;
+            return (
+              <button
+                key={key}
+                onClick={() => handleFilterClick(key as InquiryFilter)}
+                className={`${visibleCompact ? 'flex' : 'hidden xl:flex'} p-2.5 rounded-lg border text-left transition select-none flex-col justify-between min-w-0 ${
+                  isSelected
+                    ? 'border-blue-600 ring-1 ring-blue-600 bg-blue-50/40 font-semibold'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-1.5 min-w-0">
+                  <span className="text-[11px] font-medium text-slate-600 leading-tight">{label}</span>
+                  <Icon className={`w-3.5 h-3.5 shrink-0 ${iconColor}`} />
+                </div>
+                <div className={`text-base sm:text-lg font-bold ${textColor} mt-1 tabular-nums`}>{count}</div>
+              </button>
+            );
+          })}
+        </div>
+        <div className="xl:hidden flex justify-end">
+          <button
+            type="button"
+            onClick={() => setShowAllKpis((v) => !v)}
+            className="text-[11px] font-semibold text-blue-600 hover:text-blue-800"
+          >
+            {showAllKpis ? 'Show Less' : 'Show More'}
+          </button>
+        </div>
       </div>
 
-      {/* Control Bar: Search, Sales Staff Filter, Documents Toggle, View Mode Switcher */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-3 bg-white p-2.5 sm:p-3 rounded-lg border border-gray-200 shadow-xs min-w-0">
-        {/* Search & Refresh */}
-        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 flex-1 min-w-0 sm:max-w-xl">
+      {/* Coherent Primary Toolbar: Single Search, Status Filter, Sales Staff, Document Bank, View Switcher */}
+      <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2.5 bg-white p-2.5 sm:p-3 rounded-lg border border-slate-200 min-w-0">
+        {/* Search, Status Filter, Sales Staff & Refresh */}
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 flex-1 min-w-0">
           <div className="relative flex-1 min-w-[180px]">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search inquiry #, customer, product, supplier, contact..."
+              placeholder="Search inquiry #, customer, product, supplier..."
               style={{ paddingLeft: '2.25rem' }}
-              className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:bg-white transition"
+              className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-600 focus:bg-white transition"
             />
           </div>
 
-          <button
-            onClick={loadInquiries}
-            disabled={loading}
-            className="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded border border-gray-200 transition shrink-0"
-            title="Refresh Inquiries"
+          <select
+            value={quickFilter}
+            onChange={(e) => handleFilterClick(e.target.value as InquiryFilter)}
+            aria-label="Filter by inquiry status"
+            className="text-xs border border-slate-300 rounded-md px-2.5 py-1.5 bg-slate-50 font-medium text-slate-700 hover:bg-white focus:outline-none focus:ring-1 focus:ring-blue-600 min-w-0"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+            <option value="all">All Statuses</option>
+            <option value="active">Active</option>
+            <option value="needs_attention">Needs Attention</option>
+            <option value="waiting_india">Waiting India</option>
+            <option value="waiting_customer">Waiting Customer</option>
+            <option value="price_ready">Price Ready</option>
+            <option value="quote_sent">Quote Sent</option>
+            <option value="followup_due">Follow-up Due</option>
+            <option value="closed">Won / Closed</option>
+          </select>
 
-          {/* Sales Staff Filter */}
           <select
             value={assignedStaffFilter}
             onChange={(e) => setAssignedStaffFilter(e.target.value)}
-            className="text-xs border border-gray-300 rounded-md px-2.5 py-1.5 bg-slate-50 font-medium text-gray-700 hover:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 min-w-0 flex-1 sm:flex-initial"
+            className="text-xs border border-slate-300 rounded-md px-2.5 py-1.5 bg-slate-50 font-medium text-slate-700 hover:bg-white focus:outline-none focus:ring-1 focus:ring-blue-600 min-w-0 flex-1 sm:flex-initial"
             title="Filter by Assigned Salesperson"
           >
             <option value="all">All Sales Staff</option>
@@ -478,26 +500,36 @@ export function CrmInquiriesWorkspace({
               </option>
             ))}
           </select>
+
+          <button
+            onClick={loadInquiries}
+            disabled={loading}
+            className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded border border-slate-200 transition shrink-0"
+            title="Refresh Inquiries"
+            aria-label="Refresh Inquiries"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
         </div>
 
-        {/* Right Action Bar: Document Bank, View Mode Toggle, New Inquiry Button */}
+        {/* Right Action Bar: Document Bank & View Mode Toggle */}
         <div className="flex flex-wrap items-center gap-2 shrink-0 max-w-full">
           <button
             onClick={() => setShowDocumentsModal(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-gray-700 border border-gray-200 rounded-md text-xs font-semibold transition"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-medium transition"
             title="Open Document Bank (COA, MSDS, Specs)"
           >
             <FileText className="w-3.5 h-3.5 text-blue-600" />
             <span>Document Bank</span>
           </button>
 
-          <div className="inline-flex rounded-md border border-gray-200 bg-slate-100 p-0.5 text-xs font-semibold">
+          <div className="inline-flex rounded-md border border-slate-200 bg-slate-100 p-0.5 text-xs font-semibold">
             <button
               onClick={() => setViewMode('list')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded transition ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded transition ${
                 viewMode === 'list'
-                  ? 'bg-white text-gray-900 shadow-xs'
-                  : 'text-gray-500 hover:text-gray-900'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900'
               }`}
             >
               <List className="w-3.5 h-3.5" />
@@ -505,26 +537,16 @@ export function CrmInquiriesWorkspace({
             </button>
             <button
               onClick={() => setViewMode('pipeline')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded transition ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded transition ${
                 viewMode === 'pipeline'
-                  ? 'bg-white text-gray-900 shadow-xs'
-                  : 'text-gray-500 hover:text-gray-900'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900'
               }`}
             >
               <LayoutGrid className="w-3.5 h-3.5" />
               PIPELINE
             </button>
           </div>
-
-          {onAddInquiry && (
-            <button
-              onClick={onAddInquiry}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 text-white rounded-md text-xs font-semibold hover:bg-blue-700 shadow-sm transition"
-            >
-              <Plus className="w-4 h-4" />
-              <span>New Inquiry</span>
-            </button>
-          )}
         </div>
       </div>
 

@@ -24,6 +24,8 @@ interface ResponsiveFilterBarProps {
   sheetTitle?: string;
   /** Extra classes for outer container */
   className?: string;
+  /** Breakpoint at which inline desktop filters appear (defaults to 'md') */
+  breakpoint?: 'md' | 'lg';
 }
 
 export function ResponsiveFilterBar({
@@ -35,14 +37,17 @@ export function ResponsiveFilterBar({
   onClearAll,
   sheetTitle = 'Filters',
   className = '',
+  breakpoint = 'md',
 }: ResponsiveFilterBarProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const count = activeCount ?? activeChips.length;
+  const desktopBarClass = breakpoint === 'lg' ? 'hidden lg:flex' : 'hidden md:flex';
+  const mobileBarClass = breakpoint === 'lg' ? 'lg:hidden' : 'md:hidden';
 
   return (
     <div className={`min-w-0 ${className}`}>
-      {/* Desktop & Tablet inline bar (md+) */}
-      <div className="hidden md:flex flex-wrap items-center gap-1.5 lg:gap-2 min-w-0">
+      {/* Desktop & Tablet inline bar */}
+      <div className={`${desktopBarClass} flex-wrap items-center gap-1.5 lg:gap-2 min-w-0`}>
         {searchInput && <div className="min-w-0 flex-1 max-w-xs">{searchInput}</div>}
         <div className="flex flex-wrap items-center gap-1.5 lg:gap-2 min-w-0 flex-1">
           {filters}
@@ -50,8 +55,8 @@ export function ResponsiveFilterBar({
         {actions && <div className="flex items-center gap-1.5 shrink-0 ml-auto">{actions}</div>}
       </div>
 
-      {/* Mobile compact bar (<md) */}
-      <div className="md:hidden space-y-1.5 min-w-0">
+      {/* Mobile / Compact bar */}
+      <div className={`${mobileBarClass} space-y-1.5 min-w-0`}>
         <div className="flex items-center gap-1.5 min-w-0">
           {searchInput && <div className="flex-1 min-w-0">{searchInput}</div>}
           <button

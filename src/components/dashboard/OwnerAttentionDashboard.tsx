@@ -252,20 +252,12 @@ export const OwnerAttentionDashboard: React.FC<OwnerAttentionDashboardProps> = (
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mb-6">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-4 mb-4 border-b border-slate-100">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="flex h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
-            <h2 className="text-base font-bold text-slate-900 tracking-tight uppercase">
-              What Needs My Attention
-            </h2>
-            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
-              Executive & Operational Cockpit
-            </span>
-          </div>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Real-time critical health metrics, liquidity, working capital, pending approvals, and operational bottlenecks.
-          </p>
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-slate-100">
+        <div className="flex items-center gap-2">
+          <span className="flex h-2 w-2 rounded-full bg-emerald-500" />
+          <h2 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight uppercase">
+            What Needs Attention
+          </h2>
         </div>
 
         <button

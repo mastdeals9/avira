@@ -25,7 +25,7 @@ export async function waitForAppReady(page: Page) {
   // Wait for login form to be hidden
   await expect(page.locator('#username')).toBeHidden({ timeout: 15000 });
   // Wait for React Suspense full-screen fallback to be hidden
-  await expect(page.locator('.min-h-screen .animate-spin')).toBeHidden({ timeout: 15000 });
+  await expect(page.locator('.min-h-screen .animate-spin.h-16')).toBeHidden({ timeout: 15000 });
 }
 
 /**

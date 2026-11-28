@@ -210,6 +210,8 @@ export function InquiryTableExcel({
   const [mobileExpandedIds, setMobileExpandedIds] = useState<Set<string>>(new Set());
   const [mobileEditInquiry, setMobileEditInquiry] = useState<Inquiry | null>(null);
   const [mobileEditForm, setMobileEditForm] = useState<Record<string, any>>({});
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
+  const [actionsColumnsExpanded, setActionsColumnsExpanded] = useState(false);
   const saveQueueRef = useRef<Map<string, Promise<void>>>(new Map());
   const cellNodeRefs = useRef<Map<string, HTMLElement>>(new Map());
   const latestFieldValuesRef = useRef<Map<string, any>>(new Map());
@@ -263,17 +265,17 @@ export function InquiryTableExcel({
   const filterRef = useRef<HTMLDivElement>(null);
 
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({
-    checkbox: 45,
-    inquiry_number: 140,
-    inquiry_date: 110,
-    company_name: 180,
-    product_name: 180,
-    specification: 160,
-    quantity: 90,
-    supplier_name: 150,
-    aceerp_no: 120,
-    purchase_price: 110,
-    offered_price: 110,
+    checkbox: 40,
+    inquiry_number: 120,
+    inquiry_date: 96,
+    company_name: 156,
+    product_name: 168,
+    specification: 136,
+    quantity: 74,
+    supplier_name: 136,
+    aceerp_no: 104,
+    purchase_price: 104,
+    offered_price: 104,
     our_side: 140,
     quote_status: 120,
     status_next: 190,
@@ -2299,169 +2301,206 @@ export function InquiryTableExcel({
   }, [groupByCustomer, filteredData, customerGroups, expandedCustomerGroups]);
 
   return (
-    <div className="space-y-4">
-      {/* Compact toolbar — Export/Import dropdowns + Columns + Add Inquiry + search + count */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {/* Export dropdown */}
-        <div className="relative">
-          <button
-            onClick={() => { setExportMenuOpen(o => !o); setImportMenuOpen(false); setColumnsMenuOpen(false); }}
-            disabled={exporting || filteredData.length === 0}
-            className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 transition disabled:opacity-50 disabled:cursor-not-allowed min-h-[32px]"
-          >
-            <Download className="w-3 h-3" />
-            {exporting ? 'Exporting…' : t('common.export', 'Export')}
-            <ChevronDown className="w-3 h-3 opacity-60" />
-          </button>
-          {exportMenuOpen && (
-            <div className="absolute left-0 top-full mt-1 w-40 bg-white border border-gray-200 rounded shadow-lg z-50 py-1">
-              <button onClick={() => { setExportMenuOpen(false); exportToExcel(); }} className="w-full text-left px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-1.5">
-                <FileSpreadsheet className="w-3 h-3" /> Excel (.xlsx)
-              </button>
-              <button onClick={() => { setExportMenuOpen(false); exportToCSV(); }} className="w-full text-left px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-1.5">
-                <Download className="w-3 h-3" /> CSV
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Import dropdown */}
-        {canManage && (
+    <div className="space-y-2.5">
+      {/* Coherent Secondary Toolbar — Actions (Export/Import/Columns), Group by Customer, Autosave & Count */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {/* Unified Actions Menu (Export, Import, Columns) */}
           <div className="relative">
             <button
-              onClick={() => { setImportMenuOpen(o => !o); setExportMenuOpen(false); setColumnsMenuOpen(false); }}
-              className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 transition min-h-[32px]"
+              type="button"
+              onClick={() => setActionsMenuOpen((o) => !o)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition min-h-[32px]"
             >
-              <Upload className="w-3 h-3" />
-              {t('common.import') === 'common.import' ? 'Import' : t('common.import')}
+              <FileSpreadsheet className="w-3.5 h-3.5 text-slate-500" />
+              <span>{t('common.actions') === 'common.actions' ? 'Actions' : t('common.actions')}</span>
               <ChevronDown className="w-3 h-3 opacity-60" />
             </button>
-            {importMenuOpen && (
-              <div className="absolute left-0 top-full mt-1 w-44 bg-white border border-gray-200 rounded shadow-lg z-50 py-1">
-                <label className="w-full text-left px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 cursor-pointer">
-                  <FileSpreadsheet className="w-3 h-3" /> Import Excel
-                  <input name="file_upload" aria-label="Upload file" type="file" accept=".xlsx,.xls" onChange={(e) => { setImportMenuOpen(false); handleImportFile(e); }} className="hidden" />
-                </label>
-                <button onClick={() => { setImportMenuOpen(false); downloadImportTemplate(); }} className="w-full text-left px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-1.5">
-                  <Download className="w-3 h-3" /> Download Template
+            {actionsMenuOpen && (
+              <div className="absolute left-0 top-full mt-1 w-60 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1.5 text-xs">
+                <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  {t('common.export') === 'common.export' ? 'Export' : t('common.export')}
+                </div>
+                <button
+                  type="button"
+                  disabled={exporting || filteredData.length === 0}
+                  onClick={() => { setActionsMenuOpen(false); exportToExcel(); }}
+                  className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 flex items-center gap-2 disabled:opacity-50"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>{exporting ? 'Exporting…' : 'Export Excel (.xlsx)'}</span>
                 </button>
+                <button
+                  type="button"
+                  disabled={exporting || filteredData.length === 0}
+                  onClick={() => { setActionsMenuOpen(false); exportToCSV(); }}
+                  className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 flex items-center gap-2 disabled:opacity-50"
+                >
+                  <Download className="w-3.5 h-3.5 text-slate-500" />
+                  <span>Export CSV</span>
+                </button>
+
+                {canManage && (
+                  <>
+                    <div className="my-1 border-t border-slate-100" />
+                    <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      {t('common.import') === 'common.import' ? 'Import' : t('common.import')}
+                    </div>
+                    <label className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer">
+                      <Upload className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Import Excel</span>
+                      <input
+                        name="file_upload"
+                        aria-label="Upload file"
+                        type="file"
+                        accept=".xlsx,.xls"
+                        onChange={(e) => { setActionsMenuOpen(false); handleImportFile(e); }}
+                        className="hidden"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => { setActionsMenuOpen(false); downloadImportTemplate(); }}
+                      className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                    >
+                      <Download className="w-3.5 h-3.5 text-slate-500" />
+                      <span>Download Template</span>
+                    </button>
+                  </>
+                )}
+
+                <div className="my-1 border-t border-slate-100" />
+                <button
+                  type="button"
+                  onClick={() => setActionsColumnsExpanded((v) => !v)}
+                  className="w-full text-left px-3 py-1.5 text-slate-700 hover:bg-slate-50 flex items-center justify-between font-medium"
+                >
+                  <span>{t('common.columns') === 'common.columns' ? 'Columns' : t('common.columns')}</span>
+                  <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${actionsColumnsExpanded ? 'rotate-180' : ''}`} />
+                </button>
+                {actionsColumnsExpanded && (
+                  <div className="px-2.5 py-1.5 max-h-56 overflow-y-auto border-t border-slate-100 bg-slate-50/50 space-y-0.5">
+                    <button onClick={resetTablePrefs} className="text-[11px] text-blue-600 hover:underline mb-1 block">
+                      Reset column widths
+                    </button>
+                    {[
+                      ['inquiry_number', 'ACRP / Inquiry #'],
+                      ['inquiry_date', 'Date'],
+                      ['company_name', 'Customer'],
+                      ['product_name', 'Product'],
+                      ['specification', 'Specification'],
+                      ['quantity', 'Qty'],
+                      ['supplier_name', 'Supplier'],
+                      ['aceerp_no', 'ACE ERP#'],
+                      ['purchase_price', 'P.Price'],
+                      ['offered_price', 'O.Price'],
+                      ['our_side', 'Requirements / Docs'],
+                      ['quote_status', 'Quote Status'],
+                      ['status_next', 'Pending / Next Action'],
+                      ['delivery_date', 'Delivery'],
+                      ['pipeline_status', 'Pipeline'],
+                      ['priority', 'Priority'],
+                      ['mail_subject', 'Mail Subject'],
+                      ['remarks', 'Remarks'],
+                      ['actions', 'Detail'],
+                    ].map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 px-1 py-0.5 text-xs text-slate-700 cursor-pointer">
+                        <input
+                          name="checkbox"
+                          aria-label={label}
+                          type="checkbox"
+                          checked={isColumnVisible(key)}
+                          disabled={['inquiry_number', 'product_name'].includes(key)}
+                          onChange={() => toggleColumnVisibility(key)}
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
 
-        {/* Columns menu */}
-        <div className="relative">
           <button
-            onClick={() => { setColumnsMenuOpen(o => !o); setExportMenuOpen(false); setImportMenuOpen(false); }}
-            className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 transition min-h-[32px]"
-          >
-            {t('common.columns') === 'common.columns' ? 'Columns' : t('common.columns')}
-            <ChevronDown className="w-3 h-3 opacity-60" />
-          </button>
-          {columnsMenuOpen && (
-            <div className="absolute left-0 top-full mt-1 w-56 bg-white border border-gray-200 rounded shadow-lg z-50 p-2">
-              <button onClick={resetTablePrefs} className="text-[11px] text-blue-600 hover:underline mb-1">Reset widths</button>
-              {[
-                ['inquiry_number', 'ACRP / Inquiry #'],
-                ['inquiry_date', 'Date'],
-                ['company_name', 'Customer'],
-                ['product_name', 'Product'],
-                ['specification', 'Specification'],
-                ['quantity', 'Qty'],
-                ['supplier_name', 'Supplier'],
-                ['aceerp_no', 'ACE ERP#'],
-                ['purchase_price', 'P.Price'],
-                ['offered_price', 'O.Price'],
-                ['our_side', 'Requirements / Docs'],
-                ['quote_status', 'Quote Status'],
-                ['status_next', 'Pending / Next Action'],
-                ['delivery_date', 'Delivery'],
-                ['pipeline_status', 'Pipeline'],
-                ['priority', 'Priority'],
-                ['mail_subject', 'Mail Subject'],
-                ['remarks', 'Remarks'],
-                ['actions', 'Detail'],
-              ].map(([key, label]) => (
-                <label key={key} className="flex items-center gap-2 px-1.5 py-1 text-xs text-gray-700">
-                  <input name="checkbox" aria-label="Checkbox"
-                    type="checkbox"
-                    checked={isColumnVisible(key)}
-                    disabled={['inquiry_number', 'product_name'].includes(key)}
-                    onChange={() => toggleColumnVisibility(key)}
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {canManage && onAddInquiry && (
-          <button
-            onClick={onAddInquiry}
-            className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-white bg-blue-600 border border-blue-600 rounded hover:bg-blue-700 transition min-h-[32px]"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>{t('crm.form.addInquiry', 'Add Inquiry')}</span>
-          </button>
-        )}
-
-        {/* Product search — sits inline in the toolbar */}
-        <div className="relative flex-1 min-w-[180px] max-w-[320px]">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" />
-          <input name="product_search" aria-label="Search product..."
-            type="text"
-            value={productSearch}
-            onChange={e => setProductSearch(e.target.value)}
-            placeholder={t('crm.form.productNamePlaceholder', 'Search product...')}
-            style={{ paddingLeft: '1.85rem' }}
-            className="w-full pl-7 pr-6 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white"
-          />
-          {productSearch && (
-            <button
-              onClick={() => setProductSearch('')}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          )}
-        </div>
-
-        <div className="ml-auto text-xs text-gray-500">
-          {filteredData.length} {filteredData.length === 1 ? 'inquiry' : 'inquiries'}
-          {filters.length > 0 && ' · filtered'}
-          {sortConfig.direction && ' · sorted'}
-        </div>
-      </div>
-
-      {/* Compact status chips (md+ inline, <md inside ResponsiveFilterBar) */}
-      <div className="hidden md:flex flex-wrap items-center gap-1">
-        {[
-          ['all', 'All'],
-          ['new_not_sent', 'New Not Sent'],
-          ['waiting_india', 'Waiting India'],
-          ['reminder_due', 'Reminder Due'],
-          ['need_kunal', 'Need Kunal Price'],
-          ['reply_pending', 'Reply Pending'],
-          ['quote_sent', 'Quote Sent'],
-        ].map(([value, label]) => (
-          <button
-            key={value}
-            onClick={() => setQuickFilter(value)}
-            className={`px-2 py-0.5 text-[11px] rounded-full border transition ${
-              quickFilter === value
-                ? 'bg-blue-600 text-white border-blue-600'
-                : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+            type="button"
+            onClick={() => {
+              setGroupByCustomer((prev) => {
+                const next = !prev;
+                try {
+                  localStorage.setItem('crm_inquiry_group_by_customer', String(next));
+                } catch {
+                  // ignore storage errors
+                }
+                return next;
+              });
+            }}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium transition min-h-[32px] ${
+              groupByCustomer
+                ? 'bg-blue-50 border-blue-300 text-blue-700'
+                : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
             }`}
+            title="Group multiple inquiries under each customer with expand/collapse"
           >
-            {label}
+            <Layers className="w-3.5 h-3.5" />
+            <span>Group by Customer</span>
           </button>
-        ))}
+
+          {/* Compact quick-status chips on desktop (lg+) */}
+          <div className="hidden lg:flex flex-wrap items-center gap-1 ml-1">
+            {[
+              ['all', 'All'],
+              ['new_not_sent', 'New Not Sent'],
+              ['waiting_india', 'Waiting India'],
+              ['reminder_due', 'Reminder Due'],
+              ['need_kunal', 'Need Price'],
+              ['reply_pending', 'Reply Pending'],
+              ['quote_sent', 'Quote Sent'],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setQuickFilter(value)}
+                className={`px-2 py-0.5 text-[11px] rounded-full border transition ${
+                  quickFilter === value
+                    ? 'bg-blue-600 text-white border-blue-600 font-medium'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Subtle autosave indicator & inquiry count */}
+        <div className="flex items-center gap-2.5 text-xs text-slate-500 ml-auto">
+          <span>
+            {filteredData.length} {filteredData.length === 1 ? 'inquiry' : 'inquiries'}
+            {filters.length > 0 && ' · filtered'}
+            {sortConfig.direction && ' · sorted'}
+          </span>
+          {savingCellCount > 0 ? (
+            <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
+              <Loader className="w-3 h-3 animate-spin" />
+              Saving ({savingCellCount})…
+            </span>
+          ) : errorCellCount > 0 ? (
+            <span className="inline-flex items-center gap-1 text-red-700 font-medium">
+              <XCircle className="w-3 h-3" />
+              {errorCellCount} error{errorCellCount > 1 ? 's' : ''}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-slate-400">
+              <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+              <span className="hidden sm:inline">Autosave active</span>
+            </span>
+          )}
+        </div>
       </div>
 
-      <div className="md:hidden">
+      <div className="lg:hidden">
         <ResponsiveFilterBar
+          breakpoint="lg"
           sheetTitle="Inquiry Filters"
           activeChips={[
             ...(quickFilter !== 'all'
@@ -2665,57 +2704,6 @@ export function InquiryTableExcel({
         </div>
       )}
 
-      {/* Excel-like Table Controls: Grouping Toggle + Background Autosave Status */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setGroupByCustomer((prev) => {
-                const next = !prev;
-                try {
-                  localStorage.setItem('crm_inquiry_group_by_customer', String(next));
-                } catch {
-                  // ignore storage quota errors
-                }
-                return next;
-              });
-            }}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs font-medium transition ${
-              groupByCustomer
-                ? 'bg-blue-50 border-blue-300 text-blue-700'
-                : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
-            }`}
-            title="Group multiple inquiries under each customer with expand/collapse"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Group by Customer</span>
-          </button>
-          <span className="text-[11px] text-gray-500 hidden sm:inline">
-            Click any cell to edit · Tab / Enter / Arrows to navigate · Ctrl/Cmd+V to paste from Excel
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2 text-xs">
-          {savingCellCount > 0 ? (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-medium">
-              <Loader className="w-3 h-3 animate-spin" />
-              Saving ({savingCellCount})…
-            </span>
-          ) : errorCellCount > 0 ? (
-            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-red-50 border border-red-200 text-red-700 font-medium">
-              <XCircle className="w-3 h-3" />
-              {errorCellCount} cell error{errorCellCount > 1 ? 's' : ''}
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 font-medium">
-              <CheckCircle2 className="w-3 h-3" />
-              Autosave active
-            </span>
-          )}
-        </div>
-      </div>
-
       {pasteErrors.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start justify-between gap-2 text-xs text-red-800">
           <div>
@@ -2733,8 +2721,8 @@ export function InquiryTableExcel({
         </div>
       )}
 
-      {/* Mobile Inquiry Card View (<768px) */}
-      <div className="md:hidden space-y-2">
+      {/* Mobile & Tablet Inquiry Card View (<1024px) */}
+      <div className="lg:hidden grid grid-cols-1 sm:grid-cols-2 gap-2">
         {filteredData.length === 0 ? (
           <div className="bg-white rounded-xl border border-gray-200 p-6 text-center text-xs text-gray-500">
             No inquiries match the current filter.
@@ -2853,7 +2841,8 @@ export function InquiryTableExcel({
       </div>
 
       {/* Excel-like Table (md+ desktop/laptop/tablet) */}
-      <div className="hidden md:block bg-white rounded-lg shadow overflow-hidden border border-gray-200 min-w-0">
+      {/* Excel-Style Spreadsheet View (1024px+) */}
+      <div className="hidden lg:block bg-white rounded-lg shadow overflow-hidden border border-gray-200 min-w-0">
         <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
           <table className="w-full text-xs border-collapse">
             <thead className="bg-gray-100 sticky top-0 z-20">
@@ -3464,7 +3453,7 @@ export function InquiryTableExcel({
 
                     {/* Purchase Price (Admin Only) */}
                     {canSeePPrice && isColumnVisible('purchase_price') && (
-                      <td className={`px-1.5 py-1 border-r border-gray-200 font-mono ${getCellChromeClass(inquiry.id, 'purchase_price')}`}>
+                      <td className={`px-2 py-1 border-r border-gray-200 font-mono whitespace-nowrap tabular-nums ${getCellChromeClass(inquiry.id, 'purchase_price')}`}>
                         {renderExcelTextCell(
                           inquiry,
                           'purchase_price',
@@ -3478,7 +3467,7 @@ export function InquiryTableExcel({
 
                     {/* Offered Price (O.Price) — sales sees only when price_ready=true; warehouse/auditor never see */}
                     {canSeeQuoteColumn && isColumnVisible('offered_price') && (
-                      <td className={`px-1.5 py-1 border-r border-gray-200 font-mono ${getCellChromeClass(inquiry.id, 'offered_price')}`}>
+                      <td className={`px-2 py-1 border-r border-gray-200 font-mono whitespace-nowrap tabular-nums ${getCellChromeClass(inquiry.id, 'offered_price')}`}>
                         {(() => {
                           const allowed = canSeeFinalQuote(profile?.role, inquiry.price_ready);
                           if (!allowed) {

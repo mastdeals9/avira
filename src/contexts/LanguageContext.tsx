@@ -15,6 +15,29 @@ interface LanguageContextType {
 
 const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
 
+const warnedMissingKeys = new Set<string>();
+
+function resolveNestedKey(root: unknown, key: string): string | undefined {
+  const keys = key.split('.');
+  let value: unknown = root;
+  for (const k of keys) {
+    if (value && typeof value === 'object' && k in value) {
+      value = (value as Record<string, unknown>)[k];
+    } else {
+      return undefined;
+    }
+  }
+  return typeof value === 'string' ? value : undefined;
+}
+
+function humanizeKey(key: string): string {
+  const leaf = key.split('.').pop() || key;
+  return leaf
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/^\w/, (c) => c.toUpperCase());
+}
+
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const [language, setLanguageState] = useState<Language>('en');
 
@@ -30,19 +53,26 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('language', lang);
   };
 
-  const translateFunction = (key: string): string => {
-    const keys = key.split('.');
-    let value: unknown = translations[language] as Record<string, unknown>;
+  const translateFunction = (key: string, fallback?: string): string => {
+    const localized = resolveNestedKey(translations[language], key);
+    if (localized !== undefined) {
+      return localized;
+    }
 
-    for (const k of keys) {
-      if (value && typeof value === 'object' && k in value) {
-        value = (value as Record<string, unknown>)[k];
-      } else {
-        return key;
+    if (import.meta.env?.DEV) {
+      const warnId = `${language}:${key}`;
+      if (!warnedMissingKeys.has(warnId)) {
+        warnedMissingKeys.add(warnId);
+        console.warn(`[i18n] Missing translation key "${key}" for language "${language}"`);
       }
     }
 
-    return typeof value === 'string' ? value : key;
+    const englishFallback = language !== 'en' ? resolveNestedKey(translations.en, key) : undefined;
+    if (englishFallback !== undefined) {
+      return englishFallback;
+    }
+
+    return fallback || humanizeKey(key);
   };
 
   const t = Object.assign(translateFunction, translations[language]);

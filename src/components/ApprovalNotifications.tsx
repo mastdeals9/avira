@@ -21,7 +21,11 @@ interface CompanyRef {
   company_name?: string;
 }
 
-export function ApprovalNotifications() {
+interface ApprovalNotificationsProps {
+  variant?: 'topbar' | 'floating';
+}
+
+export function ApprovalNotifications({ variant = 'topbar' }: ApprovalNotificationsProps = {}) {
   const { profile } = useAuth();
   const { setCurrentPage, setNavigationData } = useNavigation();
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
@@ -291,33 +295,52 @@ export function ApprovalNotifications() {
     petty_cash:      { label: 'Petty Cash',       bg: 'bg-yellow-100', text: 'text-yellow-600', Icon: Wallet },
   };
 
-  // Minimized state: notification bell pill with persistent pending approvals badge
+  // Minimized state: non-overlapping topbar pill (default) or floating pill
   if (!isOpen) {
+    if (variant === 'topbar') {
+      return (
+        <button
+          type="button"
+          onClick={handleOpen}
+          className="no-compact relative inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-semibold transition shrink-0 min-h-[32px]"
+          title={`Pending Approvals (${pendingApprovals.length})`}
+          aria-label={`Pending Approvals (${pendingApprovals.length})`}
+          data-testid="pending-approvals-trigger"
+        >
+          <Bell className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+          <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-red-600 text-white text-[10px] font-bold tabular-nums">
+            {pendingApprovals.length}
+          </span>
+          <span className="hidden xl:inline tracking-tight">Approvals</span>
+        </button>
+      );
+    }
+
     return (
       <button
         type="button"
         onClick={handleOpen}
-        className="fixed bottom-16 sm:bottom-4 right-2 sm:right-4 z-50 flex items-center gap-2 px-3.5 py-2.5 rounded-full bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 hover:scale-105 active:scale-95 group border border-blue-400/30"
+        className="fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:bottom-4 right-2 sm:right-4 z-40 flex items-center gap-2 px-3 py-2 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 transition border border-blue-400/30"
         title={`Pending Approvals (${pendingApprovals.length})`}
         aria-label={`Pending Approvals (${pendingApprovals.length})`}
         data-testid="pending-approvals-trigger"
       >
         <div className="relative flex items-center justify-center">
-          <Bell className="w-5 h-5 text-white" />
-          <span className="absolute -top-1.5 -right-2 min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1 shadow border border-white">
+          <Bell className="w-4 h-4 text-white" />
+          <span className="absolute -top-1.5 -right-2 min-w-[16px] h-[16px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1 border border-white">
             {pendingApprovals.length}
           </span>
         </div>
-        <span className="text-xs font-semibold tracking-wide hidden sm:inline pr-1">
+        <span className="text-xs font-semibold tracking-wide hidden sm:inline pr-0.5">
           Pending Approvals
         </span>
       </button>
     );
   }
 
-  // Expanded state: full slide-out panel
+  // Expanded state: dropdown anchored safely below the topbar (never obscuring bottom nav or cards)
   return (
-    <div className="fixed bottom-16 sm:bottom-4 right-2 sm:right-4 left-2 sm:left-auto sm:w-96 max-w-[calc(100vw-16px)] max-h-[70vh] sm:max-h-[600px] overflow-hidden rounded-xl shadow-2xl bg-white border border-gray-200 animate-slide-up z-50 flex flex-col">
+    <div className="fixed top-14 right-2 sm:right-4 left-2 sm:left-auto sm:w-96 max-w-[calc(100vw-16px)] max-h-[calc(100dvh-5.5rem-env(safe-area-inset-bottom,0px))] overflow-hidden rounded-xl shadow-2xl bg-white border border-gray-200 animate-slide-up z-50 flex flex-col">
       <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />

@@ -168,7 +168,7 @@ export function ExportSalesProfitModal({
                     </span>
                   </div>
                   <div className="text-[11px] text-gray-500 mt-1">
-                    On-screen product totals, stock, and margins. Fast, clean, single sheet.
+                    Summary + Product Profitability sheets. Clean, fast executive view.
                   </div>
                 </button>
 
@@ -185,14 +185,14 @@ export function ExportSalesProfitModal({
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5 font-bold text-sm text-gray-900">
                       <FileSpreadsheet className="w-4 h-4 text-teal-600" />
-                      Full Drill-Down
+                      Full Detail
                     </div>
                     <span className="px-1.5 py-0.5 text-[9px] font-medium rounded bg-gray-100 text-gray-600">
-                      4 Sheets
+                      3 Sheets
                     </span>
                   </div>
                   <div className="text-[11px] text-gray-500 mt-1">
-                    Complete audit with batches, orders, delivery challans, and expenses.
+                    SUMMARY, PRODUCT PROFITABILITY, and invoice-level SALES DETAIL.
                   </div>
                 </button>
               </div>
@@ -311,13 +311,13 @@ export function ExportSalesProfitModal({
               <div className="font-semibold flex items-center gap-1.5 text-xs text-emerald-950">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                 {exportFormat === 'consolidated'
-                  ? 'Consolidated Executive Report Format:'
-                  : 'Full Hierarchical Audit (4 Dedicated Sheets):'}
+                  ? 'Consolidated Report Format (2 Sheets):'
+                  : 'Complete Sales Profitability Workbook (3 Sheets):'}
               </div>
               <p className="text-[11px] text-emerald-800 leading-normal">
                 {exportFormat === 'consolidated'
-                  ? 'Exports a single clean sheet with executive KPI cards, full table borders on all cells, right-aligned currency (Rp), percentage margins, frozen headers, and accounting double-underline totals.'
-                  : 'Exports 4 complete sheets (Detailed Audit, Product Summary, Batch Breakdown, and Orders & Challans) with full cell borders, auto column widths, and frozen panes.'}
+                  ? 'Exports SUMMARY (executive metrics & monthly trend) and PRODUCT PROFITABILITY with IDR formatting, frozen headers, and filters.'
+                  : 'Exports SUMMARY, PRODUCT PROFITABILITY, and SALES DETAIL (one row per invoice item) with IDR formatting, frozen headers, and filters.'}
               </p>
               <p className="text-[10px] text-emerald-700/90 pt-0.5">
                 Audit Safe: Cancelled sales invoices are automatically excluded from revenue, COGS, and sales totals.

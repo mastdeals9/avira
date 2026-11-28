@@ -104,6 +104,7 @@ export default function PurchaseOrders() {
   const [showViewModal, setShowViewModal] = useState(false);
   const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
   const [editingPO, setEditingPO] = useState<PurchaseOrder | null>(null);
+  const [expandedMobilePoId, setExpandedMobilePoId] = useState<string | null>(null);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -669,10 +670,102 @@ export default function PurchaseOrders() {
           </select>
         </div>
 
-        {/* Table */}
+        {/* Mobile Cards (<768px) & Desktop Table (768px+) */}
         <div className="bg-white border border-gray-200 rounded overflow-hidden">
-          <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200 text-xs">
+          {filteredPOs.length === 0 ? (
+            <div className="text-center py-12 px-4 text-gray-500">
+              <FileText className="w-10 h-10 mx-auto mb-2 text-gray-300" />
+              <p className="text-sm font-medium text-gray-700">No purchase orders found</p>
+              <p className="text-xs text-gray-400 mt-0.5">Try adjusting your search or status filter, or create a new purchase order.</p>
+            </div>
+          ) : (
+            <>
+              <div className="md:hidden divide-y divide-gray-200">
+                {filteredPOs.map((po) => {
+                  const isExpanded = expandedMobilePoId === po.id;
+                  return (
+                    <div key={po.id} className="p-3 space-y-2 text-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-bold text-gray-900">{po.po_number}</span>
+                            {getStatusBadge(po.status)}
+                          </div>
+                          <p className="font-medium text-gray-800 mt-0.5 truncate">{po.suppliers?.company_name || '—'}</p>
+                          <p className="text-[11px] text-gray-400">{formatDate(po.po_date)}</p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="font-mono font-bold text-gray-900">
+                            {formatCurrency(po.total_amount, po.currency)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-gray-600 bg-slate-50 rounded p-2 border border-slate-100">
+                        {po.purchase_order_items && po.purchase_order_items.length > 0 ? (
+                          <div className="space-y-0.5">
+                            {po.purchase_order_items.slice(0, isExpanded ? undefined : 2).map((item, idx) => (
+                              <div key={idx} className="flex items-center justify-between gap-2">
+                                <span className="truncate font-medium text-gray-700">{item.products?.product_name || item.description}</span>
+                                <span className="shrink-0 text-gray-500">×{item.quantity}</span>
+                              </div>
+                            ))}
+                            {!isExpanded && po.purchase_order_items.length > 2 && (
+                              <span className="text-[10px] text-blue-600 font-medium">
+                                +{po.purchase_order_items.length - 2} more items
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-gray-400 italic">No items</span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedMobilePoId(isExpanded ? null : po.id)}
+                          className="text-[11px] font-medium text-slate-600 hover:text-slate-900"
+                        >
+                          {isExpanded ? 'Hide Details' : 'Expand Details'}
+                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <FinanceActionButton action="view" label="View" onClick={() => void handleView(po)} />
+                          {po.status !== 'cancelled' && profile?.role !== 'auditor_ca' && (
+                            <button
+                              type="button"
+                              onClick={() => handleCreateInvoice(po)}
+                              className="p-1 text-indigo-600 hover:text-indigo-800 rounded hover:bg-indigo-50"
+                              title="Create Purchase Invoice"
+                            >
+                              <FileText className="h-4 w-4" />
+                            </button>
+                          )}
+                          {profile?.role !== 'auditor_ca' && (
+                            <>
+                              <FinanceActionButton action="edit" label="Edit" onClick={(event) => { event.stopPropagation(); void handleEdit(po); }} />
+                              <FinanceActionButton action="delete" label="Delete" onClick={(event) => { event.stopPropagation(); void handleDelete(po.id); }} />
+                            </>
+                          )}
+                          {po.status === 'draft' && profile?.role === 'admin' && (
+                            <button
+                              type="button"
+                              onClick={() => handleApprove(po.id)}
+                              className="p-1 text-purple-600 hover:text-purple-800 rounded hover:bg-purple-50"
+                              title="Approve"
+                            >
+                              <CheckCircle className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="hidden md:block overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200 text-xs">
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-2 py-1.5 text-left text-[10px] font-medium text-gray-500 uppercase">PO Number</th>
@@ -761,10 +854,7 @@ export default function PurchaseOrders() {
             </tbody>
           </table>
           </div>
-          {filteredPOs.length === 0 && (
-            <div className="text-center py-12 text-gray-500">
-              No purchase orders found
-            </div>
+            </>
           )}
         </div>
 

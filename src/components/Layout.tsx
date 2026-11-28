@@ -6,6 +6,7 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { useNavigation } from '../contexts/NavigationContext';
 import { useFinance } from '../contexts/FinanceContext';
 import { NotificationDropdown } from './NotificationDropdown';
+import { ApprovalNotifications } from './ApprovalNotifications';
 import {
   LayoutDashboard, UsersRound, UserRound, ClipboardCheck, Truck, ReceiptText,
   Package, Boxes, Warehouse, ClipboardList, FileInput, Container, Landmark,
@@ -691,6 +692,8 @@ export function Layout({ children }: LayoutProps) {
                 <span className="hidden xl:inline">Search</span>
                 <kbd className="hidden 2xl:inline text-[10px] bg-gray-100 px-1 rounded">⌘K</kbd>
               </button>
+
+              <ApprovalNotifications variant="topbar" />
 
               <NotificationDropdown />
 

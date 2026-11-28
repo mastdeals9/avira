@@ -126,6 +126,7 @@ export default function SalesOrders() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [mobileExpandedKpis, setMobileExpandedKpis] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingOrder, setEditingOrder] = useState<SalesOrder | null>(null);
   const [editingFxRateOrder, setEditingFxRateOrder] = useState<SalesOrder | null>(null);
@@ -971,23 +972,37 @@ export default function SalesOrders() {
         </nav>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2.5">
-        {summaryCards.map((card) => {
-          const isActive = statusFilter === card.key;
-          return (
+      <div className="space-y-1.5">
+        <div className="grid grid-cols-3 md:grid-cols-3 lg:grid-cols-5 gap-2">
+          {summaryCards.map((card, idx) => {
+            const isActive = statusFilter === card.key;
+            const visibleOnMobile = idx < 3 || mobileExpandedKpis;
+            return (
+              <button
+                key={card.key}
+                type="button"
+                onClick={() => setStatusFilter(card.key)}
+                className={`${visibleOnMobile ? 'flex' : 'hidden md:flex'} bg-white px-2.5 sm:px-3 py-2 rounded-xl border border-slate-200 shadow-xs text-left transition hover:border-slate-300 min-h-[60px] flex-col justify-between focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                  isActive ? 'ring-1 ring-blue-500 bg-blue-50/50 border-blue-300' : ''
+                }`}
+              >
+                <div className="text-[10.5px] sm:text-[11px] font-semibold text-gray-500 uppercase tracking-wide truncate">{card.label}</div>
+                <div className={`text-sm sm:text-base font-bold ${card.valueClass}`}>{card.value}</div>
+              </button>
+            );
+          })}
+        </div>
+        {summaryCards.length > 3 && (
+          <div className="md:hidden flex justify-end">
             <button
-              key={card.key}
               type="button"
-              onClick={() => setStatusFilter(card.key)}
-              className={`bg-white px-3 py-2 rounded-xl border border-slate-200 shadow-xs text-left transition hover:border-slate-300 min-h-[64px] flex flex-col justify-between focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-                isActive ? 'ring-1 ring-blue-500 bg-blue-50/50 border-blue-300' : ''
-              }`}
+              onClick={() => setMobileExpandedKpis((v) => !v)}
+              className="text-[11px] font-semibold text-blue-600 hover:text-blue-800"
             >
-              <div className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide truncate">{card.label}</div>
-              <div className={`text-base font-bold ${card.valueClass}`}>{card.value}</div>
+              {mobileExpandedKpis ? 'Show fewer metrics' : `Show ${summaryCards.length - 3} more metrics`}
             </button>
-          );
-        })}
+          </div>
+        )}
       </div>
 
       <div className="bg-white rounded-lg shadow mb-4 sales-transaction-table">

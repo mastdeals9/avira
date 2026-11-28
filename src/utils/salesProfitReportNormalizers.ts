@@ -243,3 +243,183 @@ export function normalizeBatchProfitabilityRow(raw: any): NormalizedBatchProfita
     cost_breakdown: costBreakdown,
   };
 }
+
+export interface UnitQuantityTotal {
+  unit: string;
+  quantity: number;
+}
+
+export function summarizeQuantitiesByUnit(
+  items: Array<{ unit?: string | null; quantity: number }>
+): UnitQuantityTotal[] {
+  const map = new Map<string, number>();
+  for (const item of items) {
+    const unit = (item.unit || 'kg').trim().toLowerCase();
+    const prev = map.get(unit) ?? 0;
+    map.set(unit, Math.round((prev + Number(item.quantity || 0)) * 1000) / 1000);
+  }
+  return Array.from(map.entries()).map(([unit, quantity]) => ({ unit, quantity }));
+}
+
+function assertFiniteNumber(value: unknown, fieldName: string): number {
+  if (value === null || value === undefined || value === '') {
+    throw new Error(`Invalid profitability RPC response: missing required numeric field "${fieldName}"`);
+  }
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    throw new Error(`Invalid profitability RPC response: field "${fieldName}" is not a finite number`);
+  }
+  return num;
+}
+
+export function adaptProfitabilitySummaryResponse(
+  raw: unknown,
+  stockMap?: Map<string, { current: number; reserved: number; available: number }>
+): {
+  company: {
+    gross_sales: number;
+    sales_returns: number;
+    net_sales: number;
+    product_cost: number;
+    return_cogs: number;
+    net_product_cost: number;
+    sales_expenses: number;
+    unallocated_sales_expenses: number;
+    gross_profit: number;
+    profit_after_sales_expenses: number;
+    profit_margin_pct: number;
+    total_qty_sold: number;
+    order_count: number;
+    product_count: number;
+    cancelled_invoices?: {
+      count: number;
+      total_amount: number;
+      subtotal: number;
+      total_qty: number;
+    };
+  };
+  products: NormalizedProductProfitabilityRow[];
+  monthly: Array<{
+    month_label: string;
+    month_start: string;
+    gross_sales: number;
+    product_cost: number;
+    sales_expenses: number;
+    gross_profit: number;
+    profit_after_sales_expenses: number;
+    profit_margin_pct: number;
+    total_qty_sold: number;
+    order_count: number;
+  }>;
+} {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Invalid profitability summary response: expected a JSON object');
+  }
+  const obj = raw as Record<string, unknown>;
+  if (!obj.company || typeof obj.company !== 'object') {
+    throw new Error('Invalid profitability summary response: missing "company" object');
+  }
+  if (!Array.isArray(obj.products)) {
+    throw new Error('Invalid profitability summary response: missing "products" array');
+  }
+
+  const c = obj.company as Record<string, unknown>;
+  const grossSales = assertFiniteNumber(c.gross_sales, 'company.gross_sales');
+  const productCost = assertFiniteNumber(c.product_cost, 'company.product_cost');
+  const salesExpenses = assertFiniteNumber(c.sales_expenses, 'company.sales_expenses');
+  const grossProfit = assertFiniteNumber(c.gross_profit, 'company.gross_profit');
+  const profitAfterExpenses = assertFiniteNumber(c.profit_after_sales_expenses, 'company.profit_after_sales_expenses');
+  const orderCount = assertFiniteNumber(c.order_count, 'company.order_count');
+
+  const salesReturns = c.sales_returns != null ? assertFiniteNumber(c.sales_returns, 'company.sales_returns') : 0;
+  const returnCogs = c.return_cogs != null ? assertFiniteNumber(c.return_cogs, 'company.return_cogs') : 0;
+  const netSales = c.net_sales != null ? assertFiniteNumber(c.net_sales, 'company.net_sales') : Math.round((grossSales - salesReturns) * 100) / 100;
+  const netProductCost = c.net_product_cost != null ? assertFiniteNumber(c.net_product_cost, 'company.net_product_cost') : Math.round((productCost - returnCogs) * 100) / 100;
+  const unallocatedExp = c.unallocated_sales_expenses != null ? assertFiniteNumber(c.unallocated_sales_expenses, 'company.unallocated_sales_expenses') : 0;
+  const marginPct = c.profit_margin_pct != null ? Number(c.profit_margin_pct) : (netSales > 0 ? Math.round((profitAfterExpenses / netSales) * 10000) / 100 : 0);
+  const totalQtySold = c.total_qty_sold != null ? Number(c.total_qty_sold) : 0;
+  const productCount = c.product_count != null ? Number(c.product_count) : obj.products.length;
+
+  const products = obj.products.map((rawProd: unknown, idx: number) => {
+    if (!rawProd || typeof rawProd !== 'object') {
+      throw new Error(`Invalid profitability summary response: products[${idx}] is not an object`);
+    }
+    const rp = rawProd as Record<string, unknown>;
+    if (!rp.product_id || !rp.product_name) {
+      throw new Error(`Invalid profitability summary response: products[${idx}] missing product_id or product_name`);
+    }
+    if (rp.sold_qty === undefined && rp.total_qty_sold === undefined) {
+      throw new Error(`Invalid profitability summary response: products[${idx}] missing sold_qty / total_qty_sold`);
+    }
+    if (rp.gross_sales === undefined && rp.total_revenue === undefined) {
+      throw new Error(`Invalid profitability summary response: products[${idx}] missing gross_sales / total_revenue`);
+    }
+    const canonical = stockMap?.get(String(rp.product_id));
+    return normalizeProductProfitabilityRow(rp, canonical);
+  });
+
+  const monthly = Array.isArray(obj.monthly)
+    ? obj.monthly.map((m: any) => ({
+        month_label: String(m.month_label || ''),
+        month_start: String(m.month_start || ''),
+        gross_sales: Number(m.gross_sales ?? 0),
+        product_cost: Number(m.product_cost ?? 0),
+        sales_expenses: Number(m.sales_expenses ?? 0),
+        gross_profit: Number(m.gross_profit ?? 0),
+        profit_after_sales_expenses: Number(m.profit_after_sales_expenses ?? 0),
+        profit_margin_pct: Number(m.profit_margin_pct ?? 0),
+        total_qty_sold: Number(m.total_qty_sold ?? 0),
+        order_count: Number(m.order_count ?? 0),
+      }))
+    : [];
+
+  return {
+    company: {
+      gross_sales: grossSales,
+      sales_returns: salesReturns,
+      net_sales: netSales,
+      product_cost: productCost,
+      return_cogs: returnCogs,
+      net_product_cost: netProductCost,
+      sales_expenses: salesExpenses,
+      unallocated_sales_expenses: unallocatedExp,
+      gross_profit: grossProfit,
+      profit_after_sales_expenses: profitAfterExpenses,
+      profit_margin_pct: marginPct,
+      total_qty_sold: totalQtySold,
+      order_count: orderCount,
+      product_count: productCount,
+      cancelled_invoices: c.cancelled_invoices as any,
+    },
+    products,
+    monthly,
+  };
+}
+
+export function adaptProductBatchesResponse(
+  raw: unknown,
+  contextLabel = 'product'
+): NormalizedBatchProfitabilityRow[] {
+  let list: unknown[];
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>).batches)) {
+    list = (raw as Record<string, unknown>).batches as unknown[];
+  } else {
+    throw new Error(`Invalid product batches RPC response for ${contextLabel}: expected JSON array`);
+  }
+  return list.map(normalizeBatchProfitabilityRow);
+}
+
+export function adaptBatchOrdersResponse(
+  raw: unknown,
+  contextLabel = 'batch'
+): NormalizedOrderSaleRow[] {
+  if (Array.isArray(raw)) {
+    return raw as NormalizedOrderSaleRow[];
+  }
+  if (raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>).orders)) {
+    return (raw as Record<string, unknown>).orders as NormalizedOrderSaleRow[];
+  }
+  throw new Error(`Invalid batch orders RPC response for ${contextLabel}: expected JSON array`);
+}

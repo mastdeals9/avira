@@ -377,11 +377,13 @@ export function Dashboard() {
   return (
     <Layout>
       <div className="space-y-3 xl:space-y-4 min-w-0">
-        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-3 xl:p-4 border border-blue-100">
-          <h1 className="text-lg sm:text-xl 2xl:text-2xl font-bold text-gray-900 leading-tight">
-            Welcome, {profile?.full_name || profile?.username || 'User'}!
+        <div className="bg-white rounded-xl px-3.5 py-2.5 xl:px-4 xl:py-3 border border-slate-200 flex items-center justify-between gap-2">
+          <h1 className="text-base sm:text-lg 2xl:text-xl font-bold text-slate-900 leading-tight">
+            {profile?.full_name || profile?.username || 'Operations Dashboard'}
           </h1>
-          <p className="text-xs sm:text-sm text-gray-600 mt-0.5 sm:mt-1">Here’s what needs attention today.</p>
+          <span className="text-xs text-slate-500 font-medium hidden sm:inline">
+            {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })}
+          </span>
         </div>
 
         {(isAdmin || isAccounts || isManager || isAuditor) && (

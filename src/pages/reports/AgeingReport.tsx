@@ -382,7 +382,7 @@ export function AgeingReport() {
           <p className="text-base font-bold text-gray-900 mt-0.5">{totalInvoices}</p>
         </div>
         <div className="bg-white rounded-lg shadow-sm p-4 border-l-4 border-orange-500">
-          <p className="text-[10px] text-gray-600">{t('customers', 'Customers')}</p>
+          <p className="text-[10px] text-gray-600">{t('nav.customers')}</p>
           <p className="text-base font-bold text-gray-900 mt-0.5">{ageingData.length}</p>
         </div>
         <div className="bg-white rounded-lg shadow-sm p-4 border-l-4 border-red-600">

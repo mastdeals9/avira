@@ -136,6 +136,7 @@ function BrokerPpnRateSelector({ rate, isCustom, onChange }: {
 import { useFinance } from '../../contexts/FinanceContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLanguage } from '../../contexts/LanguageContext';
+import { getExpenseCategoryLabel, getStatusLabel } from '../../i18n/labelMappings';
 import { downloadStorageDocument, openStorageDocument, resolveStorageUrlCached } from '../../utils/signedUrlCache';
 import { currentFinancePeriod, formatFinancePeriodValue, normalizeSalaryPeriod, salaryPeriodOptions } from '../../utils/financePeriod';
 import { supabaseErrorMessage } from '../../utils/supabaseError';
@@ -553,7 +554,7 @@ export function ExpenseManager({
   onCloseEmbedded,
 }: ExpenseManagerProps) {
   const { profile } = useAuth();
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const isAdmin = profile?.role === 'admin';
   // The database Expense Category master is the selector and posting source.
   // A newly-created active master row is available here without a deploy.
@@ -3681,12 +3682,12 @@ export function ExpenseManager({
                 </div>
               }
               activeChips={[
-                ...(filterType !== 'all' ? [{ key: 'type', label: `Type: ${filterType}`, onRemove: () => setFilterType('all') }] : []),
-                ...(reconFilter !== 'all' ? [{ key: 'recon', label: `Recon: ${reconFilter}`, onRemove: () => setReconFilter('all') }] : []),
-                ...(approvalFilter !== 'all' ? [{ key: 'approval', label: `Approval: ${approvalFilter.replace(/_/g, ' ')}`, onRemove: () => setApprovalFilter('all') }] : []),
-                ...(categoryFilter !== 'all' ? [{ key: 'cat', label: `Category: ${categoryFilter}`, onRemove: () => setCategoryFilter('all') }] : []),
+                ...(filterType !== 'all' ? [{ key: 'type', label: `${t('finance.expenseCategory', 'Type')}: ${getStatusLabel(filterType, language)}`, onRemove: () => setFilterType('all') }] : []),
+                ...(reconFilter !== 'all' ? [{ key: 'recon', label: `${getStatusLabel(reconFilter, language)}`, onRemove: () => setReconFilter('all') }] : []),
+                ...(approvalFilter !== 'all' ? [{ key: 'approval', label: `${getStatusLabel(approvalFilter, language)}`, onRemove: () => setApprovalFilter('all') }] : []),
+                ...(categoryFilter !== 'all' ? [{ key: 'cat', label: `${getExpenseCategoryLabel(categoryFilter, language)}`, onRemove: () => setCategoryFilter('all') }] : []),
                 ...(supplierFilter !== 'all' ? [{ key: 'sup', label: `Supplier filtered`, onRemove: () => setSupplierFilter('all') }] : []),
-                ...(lifecycleFilter !== 'operational' ? [{ key: 'life', label: `Lifecycle: ${lifecycleFilter}`, onRemove: () => setLifecycleFilter('operational') }] : []),
+                ...(lifecycleFilter !== 'operational' ? [{ key: 'life', label: `${getStatusLabel(lifecycleFilter, language)}`, onRemove: () => setLifecycleFilter('operational') }] : []),
               ]}
               onClearAll={() => {
                 setFilterType('all');
@@ -3955,7 +3956,9 @@ export function ExpenseManager({
                     </td>
                     <td className="px-2 py-1.5">
                       <div className="text-xs font-medium text-gray-900">
-                        {category?.label || expense.expense_category}
+                        {language === 'id'
+                          ? getExpenseCategoryLabel(expense.expense_category, 'id')
+                          : (category?.label || getExpenseCategoryLabel(expense.expense_category, 'en'))}
                       </div>
                     </td>
                     <td className="px-2 py-1.5">
@@ -4261,7 +4264,9 @@ export function ExpenseManager({
                 {/* Line 2: Category + Expense Date */}
                 <div className="flex items-center justify-between text-xs text-gray-600 gap-2">
                   <div className="font-medium text-gray-800 truncate min-w-0 flex-1">
-                    {category?.label || expense.expense_category}
+                    {language === 'id'
+                      ? getExpenseCategoryLabel(expense.expense_category, 'id')
+                      : (category?.label || getExpenseCategoryLabel(expense.expense_category, 'en'))}
                   </div>
                   <div className="text-[11px] text-gray-400 font-normal shrink-0">
                     {formatDate(expense.expense_date)}
@@ -4275,11 +4280,11 @@ export function ExpenseManager({
                   </div>
                   <div className="shrink-0 text-xs font-semibold">
                     {isPaid ? (
-                      <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[10px] font-semibold border border-emerald-200/60">Paid</span>
+                      <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[10px] font-semibold border border-emerald-200/60">{getStatusLabel('paid', language)}</span>
                     ) : isPartial ? (
-                      <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[10px] font-semibold border border-amber-200/60">Partial</span>
+                      <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[10px] font-semibold border border-amber-200/60">{getStatusLabel('partial', language)}</span>
                     ) : (
-                      <span className="text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded text-[10px] font-semibold border border-rose-200/60">Unpaid</span>
+                      <span className="text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded text-[10px] font-semibold border border-rose-200/60">{getStatusLabel('unpaid', language)}</span>
                     )}
                   </div>
                 </div>
@@ -4299,7 +4304,7 @@ export function ExpenseManager({
                     <div className="grid grid-cols-2 gap-2 text-[11px]">
                       <div>
                         <span className="text-[10px] font-semibold text-gray-400 block uppercase tracking-wider">Approval Status</span>
-                        <span className="text-gray-800 font-medium capitalize">{expense.approval_status || 'Pending'}</span>
+                        <span className="text-gray-800 font-medium">{getStatusLabel(expense.approval_status || 'pending', language)}</span>
                       </div>
                       <div>
                         <span className="text-[10px] font-semibold text-gray-400 block uppercase tracking-wider">Paid Amount</span>

@@ -1,4 +1,11 @@
 import { supabase } from '../lib/supabase';
+import {
+  adaptProfitabilitySummaryResponse,
+  adaptProductBatchesResponse,
+  adaptBatchOrdersResponse,
+  summarizeQuantitiesByUnit,
+  type UnitQuantityTotal,
+} from '../utils/salesProfitReportNormalizers';
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -119,9 +126,24 @@ export interface OrderSaleRow {
   }>;
 }
 
+export interface MonthlyProfitabilitySummaryRow {
+  month_label: string;
+  month_start: string;
+  gross_sales: number;
+  product_cost: number;
+  sales_expenses: number;
+  gross_profit: number;
+  profit_after_sales_expenses: number;
+  profit_margin_pct: number;
+  total_qty_sold: number;
+  order_count: number;
+}
+
 export interface ReconciledSalesProfitabilityDataset {
   company: CompanyProfitabilitySummary;
   products: ProductProfitabilityRow[];
+  monthly: MonthlyProfitabilitySummaryRow[];
+  unitTotals: UnitQuantityTotal[];
   productsWithBatches: Array<{
     product: ProductProfitabilityRow;
     batches: BatchProfitabilityRow[];
@@ -308,23 +330,13 @@ export async function fetchCanonicalSalesProfitability(options: {
     });
   });
 
-  const rawCompany = (summaryRes as any)?.company || {};
-  let rawProducts = ((summaryRes as any)?.products || []) as ProductProfitabilityRow[];
-
-  // Merge canonical stock
-  rawProducts = rawProducts.map((p) => {
-    const canonical = stockMap.get(p.product_id);
-    return {
-      ...p,
-      current_stock: canonical ? canonical.current : Number(p.current_stock || 0),
-      reserved_stock: canonical ? canonical.reserved : 0,
-      available_stock: canonical ? canonical.available : Number(p.current_stock || 0),
-    };
-  });
+  const adaptedSummary = adaptProfitabilitySummaryResponse(summaryRes, stockMap);
+  const rawCompany = adaptedSummary.company;
+  const rawProducts = adaptedSummary.products as ProductProfitabilityRow[];
 
   onProgress?.('Fetching batch breakdowns for all products...', 25);
 
-  // 2. Fetch batches for each product
+  // 2. Fetch batches for each product (RPC returns a JSON array directly)
   interface ProductWithBatches {
     product: ProductProfitabilityRow;
     batches: BatchProfitabilityRow[];
@@ -335,31 +347,30 @@ export async function fetchCanonicalSalesProfitability(options: {
     6,
     rawProducts,
     async (prod) => {
-      try {
-        const { data: bData, error: bErr } = await supabase.rpc(
-          'get_sales_profitability_product_batches',
-          {
-            p_product_id: prod.product_id,
-            p_start_date: startDate,
-            p_end_date: endDate,
-          }
-        );
-        batchesCompleted++;
-        const pct = 25 + Math.round((batchesCompleted / (rawProducts.length || 1)) * 25);
-        onProgress?.(`Fetching batch details (${batchesCompleted}/${rawProducts.length})...`, pct);
+      const { data: bData, error: bErr } = await supabase.rpc(
+        'get_sales_profitability_product_batches',
+        {
+          p_product_id: prod.product_id,
+          p_start_date: startDate,
+          p_end_date: endDate,
+        }
+      );
+      batchesCompleted++;
+      const pct = 25 + Math.round((batchesCompleted / (rawProducts.length || 1)) * 25);
+      onProgress?.(`Fetching batch details (${batchesCompleted}/${rawProducts.length})...`, pct);
 
-        if (bErr) throw bErr;
-        return {
-          product: prod,
-          batches: (bData?.batches || []) as BatchProfitabilityRow[],
-        };
-      } catch (err) {
-        console.error(`Error loading batches for ${prod.product_code}:`, err);
-        return {
-          product: prod,
-          batches: [],
-        };
+      if (bErr) {
+        throw new Error(`Failed to load batches for ${prod.product_code || prod.product_name}: ${bErr.message}`);
       }
+      const normalizedBatches = adaptProductBatchesResponse(
+        bData,
+        prod.product_code || prod.product_name
+      ) as BatchProfitabilityRow[];
+
+      return {
+        product: prod,
+        batches: normalizedBatches,
+      };
     }
   );
 
@@ -377,7 +388,7 @@ export async function fetchCanonicalSalesProfitability(options: {
 
   onProgress?.(`Fetching invoice orders for ${batchTasks.length} batches...`, 50);
 
-  // 4. Fetch orders for all batches
+  // 4. Fetch orders for all batches (RPC returns a JSON array directly)
   interface BatchWithOrders {
     product: ProductProfitabilityRow;
     batch: BatchProfitabilityRow;
@@ -389,33 +400,27 @@ export async function fetchCanonicalSalesProfitability(options: {
     6,
     batchTasks,
     async (task) => {
-      try {
-        const { data: oData, error: oErr } = await supabase.rpc(
-          'get_sales_profitability_batch_orders',
-          {
-            p_batch_id: task.batch.batch_id,
-            p_start_date: startDate,
-            p_end_date: endDate,
-          }
-        );
-        ordersCompleted++;
-        const pct = 50 + Math.round((ordersCompleted / (batchTasks.length || 1)) * 25);
-        onProgress?.(`Fetching invoice order details (${ordersCompleted}/${batchTasks.length})...`, pct);
+      const { data: oData, error: oErr } = await supabase.rpc(
+        'get_sales_profitability_batch_orders',
+        {
+          p_batch_id: task.batch.batch_id,
+          p_start_date: startDate,
+          p_end_date: endDate,
+        }
+      );
+      ordersCompleted++;
+      const pct = 50 + Math.round((ordersCompleted / (batchTasks.length || 1)) * 25);
+      onProgress?.(`Fetching invoice order details (${ordersCompleted}/${batchTasks.length})...`, pct);
 
-        if (oErr) throw oErr;
-        return {
-          product: task.product,
-          batch: task.batch,
-          orders: (oData?.orders || []) as OrderSaleRow[],
-        };
-      } catch (err) {
-        console.error(`Error loading orders for batch ${task.batch.batch_number}:`, err);
-        return {
-          product: task.product,
-          batch: task.batch,
-          orders: [],
-        };
+      if (oErr) {
+        throw new Error(`Failed to load invoice lines for batch ${task.batch.batch_number}: ${oErr.message}`);
       }
+      const ordersList = adaptBatchOrdersResponse(oData, task.batch.batch_number) as OrderSaleRow[];
+      return {
+        product: task.product,
+        batch: task.batch,
+        orders: ordersList,
+      };
     }
   );
 
@@ -609,29 +614,43 @@ export async function fetchCanonicalSalesProfitability(options: {
   sumProdSalesExp = Math.round(sumProdSalesExp * 100) / 100;
   sumProdQty = Math.round(sumProdQty * 1000) / 1000;
 
-  const unallocatedExp = Number(rawCompany?.unallocated_sales_expenses || 0);
+  const salesReturns = Number(rawCompany.sales_returns || 0);
+  const returnCogs = Number(rawCompany.return_cogs || 0);
+  const netSales = Math.round((sumProdGrossSales - salesReturns) * 100) / 100;
+  const netProductCost = Math.round((sumProdLandedCost - returnCogs) * 100) / 100;
+  const unallocatedExp = Number(rawCompany.unallocated_sales_expenses || 0);
   const totalCompanySalesExp = Math.round((sumProdSalesExp + unallocatedExp) * 100) / 100;
-  const companyGrossProfit = Math.round((sumProdGrossSales - sumProdLandedCost) * 100) / 100;
+  const companyGrossProfit = Math.round((netSales - netProductCost) * 100) / 100;
   const companyNetProfit = Math.round((companyGrossProfit - totalCompanySalesExp) * 100) / 100;
-  const companyMarginPct = sumProdGrossSales > 0 ? Math.round((companyNetProfit / sumProdGrossSales) * 10000) / 100 : 0;
+  const companyMarginPct = netSales > 0 ? Math.round((companyNetProfit / netSales) * 10000) / 100 : 0;
 
   const reconciledCompany: CompanyProfitabilitySummary = {
     ...rawCompany,
     gross_sales: sumProdGrossSales,
+    sales_returns: salesReturns,
+    net_sales: netSales,
     product_cost: sumProdLandedCost,
+    return_cogs: returnCogs,
+    net_product_cost: netProductCost,
     sales_expenses: totalCompanySalesExp,
     unallocated_sales_expenses: unallocatedExp,
     gross_profit: companyGrossProfit,
     profit_after_sales_expenses: companyNetProfit,
     profit_margin_pct: companyMarginPct,
     total_qty_sold: sumProdQty,
-    order_count: Number(rawCompany?.order_count || 0),
+    order_count: Number(rawCompany.order_count || 0),
     product_count: reconciledProducts.length,
   };
+
+  const unitTotals = summarizeQuantitiesByUnit(
+    reconciledProducts.map((p) => ({ unit: p.product_unit, quantity: p.sold_qty }))
+  );
 
   return {
     company: reconciledCompany,
     products: reconciledProducts,
+    monthly: adaptedSummary.monthly,
+    unitTotals,
     productsWithBatches,
     batchOrdersMap,
   };
@@ -640,4 +659,8 @@ export async function fetchCanonicalSalesProfitability(options: {
 export {
   normalizeProductProfitabilityRow,
   normalizeBatchProfitabilityRow,
+  adaptProfitabilitySummaryResponse,
+  adaptProductBatchesResponse,
+  adaptBatchOrdersResponse,
+  summarizeQuantitiesByUnit,
 } from '../utils/salesProfitReportNormalizers';
