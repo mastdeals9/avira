@@ -46,12 +46,17 @@ test('Four Historical Accounting & Workflow Repairs (Rollback-Only DB Verificati
     new URL('../supabase/migrations/20261128040000_secure_vw_ppn_net_by_period.sql', import.meta.url),
     'utf8'
   );
+  const mig5 = readFileSync(
+    new URL('../supabase/migrations/20261128050000_revoke_client_execute_from_trigger_guards.sql', import.meta.url),
+    'utf8'
+  );
 
   await db.query('BEGIN');
   await db.query(mig1);
   await db.query(mig2);
   await db.query(mig3);
   await db.query(mig4);
+  await db.query(mig5);
 
   await t.test('Issue 1: Zero stale historical PO receiving quantities (<= 2026-11-19)', async () => {
     const res = await db.query(`
@@ -342,6 +347,24 @@ test('Four Historical Accounting & Workflow Repairs (Rollback-Only DB Verificati
     const authView = await db.query('SELECT COUNT(*)::int AS cnt FROM public.vw_ppn_net_by_period');
     assert.ok(authView.rows[0].cnt >= 0);
     await db.query('ROLLBACK TO SAVEPOINT sp_view_auth');
+
+    // Verify trigger-only SECURITY DEFINER guards cannot be executed by authenticated, retain service_role, and triggers exist
+    for (const guardFn of ['public.guard_bank_statement_line_state()', 'public.guard_settled_salary_advance_edit()']) {
+      const gPriv = await db.query(
+        `SELECT has_function_privilege('authenticated', $1, 'EXECUTE') AS auth_exec,
+                has_function_privilege('service_role', $1, 'EXECUTE') AS svc_exec`,
+        [guardFn]
+      );
+      assert.equal(gPriv.rows[0].auth_exec, false, `authenticated must not execute ${guardFn}`);
+      assert.equal(gPriv.rows[0].svc_exec, true, `service_role must retain execute on ${guardFn}`);
+    }
+    const trigRes = await db.query(`
+      SELECT COUNT(*)::int AS cnt
+      FROM pg_trigger
+      WHERE tgname IN ('trg_guard_bank_statement_line_state', 'trg_guard_settled_salary_advance_edit')
+        AND NOT tgisinternal
+    `);
+    assert.equal(trigRes.rows[0].cnt, 2, 'Both attached table triggers must exist');
   });
 
   await db.query('ROLLBACK');
